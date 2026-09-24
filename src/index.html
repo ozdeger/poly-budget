@@ -104,9 +104,36 @@ kbd {
   height: 100%;
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas: "top top" "side stage";
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas: "top top" "tabs tabs" "side stage";
 }
+
+.tabbar { grid-area: tabs; display: flex; align-items: flex-end; gap: 6px; padding: 6px 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); min-width: 0; }
+.tabs { display: flex; gap: 2px; overflow-x: auto; min-width: 0; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 240px;
+  height: 32px;
+  padding: 0 4px 0 12px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.tab:hover { background: color-mix(in srgb, var(--panel) 55%, transparent); color: var(--text); }
+.tab[aria-selected="true"] { background: var(--panel); border-color: var(--line); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); height: 33px; margin-bottom: -1px; }
+.tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.tab.busy .tab-title::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--accent); vertical-align: middle; animation: pulse 0.9s ease-in-out infinite; }
+.tab-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent; color: var(--faint); cursor: pointer; font: 15px/1 var(--font-ui); }
+.tab-close:hover { background: var(--raise); color: var(--text); }
+.tab-new { flex: none; width: 28px; height: 28px; margin-bottom: 3px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font: 17px/1 var(--font-ui); }
+.tab-new:hover { color: var(--text); border-color: var(--line-strong); }
 
 .top {
   grid-area: top;
@@ -222,20 +249,89 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .seg button kbd { margin-left: 2px; }
 
-.tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.tool {
+.toolpal, .toolopts {
+  position: absolute;
+  z-index: 2;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+}
+.toolpal {
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.toolpal button {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.toolpal button:hover { background: var(--raise); color: var(--text); }
+.toolpal .tool[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.toolpal button:disabled { opacity: 0.35; cursor: default; background: transparent; }
+.toolpal svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#showPaintBtn[aria-pressed="true"] .off, #showPaintBtn[aria-pressed="false"] .on { display: none; }
+.pal-sep { flex: none; height: 1px; margin: 3px 5px; background: var(--line); }
+.swatch { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font: 700 13px/1 var(--font-num); color: #141312; }
+.swatch svg { width: 11px; height: 11px; stroke: #141312; stroke-width: 2.6; }
+.swatch.more { background: var(--more); }
+.swatch.less { background: var(--less); }
+.swatch.keep { background: var(--keep); }
+.toolopts {
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--raise);
-  cursor: pointer;
-  text-align: left;
+  gap: 12px;
+  padding: 6px 10px;
+  max-width: calc(100% - 140px);
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
 }
-.tool:hover { border-color: var(--line-strong); }
-.tool[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.opt-name { display: flex; align-items: center; gap: 7px; font: 600 12px/1 var(--font-label); letter-spacing: 0.04em; }
+.opt-name::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--faint); }
+.opt-name[data-tool="more"]::before { background: var(--more); }
+.opt-name[data-tool="less"]::before { background: var(--less); }
+.opt-name[data-tool="keep"]::before { background: var(--keep); }
+.opt-size { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.opt-size input { width: 120px; }
+.opt-size output { min-width: 3.5em; font: 12px/1 var(--font-num); font-variant-numeric: tabular-nums; color: var(--text); }
+.toolopts > * { flex: none; }
+.toolopts .seg, .toolopts .legend { flex-wrap: nowrap; }
+.empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; }
+.empty-card {
+  max-width: 420px;
+  padding: 22px 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.empty-card h3 { margin: 0; font: 600 16px/1.2 var(--font-label); letter-spacing: 0.02em; }
+.empty-card p { margin: 0; color: var(--muted); }
+.empty-card .busy-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 0.9s ease-in-out infinite; }
 .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .dot.orbit { border: 2px solid var(--muted); }
 .dot.more { background: var(--more); }
@@ -386,9 +482,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
   .app {
     height: auto;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto;
-    grid-template-areas: "top" "stage" "side";
+    grid-template-rows: auto auto auto auto;
+    grid-template-areas: "top" "tabs" "stage" "side";
   }
+  .toolopts { left: 60px; right: 10px; transform: none; max-width: none; }
   .viewport { height: 58vh; min-height: 320px; }
   .side { border-right: 0; overflow: visible; }
   .budget { grid-template-columns: minmax(0, 1fr); gap: 8px; }
@@ -397,7 +494,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
   .file { order: 3; flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .vlabel .busy-dot { animation: none; }
+  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot { animation: none; }
 }
 </style>
 
@@ -413,6 +510,11 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
       <input type="file" id="fileInput" multiple hidden accept=".fbx,.obj,.mtl,.glb,.gltf,.bin,.stl,.ply,.png,.jpg,.jpeg,.webp,.tga,.bmp">
     </div>
   </header>
+
+  <nav class="tabbar" aria-label="Open models">
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <button type="button" class="tab-new" id="tabNew" title="New tab" aria-label="New tab">+</button>
+  </nav>
 
   <aside class="side" aria-label="Settings">
     <section class="sec" aria-labelledby="hModel">
@@ -491,33 +593,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
       </div>
     </section>
 
-    <section class="sec" aria-labelledby="hPaint">
-      <h2 id="hPaint">Detail painting</h2>
-      <div class="tools" role="group" aria-label="Tool">
-        <button type="button" class="tool" data-tool="orbit" id="toolOrbit"><span class="dot orbit"></span>Orbit<kbd>O</kbd></button>
-        <button type="button" class="tool" data-tool="more" id="toolMore"><span class="dot more"></span>More detail<kbd>M</kbd></button>
-        <button type="button" class="tool" data-tool="less" id="toolLess"><span class="dot less"></span>Less detail<kbd>L</kbd></button>
-        <button type="button" class="tool" data-tool="keep" id="toolKeep"><span class="dot keep"></span>Keep original<kbd>K</kbd></button>
-        <button type="button" class="tool" data-tool="erase" id="toolErase"><span class="dot erase"></span>Erase<kbd>E</kbd></button>
-      </div>
-      <div class="row">
-        <div class="seg" role="group" aria-label="Brush mode" id="modeSeg">
-          <button type="button" data-mode="brush">Brush</button><button type="button" data-mode="fill">Fill part<kbd>F</kbd></button>
-        </div>
-        <div class="seg" role="group" aria-label="Strength" id="strengthSeg">
-          <button type="button" data-strength="1">×2</button><button type="button" data-strength="2">×4</button><button type="button" data-strength="3">×8</button>
-        </div>
-      </div>
-      <label class="field"><span>Brush size <output id="brushOut"></output></span><input type="range" id="brushSize" min="0.5" max="30" step="0.5"></label>
-      <div class="row">
-        <button type="button" class="btn" id="undoBtn" disabled>Undo<kbd id="undoKey">⌘Z</kbd></button>
-        <button type="button" class="btn" id="redoBtn" disabled>Redo<kbd id="redoKey">⇧⌘Z</kbd></button>
-        <button type="button" class="btn" id="clearBtn">Clear paint</button>
-        <label class="check"><input type="checkbox" id="showPaint">Show paint</label>
-      </div>
-      <ul class="legend" id="legend"></ul>
-    </section>
-
     <details class="sec" id="secShape" open>
       <summary><h2>Shape &amp; shading</h2></summary>
       <div class="field"><span>Normals</span>
@@ -580,6 +655,38 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
       <div class="divider" id="divider"></div>
       <div class="vlabel" id="labelL"><b>Original</b><span id="labelLText"></span></div>
       <div class="vlabel" id="labelR"><b>Reduced</b><span id="labelRText"></span></div>
+      <div class="toolpal" id="toolPal" role="toolbar" aria-label="Paint tools" aria-orientation="vertical">
+        <button type="button" class="tool" data-tool="orbit" id="toolOrbit" title="Orbit (O)" aria-label="Orbit"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(-24 12 12)"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+        <button type="button" class="tool" data-tool="more" id="toolMore" title="More detail (M)" aria-label="More detail"><span class="swatch more" aria-hidden="true">+</span></button>
+        <button type="button" class="tool" data-tool="less" id="toolLess" title="Less detail (L)" aria-label="Less detail"><span class="swatch less" aria-hidden="true">−</span></button>
+        <button type="button" class="tool" data-tool="keep" id="toolKeep" title="Keep original (K)" aria-label="Keep original"><span class="swatch keep" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="6" y="11" width="12" height="9" rx="1.5"/><path d="M9 11V8a3 3 0 0 1 6 0v3"/></svg></span></button>
+        <button type="button" class="tool" data-tool="erase" id="toolErase" title="Erase paint (E)" aria-label="Erase paint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 20H9l-4.4-4.4a2 2 0 0 1 0-2.8l8-8a2 2 0 0 1 2.8 0l4 4a2 2 0 0 1 0 2.8L12 19"/><path d="m9.5 8.5 6 6"/></svg></button>
+        <span class="pal-sep" aria-hidden="true"></span>
+        <button type="button" class="palbtn" id="undoBtn" aria-label="Undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H12"/></svg></button>
+        <button type="button" class="palbtn" id="redoBtn" aria-label="Redo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H12"/></svg></button>
+        <span class="pal-sep" aria-hidden="true"></span>
+        <button type="button" class="palbtn" id="showPaintBtn" aria-label="Show paint" aria-pressed="true"><svg class="on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><path d="m4 4 16 16"/></svg></button>
+        <button type="button" class="palbtn" id="clearBtn" title="Clear all paint" aria-label="Clear all paint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="m6 7 1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg></button>
+      </div>
+      <div class="toolopts" id="toolOpts" hidden>
+        <span class="opt-name" id="optName"></span>
+        <div class="seg" role="group" aria-label="Brush mode" id="modeSeg">
+          <button type="button" data-mode="brush">Brush</button><button type="button" data-mode="fill">Fill part<kbd>F</kbd></button>
+        </div>
+        <div class="seg" role="group" aria-label="Strength" id="strengthSeg">
+          <button type="button" data-strength="1">×2</button><button type="button" data-strength="2">×4</button><button type="button" data-strength="3">×8</button>
+        </div>
+        <label class="opt-size" id="optSize"><span>Size</span><input type="range" id="brushSize" min="0.5" max="30" step="0.5" aria-label="Brush size"><output id="brushOut"></output></label>
+        <ul class="legend" id="legend" title="Painted vertices per region"></ul>
+      </div>
+      <div class="empty" id="emptyState" hidden>
+        <div class="empty-card" id="emptyIdle">
+          <h3>Open a model</h3>
+          <p>Drop an FBX, GLB, OBJ, STL or PLY here with its textures, or choose one.</p>
+          <div class="row"><label class="btn primary" for="fileInput">Open model…</label><button type="button" class="btn" id="sampleBtn">Try the sample pawn</button></div>
+        </div>
+        <div class="empty-card" id="emptyBusy" hidden><span class="busy-dot" aria-hidden="true"></span><p>Loading the model…</p></div>
+      </div>
       <div class="hint" id="hint"></div>
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <div class="drop" id="drop" hidden><div>Drop a model with its textures, or textures for the open model</div></div>

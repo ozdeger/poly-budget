@@ -1,7 +1,8 @@
 import { MeshoptSimplifier } from 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_simplifier.js';
 import { packAttributes, runReduction, mirrorOriginal, unwrapResult } from './core.js';
 
-let ctx = null;
+// One context per tab: the welded mesh, its packed attributes and the caches runReduction keeps.
+const ctxs = new Map();
 
 self.onmessage = async ({ data }) => {
   try {
@@ -15,10 +16,17 @@ self.onmessage = async ({ data }) => {
     }
     await MeshoptSimplifier.ready;
     if (data.type === 'load') {
-      ctx = { mesh: data.mesh, packed: packAttributes(data.mesh), half: null };
+      ctxs.set(data.doc, { mesh: data.mesh, packed: packAttributes(data.mesh), half: null });
       self.postMessage({ type: 'loaded', id: data.id });
       return;
     }
+    if (data.type === 'unload') {
+      ctxs.delete(data.doc);
+      self.postMessage({ type: 'unloaded', id: data.id });
+      return;
+    }
+    const ctx = ctxs.get(data.doc);
+    if (!ctx) throw new Error('that tab has no model loaded');
     if (data.type === 'mirror') {
       const result = mirrorOriginal(ctx, data.plane);
       const transfer = [result.positions.buffer, result.normals.buffer, result.index.buffer, result.vPart.buffer, result.vMat.buffer, result.srcId.buffer, result.twin.buffer];

@@ -6,11 +6,12 @@ A browser tool that brings heavy 3D models down to a triangle budget without los
 
 - Open an FBX, GLB/GLTF, OBJ, STL or PLY with its textures. Everything runs in your browser; nothing is uploaded.
 - Set a triangle budget and compare the original and the reduced model side by side.
-- Paint areas that need more or less detail, or that must stay exactly as they are.
+- Work on several models at once in tabs: each tab keeps its own model, paint, mirror plane, budget and view.
+- Paint areas that need more or less detail, or that must stay exactly as they are, with the floating tool palette on the view.
 - Mirror symmetry: one half is reduced and mirrored, so every vertex has an exact partner.
 - Texture mapping: the original UVs are kept while they still fit the texture. At low budgets the reduced model gets new UVs and its textures (base colour, normal, roughness and so on) are baked onto them from the original, in the background.
 - Export a zip with FBX, GLB or OBJ and the textures.
-- The last model, its textures, paint and view reopen on your next visit. They are kept in your browser only.
+- Your open tabs, with their textures, paint and view, reopen on your next visit. They are kept in your browser only.
 
 ## Build
 

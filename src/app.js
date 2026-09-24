@@ -47,11 +47,32 @@ function saveSettings() {
   saveTimer = setTimeout(() => { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch { /* storage unavailable */ } }, 300);
 }
 
-const state = {
-  meta: null, collected: null, welded: null, labels: null, result: null, info: null, engineMesh: null,
-  orig: { bvh: null, index: null }, left: null, diag: 1, undo: [], redo: [], strokeSnapshot: null, strokeChanged: false,
-  painting: false, displayMats: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
-};
+// ---------- tabs ----------
+// Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
+// `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
+const DOC_KEYS = ['targetPct', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
+  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'symmetry', 'symSide'];
+const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
+let docSeq = 0;
+const newDocId = () => `t${Date.now().toString(36)}${(docSeq++).toString(36)}`;
+// saved: the stored record of a tab from the last visit; its model loads the first time the tab is shown.
+function newDoc(saved = null) {
+  return {
+    id: saved ? saved.id : newDocId(),
+    title: saved ? saved.title || saved.model : 'New tab',
+    state: {
+      meta: null, collected: null, welded: null, labels: null, result: null, info: null, engineMesh: null,
+      orig: { bvh: null, index: null }, left: null, diag: 1, size: 1, undo: [], redo: [], strokeSnapshot: null, strokeChanged: false,
+      painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
+    },
+    symPlane: { axis: 0, offset: 0, fit: null, ready: false },
+    session: { model: null, files: new Map(), ready: false, restored: false },
+    settings: saved && saved.settings ? { ...docSettings(), ...saved.settings } : docSettings(),
+    camera: null, dirty: false, saved,
+  };
+}
+const docs = [newDoc()];
+let doc = docs[0], state = doc.state, symPlane = doc.symPlane, session = doc.session;
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const UNDO_KEY = IS_MAC ? '⌘Z' : 'Ctrl+Z';
 const REDO_KEY = IS_MAC ? '⇧⌘Z' : 'Ctrl+Y';
@@ -174,14 +195,23 @@ function render() {
   positionOverlays(r, w, h);
 }
 function positionOverlays(r, w, h) {
+  const opts = $('toolOpts'), pal = $('toolPal'), below = opts.hidden ? 0 : opts.offsetHeight + 10;
+  // Labels move below the options bar, and right of the tool palette where they would sit behind it.
+  const palTop = pal.hidden ? Infinity : pal.offsetTop - pal.offsetHeight / 2, palBottom = palTop + pal.offsetHeight;
   const place = (el, rc) => {
     el.hidden = !rc;
-    if (rc) { el.style.left = `${rc.x + 12}px`; el.style.top = `${rc.y + 12}px`; }
+    if (!rc) return;
+    const top = rc.y + 12 + (rc.y === 0 ? below : 0);
+    const clear = rc.x < 70 && top < palBottom && top + 28 > palTop;
+    el.style.left = `${clear ? 70 : rc.x + 12}px`;
+    el.style.top = `${top}px`;
   };
-  place($('labelL'), r.L);
-  place($('labelR'), r.R);
+  const shown = !!state.welded;
+  place($('labelL'), shown && r.L);
+  place($('labelR'), shown && r.R);
+  $('hint').hidden = !shown;
   const d = $('divider');
-  d.hidden = !r.split;
+  d.hidden = !r.split || !shown;
   if (r.split === 'v') Object.assign(d.style, { left: `${r.R.x}px`, top: '0px', width: '1px', height: `${h}px` });
   if (r.split === 'h') Object.assign(d.style, { left: '0px', top: `${r.R.y}px`, width: `${w}px`, height: '1px' });
 }
@@ -248,22 +278,29 @@ const engine = {
     if (!this.local) {
       const mod = await import(MESHOPT_URL);
       await mod.MeshoptSimplifier.ready;
-      this.local = { S: mod.MeshoptSimplifier, ctx: null };
+      this.local = { S: mod.MeshoptSimplifier, ctxs: new Map() };
     }
     const L = this.local;
-    if (msg.type === 'load' || !L.ctx) {
-      const mesh = msg.type === 'load' ? msg.mesh : state.engineMesh;
-      L.ctx = { mesh, packed: packAttributes(mesh), half: null };
+    if (msg.type === 'unload') { L.ctxs.delete(msg.doc); return { type: 'unloaded' }; }
+    let ctx = L.ctxs.get(msg.doc);
+    if (msg.type === 'load' || !ctx) {
+      const owner = docs.find(d => d.id === msg.doc);
+      const mesh = msg.type === 'load' ? msg.mesh : owner && owner.state.engineMesh;
+      if (!mesh) throw new Error('that tab has no model loaded');
+      ctx = { mesh, packed: packAttributes(mesh), half: null };
+      L.ctxs.set(msg.doc, ctx);
       if (msg.type === 'load') return { type: 'loaded' };
     }
-    if (msg.type === 'mirror') return { type: 'mirrored', result: mirrorOriginal(L.ctx, msg.plane) };
-    const { result, info } = runReduction(L.S, L.ctx, msg.labels, msg.settings, msg.finalize);
+    if (msg.type === 'mirror') return { type: 'mirrored', result: mirrorOriginal(ctx, msg.plane) };
+    const { result, info } = runReduction(L.S, ctx, msg.labels, msg.settings, msg.finalize);
     return { type: 'reduced', result, info };
   },
-  async load(mesh) {
-    try { return await this.call({ type: 'load', mesh }); }
-    catch { this.fallback(); return this.callLocal({ type: 'load', mesh }); }
+  // The worker keeps one context per tab.
+  async load(id, mesh) {
+    try { return await this.call({ type: 'load', doc: id, mesh }); }
+    catch { this.fallback(); return this.callLocal({ type: 'load', doc: id, mesh }); }
   },
+  unload(id) { this.call({ type: 'unload', doc: id }).catch(() => {}); },
 };
 
 // New UVs are unwrapped in a second worker, so reductions never wait behind an unwrap. Starting a job ends the one
@@ -312,10 +349,10 @@ const texEngine = {
 };
 
 // ---------- last session ----------
-// The open model and the files that came with it, its texture assignments, paint, mirror plane and camera are kept in
-// this browser (IndexedDB) and reopened on the next visit. Settings are kept separately in localStorage (STORE).
+// Open tabs are kept in this browser (IndexedDB) and reopen on the next visit: per tab, the model and the files that
+// came with it, texture assignments, paint, mirror plane, camera and model settings. Keys: 'tabs' (order and active
+// tab), '<tab>:session' and '<tab>:file:<name>'. Shared settings are kept in localStorage (STORE).
 const SESSION_DB = 'poly-budget', SESSION_STORE = 'session';
-const session = { model: null, files: new Map(), ready: false, restored: false };
 let sessionDB = null;
 function openSessionDB() {
   if (!sessionDB) {
@@ -343,17 +380,19 @@ async function sessionTx(mode, fn) {
     } catch (err) { reject(err); }
   });
 }
-// Stores files for the session; replace starts a new session (a new model) and drops the previous one's files.
-async function rememberFiles(files, replace) {
-  if (replace) session.files.clear();
-  for (const f of files) session.files.set(f.name, f);
+const readKeys = keys => sessionTx('readonly', store => { const rs = keys.map(k => store.get(k)); return () => rs.map(r => r.result); });
+// Stores a tab's files; replace starts a new model in the tab and drops the previous one's files.
+async function rememberFiles(d, files, replace) {
+  const s = d.session, prefix = `${d.id}:file:`;
+  if (replace) s.files.clear();
+  for (const f of files) s.files.set(f.name, f);
   try {
     await sessionTx('readwrite', store => {
       if (replace) {
         const keys = store.getAllKeys();
-        keys.onsuccess = () => { for (const k of keys.result) if (String(k).startsWith('file:') && !session.files.has(String(k).slice(5))) store.delete(k); };
+        keys.onsuccess = () => { for (const k of keys.result) if (String(k).startsWith(prefix) && !s.files.has(String(k).slice(prefix.length))) store.delete(k); };
       }
-      for (const f of files) store.put(f, `file:${f.name}`);
+      for (const f of files) store.put(f, prefix + f.name);
     });
   } catch (err) {
     console.error(err);
@@ -366,8 +405,18 @@ function saveSessionSoon(delay = 700) {
   clearTimeout(sessionTimer);
   sessionTimer = setTimeout(saveSession, delay);
 }
+// Tabs that have a model, or are waiting to reopen one, in tab order.
+function tabsRecord() {
+  const kept = docs.filter(d => d.session.model || d.saved);
+  return { version: 2, order: kept.map(d => d.id), active: kept.includes(doc) ? doc.id : kept[0] ? kept[0].id : null };
+}
+async function saveTabs() {
+  try { await sessionTx('readwrite', store => { store.put(tabsRecord(), 'tabs'); }); } catch { /* storage unavailable */ }
+}
+// Saves the active tab and the tab list.
 async function saveSession() {
-  if (!session.ready || !state.meta || state.meta.name !== session.model) return;
+  clearTimeout(sessionTimer);
+  if (!session.ready || !state.meta || state.meta.name !== session.model) return saveTabs();
   const names = new Map([...session.files.keys()].map(n => [n.toLowerCase(), n]));
   const textures = [];
   state.displayMats.forEach((m, mat) => {
@@ -376,31 +425,70 @@ async function saveSession() {
       if (file && names.has(file)) textures.push({ mat, slot, file });
     }
   });
+  const id = doc.id;
   const record = {
-    version: 1, model: session.model, files: [...session.files.keys()], textures,
+    version: 2, id, title: doc.title, model: session.model, files: [...session.files.keys()], textures, settings: docSettings(),
     labels: state.labels, weld: { hardAngle: settings.hardAngle, weldTol: settings.weldTol },
     symPlane: symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset } : null,
     camera: { position: camera.position.toArray(), target: controls.target.toArray() },
   };
-  try { await sessionTx('readwrite', store => { store.put(record, 'session'); }); } catch (err) { console.error(err); }
+  try { await sessionTx('readwrite', store => { store.put(record, `${id}:session`); store.put(tabsRecord(), 'tabs'); }); } catch (err) { console.error(err); }
 }
-async function forgetSession() {
-  try { await sessionTx('readwrite', store => { store.clear(); }); } catch { /* storage unavailable */ }
-}
-// Reopens the last session's model with its files; false when there is none or it can't be opened (then it is dropped).
-async function restoreSession() {
-  let rec = null, files = [];
+async function forgetDoc(id) {
   try {
-    rec = await sessionTx('readonly', store => { const r = store.get('session'); return () => r.result; });
-    if (!rec || !rec.model || !rec.files || !rec.files.length) return false;
-    files = await sessionTx('readonly', store => { const rs = rec.files.map(n => store.get(`file:${n}`)); return () => rs.map(r => r.result); });
+    await sessionTx('readwrite', store => {
+      const keys = store.getAllKeys();
+      keys.onsuccess = () => { for (const k of keys.result) if (String(k).startsWith(`${id}:`)) store.delete(k); };
+      store.put(tabsRecord(), 'tabs');
+    });
+  } catch { /* storage unavailable */ }
+}
+// Moves the single saved session from before tabs existed into a tab.
+async function migrateSession() {
+  const [old] = await readKeys(['session']);
+  if (!old || !old.model || !old.files) return null;
+  const files = await readKeys(old.files.map(n => `file:${n}`));
+  const id = newDocId(), index = { version: 2, order: [id], active: id };
+  await sessionTx('readwrite', store => {
+    old.files.forEach((n, i) => { if (files[i]) store.put(files[i], `${id}:file:${n}`); store.delete(`file:${n}`); });
+    store.delete('session');
+    store.put({ ...old, version: 2, id, title: old.model.replace(/\.[^.]+$/, '') }, `${id}:session`);
+    store.put(index, 'tabs');
+  });
+  return index;
+}
+// Recreates the last visit's tabs: the active one loads now, the others the first time they are shown.
+async function restoreTabs() {
+  let records = [], index = null;
+  try {
+    [index] = await readKeys(['tabs']);
+    if (!index) index = await migrateSession();
+    if (!index || !index.order || !index.order.length) return false;
+    records = await readKeys(index.order.map(id => `${id}:session`));
   } catch { return false; }
+  const restored = (records || []).filter(r => r && r.model && r.files && r.files.length).map(r => newDoc(r));
+  if (!restored.length) return false;
+  docs.splice(0, docs.length, ...restored);
+  await activate(restored.find(d => d.id === index.active) || restored[0]);
+  return !!state.welded;
+}
+// Loads a tab restored from the last visit, the first time it is shown.
+async function loadSavedDoc(d) {
+  const rec = d.saved;
+  let files = [];
+  try { files = await readKeys(rec.files.map(n => `${d.id}:file:${n}`)); } catch { files = []; }
   files = (files || []).map((f, i) => (f instanceof File ? f : f ? new File([f], rec.files[i], { type: f.type }) : null)).filter(Boolean);
-  if (!files.some(f => f.name === rec.model)) { await forgetSession(); return false; }
-  setStatus(`Reopening ${rec.model} from your last visit…`);
-  await openFiles(files, rec);
-  if (state.meta && state.meta.name === rec.model) return true;
-  await forgetSession();
+  if (files.some(f => f.name === rec.model)) {
+    setStatus(`Reopening ${rec.model} from your last visit…`);
+    await openFiles(files, rec);
+  }
+  d.saved = null;
+  if (d.state.meta && d.state.meta.name === rec.model) return true;
+  showError(`Couldn't reopen ${rec.model} from your last visit`);
+  d.title = 'New tab';
+  forgetDoc(d.id);
+  renderTabs();
+  if (d === doc) attachDoc();
   return false;
 }
 // Puts back the texture each material slot had, for slots that loading alone doesn't reproduce (Set…, added files).
@@ -451,6 +539,11 @@ async function openFiles(fileList, restore = null) {
     showError(images.length ? 'Open a model first, then add its textures.' : 'No model in those files. Open an .fbx, .obj, .glb, .gltf, .stl or .ply, with or without its textures.');
     return;
   }
+  if (loading) { showError('Wait for the model that is loading to finish.'); return; }
+  // A model opens in a new tab unless this tab is empty or shows the sample.
+  if (!restore && state.welded && !state.meta.sample) await openTab(newDoc());
+  loading = doc;
+  renderTabs();
   const byName = new Map(files.map(f => [f.name.toLowerCase(), f]));
   const urls = new Map(files.map(f => [f.name.toLowerCase(), URL.createObjectURL(f)]));
   const blobToName = new Map([...urls].map(([n, u]) => [u, byName.get(n).name]));
@@ -503,7 +596,9 @@ async function openFiles(fileList, restore = null) {
     } else {
       const buf = await main.arrayBuffer();
       const geo = ext === 'stl' ? new STLLoader().parse(buf) : new PLYLoader().parse(buf);
-      if (!geo.attributes.normal) geo.computeVertexNormals();
+      // STL files often store zero facet normals; shade from the geometry instead.
+      const n = geo.attributes.normal;
+      if (!n || !n.array.some(v => v !== 0)) geo.computeVertexNormals();
       root = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc8c2b8, vertexColors: !!geo.attributes.color, roughness: 0.7 }));
       root.name = main.name.replace(/\.[^.]+$/, '');
     }
@@ -521,13 +616,15 @@ async function openFiles(fileList, restore = null) {
       applyDisplaySettings();
       refreshBake();
     } else {
-      rememberFiles(files, true);
+      rememberFiles(doc, files, true);
     }
     session.ready = true;
     saveSessionSoon(0);
   } catch (err) {
     console.error(err);
     showError(`Couldn't open ${main.name}: ${err.message || err}`);
+  } finally {
+    finishLoading();
   }
 }
 
@@ -538,6 +635,9 @@ async function prepareModel(root, meta) {
   if (!collected.index.length) throw new Error('the file has no triangle meshes');
   state.meta = meta;
   state.collected = collected;
+  doc.title = meta.sample ? 'Sample pawn' : meta.name.replace(/\.[^.]+$/, '');
+  showEmptyState(false);
+  renderTabs();
   state.hasColors = !!collected.colors;
   state.displayMats = collected.materials.map(m => {
     const mat = m && m.isMaterial ? m : new THREE.MeshStandardMaterial({ color: 0xc8c2b8 });
@@ -557,10 +657,7 @@ async function prepareModel(root, meta) {
   state.geo = null;
   state.result = null;
   state.info = null;
-  $('fileName').textContent = meta.sample ? 'Sample pawn' : meta.name;
-  $('fileMeta').textContent = meta.sample
-    ? 'Procedural example with painted areas — open your own model to replace it'
-    : `${meta.kind.toUpperCase()} · ${(meta.size / 1048576).toFixed(1)} MB · ${fmt(collected.index.length / 3)} triangles`;
+  updateHeader();
   await rebuildWeld(true);
   frameCamera();
   const cam = meta.restore && meta.restore.camera;
@@ -615,7 +712,7 @@ async function rebuildWeld(resetLabels) {
   updatePlaneHelper();
   updateTint();
   if (state.meta.sample && resetLabels) paintSample();
-  await engine.load(state.engineMesh);
+  await engine.load(doc.id, state.engineMesh);
   setStatus('');
   if (symActive()) refreshMirrorView();
   updateModelPanel();
@@ -720,7 +817,7 @@ async function addTextures(files) {
   }
   const assigned = await assignLoose(unmatched);
   const added = [...matched, ...assigned];
-  if (added.length) rememberFiles(files.filter(f => added.includes(f.name)), false).then(() => saveSessionSoon(0));
+  if (added.length) rememberFiles(doc, files.filter(f => added.includes(f.name)), false).then(() => saveSessionSoon(0));
   const ignored = unmatched.map(f => f.name).filter(n => !assigned.includes(n));
   if (added.length && settings.shading !== 'textured') { settings.shading = 'textured'; syncControls(); saveSettings(); }
   refreshBake();
@@ -740,7 +837,7 @@ async function setMaterialTexture(index, file) {
   m.map = tex;
   m.needsUpdate = true;
   state.pendingMaps = state.pendingMaps.filter(p => !(p.material === m && p.slot === 'map'));
-  rememberFiles([file], false).then(() => saveSessionSoon(0));
+  rememberFiles(doc, [file], false).then(() => saveSessionSoon(0));
   if (settings.shading !== 'textured') { settings.shading = 'textured'; syncControls(); saveSettings(); }
   refreshBake();
   applyDisplaySettings();
@@ -1120,13 +1217,13 @@ function bakedMaterials(bk) {
     return c;
   });
 }
-function disposeBakedMaterials() {
-  if (!state.bakedMats) return;
-  for (const m of state.bakedMats) {
+function disposeBakedMaterials(s = state) {
+  if (!s.bakedMats) return;
+  for (const m of s.bakedMats) {
     for (const slot of MAP_SLOTS) if (m[slot] && m[slot].userData.pbBaked) m[slot].dispose();
     m.dispose();
   }
-  state.bakedMats = null;
+  s.bakedMats = null;
 }
 // ---------- texture jobs ----------
 // A reduction result goes on screen as soon as it exists. For New UVs it arrives without UVs and shows untextured;
@@ -1178,6 +1275,17 @@ function startTextureJob(rebakeOnly = false) {
 // Textures changed: the UVs stay, the bake runs again.
 function refreshBake() {
   if (state.geo) startTextureJob(true);
+}
+
+// A result that arrives after its tab was left waits for the tab to be shown again.
+function keepResult(d, res, info, labels, st) {
+  const s = d.state;
+  if (!s) return;
+  disposeBakedMaterials(s);
+  s.bake = null;
+  s.result = res;
+  s.info = info;
+  s.geo = res.uvLayout === 'pending' ? { result: res, info, labels, plane: st.symmetry } : null;
 }
 
 // Puts a reduction result on screen; New-UV results show untextured until their texture job finishes.
@@ -1523,7 +1631,6 @@ function showRing(hit) {
 }
 
 // ---------- symmetry ----------
-const symPlane = { axis: 0, offset: 0, fit: null, ready: false };
 const AXES = ['X', 'Y', 'Z'];
 function symActive() { return settings.symmetry && symPlane.ready; }
 function keptSide(p) { return (p.getComponent(symPlane.axis) - symPlane.offset) * (settings.symSide === '-' ? -1 : 1) >= 0; }
@@ -1639,7 +1746,7 @@ async function refreshMirrorView() {
   }
   const plane = { axis: symPlane.axis, offset: symPlane.offset, keepPositive: settings.symSide !== '-' };
   try {
-    const out = await engine.call({ type: 'mirror', plane });
+    const out = await engine.call({ type: 'mirror', doc: doc.id, plane });
     if (seq !== mirrorSeq || !symActive()) return;
     const r = out.result;
     const { bvh, index } = buildBVHFor(r.positions, r.index);
@@ -1699,7 +1806,7 @@ canvas.addEventListener('pointerdown', e => {
   const hit = pick(e.clientX, e.clientY);
   if (!hit) return;
   e.preventDefault();
-  canvas.setPointerCapture(e.pointerId);
+  try { canvas.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
   state.strokeSnapshot = state.labels.slice();
   state.strokeChanged = false;
   if (settings.mode === 'fill') { fillAt(hit); endStroke(); return; }
@@ -1775,14 +1882,16 @@ function scheduleReduce(delay = 120) {
   saveSessionSoon();
 }
 async function runReduce() {
+  reduceTimer = 0;
   if (!state.welded) return;
   if (reducing) { reducePending = true; return; }
   reducing = true;
   setBusy(true);
   try {
-    const labels = state.labels.slice(), st = reduceSettings();
-    const out = await engine.call({ type: 'reduce', labels, settings: st, finalize: finalizeOptions() });
-    showResult(out.result, out.info, labels, st);
+    const d = doc, labels = state.labels.slice(), st = reduceSettings();
+    const out = await engine.call({ type: 'reduce', doc: d.id, labels, settings: st, finalize: finalizeOptions() });
+    if (d === doc) showResult(out.result, out.info, labels, st);
+    else keepResult(d, out.result, out.info, labels, st);
   } catch (err) {
     console.error(err);
     showError(`Reduction failed: ${err.message || err}`);
@@ -1822,6 +1931,11 @@ function el(tag, props = {}, ...children) {
   return n;
 }
 function updateModelPanel() {
+  if (!state.welded) {
+    $('modelStats').replaceChildren();
+    $('diag').replaceChildren(el('li', { className: 'info', textContent: 'No model in this tab yet.' }));
+    return;
+  }
   const w = state.welded, s = w.stats, c = state.collected;
   const b = bounds(w.positions);
   const scale = (state.meta.unitScale || 100) / 100;
@@ -1866,6 +1980,12 @@ function updateLegend() {
 }
 
 function updateTargetUI() {
+  if (!state.welded) {
+    $('targetOut').textContent = '—';
+    $('targetOf').textContent = '';
+    $('targetNum').value = '';
+    return;
+  }
   const T = state.welded ? state.welded.triCount : 0;
   const t = targetTris();
   $('targetOut').textContent = fmt(t);
@@ -1883,7 +2003,14 @@ function updateTargetUI() {
 
 function updateResultUI() {
   const i = state.info;
-  if (!i) return;
+  if (!i) {
+    for (const id of ['resTris', 'resVerts', 'resErr', 'resTime']) $(id).textContent = '—';
+    for (const id of ['bKeep', 'bMore', 'bLess', 'bRest']) $(id).style.width = '0';
+    $('bNote').textContent = '';
+    $('labelRText').textContent = '';
+    $('resSym').hidden = true;
+    return;
+  }
   const target = targetTris();
   $('resTris').textContent = fmt(i.tris);
   $('resVerts').textContent = fmt(i.verts);
@@ -2207,6 +2334,145 @@ function paintSample() {
   recolorAll();
 }
 
+// ---------- tab switching ----------
+let loading = null, queuedDoc = null;
+// Loading a model can't be interrupted, so a tab picked meanwhile is shown once it finishes.
+function finishLoading() {
+  loading = null;
+  renderTabs();
+  if (queuedDoc) { const next = queuedDoc; queuedDoc = null; activate(next); }
+}
+function renderTabs() {
+  $('tabs').replaceChildren(...docs.map(d => {
+    const close = el('button', { type: 'button', className: 'tab-close', textContent: '×', title: `Close ${d.title}` });
+    close.setAttribute('aria-label', `Close ${d.title}`);
+    close.dataset.close = d.id;
+    const tab = el('div', { className: 'tab', tabIndex: 0, title: d.title }, el('span', { className: 'tab-title', textContent: d.title }), close);
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(d === doc));
+    tab.dataset.doc = d.id;
+    tab.classList.toggle('busy', d === loading || d === queuedDoc);
+    return tab;
+  }));
+}
+function updateHeader() {
+  const m = state.meta;
+  $('fileName').textContent = !m ? doc.title : m.sample ? 'Sample pawn' : m.name;
+  $('fileMeta').textContent = !m ? (doc.saved ? 'Reopening from your last visit…' : 'Open a model or drop one on the viewport')
+    : m.sample ? 'Procedural example with painted areas — open your own model to replace it'
+    : `${m.kind.toUpperCase()} · ${(m.size / 1048576).toFixed(1)} MB · ${fmt(state.collected.index.length / 3)} triangles`;
+}
+function showEmptyState(on) {
+  $('emptyState').hidden = !on;
+  $('emptyBusy').hidden = !(loading === doc || doc.saved);
+  $('emptyIdle').hidden = !$('emptyBusy').hidden;
+  $('toolPal').hidden = on;
+  $('toolOpts').hidden = on || settings.tool === 'orbit';
+  requestRender();
+}
+// Near and far planes for the active model, as frameCamera sets them.
+function clipForModel() {
+  const dist = (state.diag / 2 / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.08;
+  camera.near = dist / 200;
+  camera.far = dist * 20;
+  camera.updateProjectionMatrix();
+}
+// Leaves the active tab: keeps its camera and settings, saves it, stops its background work and frees its view.
+function detachDoc() {
+  if (state.painting) { state.painting = false; endStroke(); }
+  doc.settings = docSettings();
+  if (state.welded) doc.camera = { position: camera.position.toArray(), target: controls.target.toArray() };
+  if (docs.includes(doc)) saveSession();
+  cancelTexture();
+  if (reduceTimer) { clearTimeout(reduceTimer); reduceTimer = 0; doc.dirty = true; }
+  if (reducePending) { reducePending = false; doc.dirty = true; }
+  clearTimeout(mirrorTimer);
+  mirrorSeq++;
+  disposeDisplay(display.L, sceneL);
+  disposeDisplay(display.R, sceneR);
+  display.L = display.R = null;
+  resetBakeSources();
+  showRing(null);
+}
+// Shows the active tab: its view, panels and camera, and restarts any work it still needs.
+function attachDoc() {
+  updateHeader();
+  renderTabs();
+  syncControls();
+  const panels = () => { updateModelPanel(); updateTexturePanel(); updateLegend(); updateTargetUI(); updateResultUI(); updateUVPanel(); updateHistoryButtons(); };
+  if (!state.welded) {
+    showEmptyState(true);
+    updatePlaneHelper();
+    panels();
+    return;
+  }
+  showEmptyState(false);
+  setLeftSurface(state.left || originalSurface());
+  if (state.result) buildReducedDisplay(state.result);
+  if (doc.camera) {
+    camera.position.fromArray(doc.camera.position);
+    controls.target.fromArray(doc.camera.target);
+    clipForModel();
+    controls.update();
+  } else {
+    frameCamera();
+  }
+  updatePlaneHelper();
+  updateTint();
+  panels();
+  $('resErr').textContent = '…';
+  if (state.result) setTimeout(() => measureDeviation(state.result), 30);
+  if (state.result && state.result.uvLayout === 'pending' && state.geo) startTextureJob();
+  if (doc.dirty || !state.result) { doc.dirty = false; scheduleReduce(0); }
+  requestRender();
+}
+async function activate(next) {
+  if (!next || next === doc) return;
+  if (loading) { queuedDoc = next; renderTabs(); return; }
+  detachDoc();
+  doc = next;
+  ({ state, symPlane, session } = next);
+  Object.assign(settings, next.settings);
+  saveSettings();
+  attachDoc();
+  if (next.saved && !next.session.model) await loadSavedDoc(next);
+}
+async function openTab(d) {
+  docs.splice(docs.indexOf(doc) + 1, 0, d);
+  await activate(d);
+}
+async function closeDoc(d) {
+  if (!d || d === loading) return;
+  if (docs.length === 1) docs.push(newDoc());
+  const i = docs.indexOf(d);
+  if (d === doc) await activate(docs[i + 1] || docs[i - 1]);
+  if (d === doc) return;
+  docs.splice(docs.indexOf(d), 1);
+  engine.unload(d.id);
+  disposeBakedMaterials(d.state);
+  for (const m of d.state.displayMats) {
+    for (const slot of MAP_SLOTS) if (m[slot]) m[slot].dispose();
+    m.dispose();
+  }
+  d.state = null;
+  forgetDoc(d.id);
+  renderTabs();
+}
+async function loadSample() {
+  if (loading) return;
+  loading = doc;
+  renderTabs();
+  showEmptyState(true);
+  try {
+    await prepareModel(samplePawn(), { name: 'SamplePawn.fbx', size: 0, unitScale: 100, kind: 'sample', files: new Map(), blobToName: new Map(), missing: null, sample: true });
+  } catch (err) {
+    console.error(err);
+    showError(`Couldn't build the sample: ${err.message || err}`);
+  } finally {
+    finishLoading();
+  }
+}
+
 // ---------- controls ----------
 function pressSeg(id, key, value) {
   for (const b of $(id).querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset[key] === String(value)));
@@ -2225,9 +2491,17 @@ function syncControls() {
   $('strengthSeg').querySelectorAll('button').forEach((b, i) => { b.textContent = labels[i]; });
   $('strengthSeg').hidden = !(settings.tool === 'more' || settings.tool === 'less');
   $('wire').checked = settings.wire;
-  $('showPaint').checked = settings.showPaint;
+  const paint = settings.tool !== 'orbit';
+  $('showPaintBtn').setAttribute('aria-pressed', String(settings.showPaint));
+  $('showPaintBtn').title = settings.showPaint ? 'Hide paint' : 'Show paint';
+  $('toolPal').hidden = !state.welded;
+  $('toolOpts').hidden = !state.welded || !paint;
+  const name = { more: 'More detail', less: 'Less detail', keep: 'Keep original', erase: 'Erase' }[settings.tool] || '';
+  $('optName').textContent = name;
+  $('optName').dataset.tool = settings.tool;
+  $('optSize').hidden = settings.mode === 'fill';
   $('brushSize').value = String(settings.brush);
-  $('brushOut').textContent = `${settings.brush}% of size`;
+  $('brushOut').textContent = `${settings.brush}%`;
   $('maxErr').value = String(settings.maxError);
   $('optPos').checked = settings.optimizePositions;
   $('permissive').checked = settings.permissive;
@@ -2292,7 +2566,7 @@ const bindRange = (id, key, after, delay) => $(id).addEventListener('input', e =
 let weldTimer = 0;
 const reweld = () => { clearTimeout(weldTimer); weldTimer = setTimeout(() => rebuildWeld(false), 350); };
 bindCheck('wire', 'wire', applyDisplaySettings);
-bindCheck('showPaint', 'showPaint', applyDisplaySettings);
+$('showPaintBtn').addEventListener('click', () => { settings.showPaint = !settings.showPaint; syncControls(); saveSettings(); applyDisplaySettings(); });
 bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
 bindCheck('permissive', 'permissive', () => scheduleReduce());
 bindCheck('lockBorder', 'lockBorder', () => scheduleReduce());
@@ -2353,11 +2627,25 @@ $('units').addEventListener('change', e => { settings.units = e.target.value; sa
 $('bakeSize').addEventListener('change', e => { settings.bakeSize = Number(e.target.value); saveSettings(); startTextureJob(); });
 $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
-$('undoKey').textContent = UNDO_KEY;
-$('redoKey').textContent = REDO_KEY;
-$('undoBtn').title = `Undo the last paint change (${UNDO_KEY})`;
-$('redoBtn').title = `Redo the change you undid (${IS_MAC ? '⇧⌘Z' : 'Ctrl+Y or Ctrl+Shift+Z'})`;
+$('undoBtn').title = `Undo (${UNDO_KEY})`;
+$('redoBtn').title = `Redo (${IS_MAC ? '⇧⌘Z' : 'Ctrl+Y'})`;
 $('clearBtn').addEventListener('click', clearPaint);
+$('tabs').addEventListener('click', e => {
+  const close = e.target.closest('[data-close]');
+  if (close) { closeDoc(docs.find(d => d.id === close.dataset.close)); return; }
+  const tab = e.target.closest('[data-doc]');
+  if (tab) activate(docs.find(d => d.id === tab.dataset.doc));
+});
+$('tabs').addEventListener('auxclick', e => {
+  const tab = e.target.closest('[data-doc]');
+  if (tab && e.button === 1) closeDoc(docs.find(d => d.id === tab.dataset.doc));
+});
+$('tabs').addEventListener('keydown', e => {
+  const tab = e.target.closest('[data-doc]');
+  if (tab && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activate(docs.find(d => d.id === tab.dataset.doc)); }
+});
+$('tabNew').addEventListener('click', () => openTab(newDoc()));
+$('sampleBtn').addEventListener('click', loadSample);
 $('frameBtn').addEventListener('click', frameCamera);
 $('exportBtn').addEventListener('click', exportModel);
 $('fileInput').addEventListener('change', e => { openFiles(e.target.files); e.target.value = ''; });
@@ -2411,15 +2699,20 @@ window.addEventListener('keydown', e => {
   saveSettings();
 });
 
-window.__polyBudget = { openFiles, setMaterialTexture, state, settings, exportModel, buildExport, engine, pick, camera, controls, requestRender, rects, viewport, undo, redo };
+window.__polyBudget = {
+  openFiles, setMaterialTexture, settings, exportModel, buildExport, engine, pick, camera, controls, requestRender, rects, viewport, undo, redo,
+  docs, activate, openTab, closeDoc, newDoc,
+  get state() { return state; }, get doc() { return doc; },
+};
 
 // ---------- boot ----------
 applyTheme();
 syncControls();
 engine.start();
 renderer.setSize(viewport.clientWidth, viewport.clientHeight, false);
-// The last session's model when there is one, otherwise the sample.
-restoreSession()
+renderTabs();
+updateHeader();
+// The last visit's tabs when there are any, otherwise the sample.
+restoreTabs()
   .catch(err => { console.error(err); return false; })
-  .then(restored => restored || prepareModel(samplePawn(), { name: 'SamplePawn.fbx', size: 0, unitScale: 100, kind: 'sample', files: new Map(), blobToName: new Map(), missing: null, sample: true }))
-  .catch(err => { console.error(err); showError(`Couldn't build the sample: ${err.message || err}`); });
+  .then(restored => restored || state.welded || loadSample());
