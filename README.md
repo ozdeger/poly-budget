@@ -22,3 +22,11 @@ A browser tool that brings heavy 3D models down to a triangle budget without los
 - `src/index.html`: markup and styles.
 
 Libraries, loaded from jsDelivr: three.js, meshoptimizer and three-mesh-bvh.
+
+## Develop
+
+- `npm install` installs the packages the tests use.
+- `npm run serve` previews the built page at http://127.0.0.1:8731.
+- `npm test` runs the tests on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry and new UVs.
+- To also run a test on a real model, pass its path: `node test/test_unwrap.js path/to/model.fbx`. The same works for test_core.js and test_symmetry.js.
+- `testdata/` and `local/` are ignored by git, for your own models and helper scripts.

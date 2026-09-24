@@ -1,0 +1,15 @@
+{
+  "name": "poly-budget",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "serve": "node serve.mjs",
+    "test": "node test/test_core.js && node test/test_symmetry.js && node test/test_unwrap.js"
+  },
+  "devDependencies": {
+    "assimpjs": "0.0.10",
+    "meshoptimizer": "1.2.0",
+    "three": "0.186.0"
+  }
+}
