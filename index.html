@@ -936,13 +936,17 @@ function concatIndex(a, b) {
 }
 
 // Region-aware reduction. labels: Int8Array per vertex (LABEL values).
+// st.seam (under symmetry): vertices on the mirror plane. They are the cut half's border but not a real one, so they stay
+// free to simplify along the plane; LockBorder then becomes explicit locks on the real open borders in st.border.
 function reduce(S, mesh, packed, labels, st) {
   const t0 = Date.now();
   const V = mesh.vertexCount;
   const Torig = mesh.index.length / 3;
   const target = Math.max(1, Math.min(Torig, Math.round(st.targetTris)));
   const g = target / Torig;
-  const flags = simplifierFlags(st);
+  const seam = st.seam || null;
+  const flags = simplifierFlags(st).filter(f => !(seam && f === 'LockBorder'));
+  const borderLock = seam && st.lockBorder && st.border ? st.border : null;
   const maxError = st.maxError > 0 ? st.maxError : 1;
   const positions = mesh.positions.slice();
   const attrs = packed.attrs.slice();
@@ -970,14 +974,25 @@ function reduce(S, mesh, packed, labels, st) {
       else { rest[ri++] = a; rest[ri++] = b; rest[ri++] = c; }
     }
     const want = Math.max(3, Math.floor((sub.length / 3) * g * LESS_MULT[lvl]) * 3);
-    const [r] = S.simplify(sub, positions, 3, Math.min(sub.length, want), 1, ['LockBorder', ...flags.filter(f => f.startsWith('Regularize'))]);
+    const regularize = flags.filter(f => f.startsWith('Regularize'));
+    let r;
+    if (seam) {
+      // Lock only the vertices the rest of the mesh shares with the region, so the region's stretch of the seam can simplify.
+      const shared = new Uint8Array(V);
+      for (let k = 0; k < rest.length; k++) shared[rest[k]] = 1;
+      if (borderLock) for (let v = 0; v < V; v++) if (borderLock[v]) shared[v] = 1;
+      [r] = S.simplifyWithAttributes(sub, positions, 3, attrs, stride, weights.map(() => 0), shared, Math.min(sub.length, want), 1, regularize);
+    } else {
+      [r] = S.simplify(sub, positions, 3, Math.min(sub.length, want), 1, ['LockBorder', ...regularize]);
+    }
     regionTris[lvl] = r.length / 3;
     index = concatIndex(rest, r);
   }
 
   const lock = new Uint8Array(V);
-  let keepCount = 0;
+  let keepCount = 0, borderLocked = false;
   if (st.lockMask) for (let i = 0; i < V; i++) if (st.lockMask[i]) lock[i] = 1;
+  if (borderLock) for (let i = 0; i < V; i++) if (borderLock[i]) { lock[i] = 1; borderLocked = true; }
   if (labels) {
     for (let i = 0; i < V; i++) {
       if (labels[i] === LABEL.KEEP) { lock[i] = 1; keepCount++; }
@@ -991,7 +1006,7 @@ function reduce(S, mesh, packed, labels, st) {
     for (let k = 0; k < r.length; k++) if (labels[r[k]] === lvl) lock[r[k]] = 1;
   }
 
-  const anyLock = (labels && present.size > 0) || !!st.lockMask;
+  const anyLock = (labels && present.size > 0) || !!st.lockMask || borderLocked;
   const targetIdx = Math.min(index.length, target * 3);
   let out, error;
   if (st.sloppy) {
@@ -2362,6 +2377,25 @@ function checkSymmetry(res, plane) {
   return { paired, total: V, maxError: worst / b.diag };
 }
 
+// Vertices on the mesh's open borders, compared by position so UV and normal splits don't count, minus the excluded ones.
+function openBorderVertices(mesh, exclude) {
+  const P = mesh.positions, V = mesh.vertexCount, idx = mesh.index;
+  const bits = new Int32Array(P.buffer, P.byteOffset, V * 3);
+  const pg = groupBy(V, 3, (i, o) => { o[0] = bits[i * 3]; o[1] = bits[i * 3 + 1]; o[2] = bits[i * 3 + 2]; });
+  const pid = pg.group, NP = pg.count, count = new Map();
+  for (let t = 0; t < idx.length; t += 3) for (let k = 0; k < 3; k++) {
+    const a = pid[idx[t + k]], b = pid[idx[t + ((k + 1) % 3)]];
+    if (a === b) continue;
+    const key = a < b ? a * NP + b : b * NP + a;
+    count.set(key, (count.get(key) || 0) + 1);
+  }
+  const onBorder = new Uint8Array(NP);
+  for (const [key, c] of count) if (c === 1) { onBorder[Math.floor(key / NP)] = 1; onBorder[key % NP] = 1; }
+  const out = new Uint8Array(V);
+  for (let v = 0; v < V; v++) if (onBorder[pid[v]] && !(exclude && exclude[v])) out[v] = 1;
+  return out;
+}
+
 function halfFor(ctx, plane) {
   const key = `${plane.axis}|${plane.offset}|${plane.keepPositive}`;
   if (!ctx.half || ctx.half.key !== key) {
@@ -2400,7 +2434,8 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
     for (let v = 0; v < halfLabels.length; v++) halfLabels[v] = labels[H.origOf[v]];
   }
   const halfTarget = Math.max(2, Math.round(st.targetTris / 2));
-  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, lockMask: st.sloppy ? H.onPlane : null });
+  if (st.lockBorder && !H.border) H.border = openBorderVertices(H.mesh, H.onPlane);
+  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, lockMask: st.sloppy ? H.onPlane : null, seam: H.onPlane, border: st.lockBorder ? H.border : null });
   const axis = sym.axis, off32 = Math.fround(sym.offset);
   for (let v = 0; v < H.onPlane.length; v++) if (H.onPlane[v]) red.positions[v * 3 + axis] = off32;
   const fin = finalize(H.mesh, red, fopt);
@@ -2870,13 +2905,17 @@ function concatIndex(a, b) {
 }
 
 // Region-aware reduction. labels: Int8Array per vertex (LABEL values).
+// st.seam (under symmetry): vertices on the mirror plane. They are the cut half's border but not a real one, so they stay
+// free to simplify along the plane; LockBorder then becomes explicit locks on the real open borders in st.border.
 function reduce(S, mesh, packed, labels, st) {
   const t0 = Date.now();
   const V = mesh.vertexCount;
   const Torig = mesh.index.length / 3;
   const target = Math.max(1, Math.min(Torig, Math.round(st.targetTris)));
   const g = target / Torig;
-  const flags = simplifierFlags(st);
+  const seam = st.seam || null;
+  const flags = simplifierFlags(st).filter(f => !(seam && f === 'LockBorder'));
+  const borderLock = seam && st.lockBorder && st.border ? st.border : null;
   const maxError = st.maxError > 0 ? st.maxError : 1;
   const positions = mesh.positions.slice();
   const attrs = packed.attrs.slice();
@@ -2904,14 +2943,25 @@ function reduce(S, mesh, packed, labels, st) {
       else { rest[ri++] = a; rest[ri++] = b; rest[ri++] = c; }
     }
     const want = Math.max(3, Math.floor((sub.length / 3) * g * LESS_MULT[lvl]) * 3);
-    const [r] = S.simplify(sub, positions, 3, Math.min(sub.length, want), 1, ['LockBorder', ...flags.filter(f => f.startsWith('Regularize'))]);
+    const regularize = flags.filter(f => f.startsWith('Regularize'));
+    let r;
+    if (seam) {
+      // Lock only the vertices the rest of the mesh shares with the region, so the region's stretch of the seam can simplify.
+      const shared = new Uint8Array(V);
+      for (let k = 0; k < rest.length; k++) shared[rest[k]] = 1;
+      if (borderLock) for (let v = 0; v < V; v++) if (borderLock[v]) shared[v] = 1;
+      [r] = S.simplifyWithAttributes(sub, positions, 3, attrs, stride, weights.map(() => 0), shared, Math.min(sub.length, want), 1, regularize);
+    } else {
+      [r] = S.simplify(sub, positions, 3, Math.min(sub.length, want), 1, ['LockBorder', ...regularize]);
+    }
     regionTris[lvl] = r.length / 3;
     index = concatIndex(rest, r);
   }
 
   const lock = new Uint8Array(V);
-  let keepCount = 0;
+  let keepCount = 0, borderLocked = false;
   if (st.lockMask) for (let i = 0; i < V; i++) if (st.lockMask[i]) lock[i] = 1;
+  if (borderLock) for (let i = 0; i < V; i++) if (borderLock[i]) { lock[i] = 1; borderLocked = true; }
   if (labels) {
     for (let i = 0; i < V; i++) {
       if (labels[i] === LABEL.KEEP) { lock[i] = 1; keepCount++; }
@@ -2925,7 +2975,7 @@ function reduce(S, mesh, packed, labels, st) {
     for (let k = 0; k < r.length; k++) if (labels[r[k]] === lvl) lock[r[k]] = 1;
   }
 
-  const anyLock = (labels && present.size > 0) || !!st.lockMask;
+  const anyLock = (labels && present.size > 0) || !!st.lockMask || borderLocked;
   const targetIdx = Math.min(index.length, target * 3);
   let out, error;
   if (st.sloppy) {
@@ -4296,6 +4346,25 @@ function checkSymmetry(res, plane) {
   return { paired, total: V, maxError: worst / b.diag };
 }
 
+// Vertices on the mesh's open borders, compared by position so UV and normal splits don't count, minus the excluded ones.
+function openBorderVertices(mesh, exclude) {
+  const P = mesh.positions, V = mesh.vertexCount, idx = mesh.index;
+  const bits = new Int32Array(P.buffer, P.byteOffset, V * 3);
+  const pg = groupBy(V, 3, (i, o) => { o[0] = bits[i * 3]; o[1] = bits[i * 3 + 1]; o[2] = bits[i * 3 + 2]; });
+  const pid = pg.group, NP = pg.count, count = new Map();
+  for (let t = 0; t < idx.length; t += 3) for (let k = 0; k < 3; k++) {
+    const a = pid[idx[t + k]], b = pid[idx[t + ((k + 1) % 3)]];
+    if (a === b) continue;
+    const key = a < b ? a * NP + b : b * NP + a;
+    count.set(key, (count.get(key) || 0) + 1);
+  }
+  const onBorder = new Uint8Array(NP);
+  for (const [key, c] of count) if (c === 1) { onBorder[Math.floor(key / NP)] = 1; onBorder[key % NP] = 1; }
+  const out = new Uint8Array(V);
+  for (let v = 0; v < V; v++) if (onBorder[pid[v]] && !(exclude && exclude[v])) out[v] = 1;
+  return out;
+}
+
 function halfFor(ctx, plane) {
   const key = `${plane.axis}|${plane.offset}|${plane.keepPositive}`;
   if (!ctx.half || ctx.half.key !== key) {
@@ -4334,7 +4403,8 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
     for (let v = 0; v < halfLabels.length; v++) halfLabels[v] = labels[H.origOf[v]];
   }
   const halfTarget = Math.max(2, Math.round(st.targetTris / 2));
-  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, lockMask: st.sloppy ? H.onPlane : null });
+  if (st.lockBorder && !H.border) H.border = openBorderVertices(H.mesh, H.onPlane);
+  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, lockMask: st.sloppy ? H.onPlane : null, seam: H.onPlane, border: st.lockBorder ? H.border : null });
   const axis = sym.axis, off32 = Math.fround(sym.offset);
   for (let v = 0; v < H.onPlane.length; v++) if (H.onPlane[v]) red.positions[v * 3 + axis] = off32;
   const fin = finalize(H.mesh, red, fopt);

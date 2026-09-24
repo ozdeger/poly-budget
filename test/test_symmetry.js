@@ -1,5 +1,5 @@
 // Mirror symmetry: every vertex of a mirrored result has a partner. `node test/test_symmetry.js model.fbx [axis]` adds a real model.
-import { core, S, settings, check, timed, bumpySphere, sceneOf, context, loadFBX, openEdges } from './helpers.js';
+import { THREE, core, S, settings, check, timed, bumpySphere, sceneOf, context, loadFBX, openEdges } from './helpers.js';
 
 function run(label, src, target, sym, paint = null) {
   const w = core.smartWeld(src, { keepUV: true, hardAngle: 30 });
@@ -27,6 +27,31 @@ run('symmetric sphere, keep −X, painted', sphere, 6000, { ...x, keepPositive: 
   return L;
 });
 run('sphere without symmetry', sphere, 6000, null);
+
+// The mirror seam is the cut half's border but not a real one: Lock open borders and Less paint must leave it free,
+// while a real open border (the rim of a bowl) stays locked when asked.
+{
+  const bowl = core.smartWeld(sceneOf(new THREE.SphereGeometry(1, 128, 64, 0, Math.PI * 2, 0, Math.PI * 0.75), 'Bowl'), { keepUV: true, hardAngle: 30 });
+  const rimY = Math.cos(Math.PI * 0.75);
+  const count = res => {
+    let rim = 0, seam = 0;
+    for (let v = 0; v < res.positions.length / 3; v++) {
+      const px = res.positions[v * 3], py = res.positions[v * 3 + 1];
+      if (px === 0) seam++; else if (Math.abs(py - rimY) < 1e-4) rim++;
+    }
+    return { rim, seam };
+  };
+  const source = count(bowl);
+  for (const lockBorder of [false, true]) {
+    const paint = new Int8Array(bowl.vertexCount);
+    for (let v = 0; v < bowl.vertexCount; v++) if (bowl.positions[v * 3 + 1] > 0.5) paint[v] = core.LABEL.LESS3;
+    const { result } = core.runReduction(S, context(bowl), paint, { ...settings, lockBorder, targetTris: 2000, symmetry: x }, { normals: 'original' });
+    const c = count(result);
+    console.log(`     bowl, lock borders ${lockBorder ? 'on' : 'off'}: rim ${source.rim} -> ${c.rim}, seam ${source.seam} -> ${c.seam}`);
+    check(c.seam < source.seam * 0.8, `bowl, lock borders ${lockBorder ? 'on' : 'off'}: the mirror seam simplifies`);
+    check(lockBorder ? c.rim >= source.rim - 4 : c.rim < source.rim * 0.5, `bowl, lock borders ${lockBorder ? 'on' : 'off'}: the real rim is ${lockBorder ? 'kept' : 'reduced'}`);
+  }
+}
 
 const modelPath = process.argv[2];
 if (modelPath) {
