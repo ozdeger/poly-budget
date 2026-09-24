@@ -1,0 +1,607 @@
+<title>Poly Budget</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #141312;
+  --panel: #1b1a18;
+  --raise: #25231f;
+  --line: #302d29;
+  --line-strong: #454039;
+  --text: #ece7df;
+  --muted: #a39c91;
+  --faint: #716b63;
+  --accent: #f0b23c;
+  --accent-ink: #1d1505;
+  --accent-soft: rgba(240, 178, 60, 0.15);
+  --more: #3dd39a;
+  --less: #f2719e;
+  --keep: #6fa8ff;
+  --warn: #ff9d57;
+  --crit: #ff6b6b;
+  --ok: #3dd39a;
+  --viewport: #0f0e0d;
+  --clay: #cabda9;
+  --wire: #f0b23c;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-label: "IBM Plex Sans Condensed", "IBM Plex Sans", "Arial Narrow", system-ui, sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 6px;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #e7e3dc;
+    --panel: #f5f2ed;
+    --raise: #fffdf9;
+    --line: #d7d1c7;
+    --line-strong: #bdb5a8;
+    --text: #1d1b18;
+    --muted: #5f594f;
+    --faint: #8b8479;
+    --accent: #a8680f;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(168, 104, 15, 0.12);
+    --more: #0f9a68;
+    --less: #cc3d77;
+    --keep: #2c67d4;
+    --warn: #b5530c;
+    --crit: #bf332e;
+    --ok: #0f9a68;
+    --viewport: #d8d2c8;
+    --clay: #b4a58e;
+    --wire: #8a5409;
+  }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #e7e3dc;
+  --panel: #f5f2ed;
+  --raise: #fffdf9;
+  --line: #d7d1c7;
+  --line-strong: #bdb5a8;
+  --text: #1d1b18;
+  --muted: #5f594f;
+  --faint: #8b8479;
+  --accent: #a8680f;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(168, 104, 15, 0.12);
+  --more: #0f9a68;
+  --less: #cc3d77;
+  --keep: #2c67d4;
+  --warn: #b5530c;
+  --crit: #bf332e;
+  --ok: #0f9a68;
+  --viewport: #d8d2c8;
+  --clay: #b4a58e;
+  --wire: #8a5409;
+}
+:root[data-theme="dark"] { color-scheme: dark; }
+
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 var(--font-ui);
+  overflow: hidden;
+}
+* { box-sizing: border-box; }
+button, input, select { font: inherit; color: inherit; }
+kbd {
+  font: 500 10px/1 var(--font-num);
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 4px;
+  margin-left: auto;
+}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "top top" "side stage";
+}
+
+.top {
+  grid-area: top;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  min-width: 0;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font: 600 15px/1 var(--font-label);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.brand .mark {
+  width: 16px;
+  height: 14px;
+  background: var(--accent);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.file { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.file-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-meta { font: 11px/1.3 var(--font-num); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--raise);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { background: transparent; }
+.btn.wide { width: 100%; min-height: 36px; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:disabled:hover { border-color: var(--line-strong); }
+.btn kbd { margin-left: 2px; }
+
+.side {
+  grid-area: side;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  padding-block: 4px 24px;
+}
+.sec { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.sec:last-child { border-bottom: 0; }
+.sec h2 {
+  margin: 0;
+  font: 600 11px/1.2 var(--font-label);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+details.sec > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+details.sec > summary::-webkit-details-marker { display: none; }
+details.sec > summary::after { content: "+"; margin-left: auto; color: var(--faint); font: 500 14px/1 var(--font-num); }
+details.sec[open] > summary::after { content: "−"; }
+details.sec:not([open]) { gap: 0; }
+
+.readout { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.big { font: 500 24px/1.1 var(--font-num); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.of { color: var(--muted); font: 12px/1.3 var(--font-num); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field > span { color: var(--muted); font-size: 12px; display: flex; gap: 8px; }
+.field output { margin-left: auto; color: var(--text); font: 12px/1.3 var(--font-num); font-variant-numeric: tabular-nums; }
+.field input[type="number"], .field input[type="text"], .field select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--raise);
+  min-width: 0;
+}
+.field input[type="number"] { width: 110px; font-family: var(--font-num); }
+.row .field { flex: 0 0 auto; }
+input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
+.check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; line-height: 1.35; }
+.check input { margin: 2px 0 0; accent-color: var(--accent); flex: none; }
+.check small { display: block; color: var(--faint); font-size: 11px; }
+.check.disabled { opacity: 0.45; cursor: default; }
+.note { margin: 0; color: var(--muted); font-size: 12px; max-width: 60ch; }
+
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; background: var(--raise); flex-wrap: wrap; }
+.seg button {
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  padding: 5px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.seg button kbd { margin-left: 2px; }
+
+.tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--raise);
+  cursor: pointer;
+  text-align: left;
+}
+.tool:hover { border-color: var(--line-strong); }
+.tool[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.dot.orbit { border: 2px solid var(--muted); }
+.dot.more { background: var(--more); }
+.dot.less { background: var(--less); }
+.dot.keep { background: var(--keep); }
+.dot.erase { background: repeating-linear-gradient(45deg, var(--faint) 0 2px, transparent 2px 4px); border: 1px solid var(--faint); }
+
+.symbody { display: flex; flex-direction: column; gap: 10px; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap input[type="range"] { flex: 1; min-width: 0; }
+#symOffNum { width: 96px; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--raise); font-family: var(--font-num); font-size: 12px; }
+#symFit.warn, #uvNote.warn { color: var(--warn); }
+.uvopts { display: flex; flex-direction: column; gap: 10px; }
+.sym-ok b { color: var(--ok); }
+.sym-ok.bad b { color: var(--crit); }
+.btn.small { min-height: 24px; padding: 0 8px; font-size: 12px; }
+.texpanel { display: flex; flex-direction: column; gap: 6px; }
+.texhead { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.texlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.texlist li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; font-size: 12px; }
+.texmat { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.texinfo { grid-column: 1; display: flex; flex-direction: column; color: var(--muted); font: 11px/1.4 var(--font-num); overflow-wrap: anywhere; }
+.texlist li .btn { grid-column: 2; grid-row: 1 / span 2; }
+.texmissing { color: var(--warn); }
+.texnone { color: var(--faint); }
+.legend { list-style: none; margin: 0; padding: 0; display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font: 11px/1.3 var(--font-num); }
+.legend li { display: flex; align-items: center; gap: 6px; }
+
+.stats { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-size: 12px; }
+.stats dt { color: var(--muted); }
+.stats dd { margin: 0; text-align: right; font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+.chips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.chips li {
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
+.chips li::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--faint); transform: translateY(1px); }
+.chips li.ok::before { background: var(--ok); }
+.chips li.warn::before { background: var(--warn); }
+.chips li.crit::before { background: var(--crit); }
+
+.stage { grid-area: stage; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+.stagebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.stagebar .spacer { flex: 1; }
+.viewport { position: relative; min-height: 0; background: var(--viewport); overflow: hidden; }
+.viewport canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.vlabel {
+  position: absolute;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border: 1px solid var(--line);
+  font: 11px/1.4 var(--font-num);
+  color: var(--muted);
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vlabel b { font: 600 11px/1 var(--font-label); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); margin-right: 6px; }
+.vlabel .busy-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 6px; animation: pulse 0.9s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+.divider { position: absolute; background: var(--line-strong); pointer-events: none; }
+.hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.status {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  max-width: min(420px, calc(100% - 24px));
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  pointer-events: none;
+}
+.status:empty { display: none; }
+.status.error { border-color: var(--crit); color: var(--text); pointer-events: auto; }
+.drop {
+  position: absolute;
+  inset: 12px;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--viewport) 70%, transparent);
+  font: 600 15px/1.3 var(--font-label);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.budget {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  font: 12px/1.3 var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+.bstats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); }
+.bstats b { color: var(--text); font-weight: 500; }
+.bar { position: relative; height: 10px; border-radius: 3px; background: var(--raise); border: 1px solid var(--line); display: flex; overflow: visible; }
+.bar i { display: block; height: 100%; }
+.bar i:first-child { border-radius: 2px 0 0 2px; }
+.seg-keep { background: var(--keep); }
+.seg-more { background: var(--more); }
+.seg-less { background: var(--less); }
+.seg-rest { background: var(--clay); }
+.bar .marker { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--text); }
+.bnote { color: var(--muted); text-align: right; font-family: var(--font-ui); max-width: 44ch; }
+.bnote.warn { color: var(--warn); }
+
+@media (max-width: 860px) {
+  body { overflow: auto; }
+  .app {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    grid-template-areas: "top" "stage" "side";
+  }
+  .viewport { height: 58vh; min-height: 320px; }
+  .side { border-right: 0; overflow: visible; }
+  .budget { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .bnote { text-align: left; }
+  .top { flex-wrap: wrap; }
+  .file { order: 3; flex-basis: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vlabel .busy-dot { animation: none; }
+}
+</style>
+
+<div class="app" id="app">
+  <header class="top">
+    <div class="brand"><span class="mark" aria-hidden="true"></span><span>Poly Budget</span></div>
+    <div class="file">
+      <span class="file-name" id="fileName">Sample pawn</span>
+      <span class="file-meta" id="fileMeta">Procedural example — open your own model to replace it</span>
+    </div>
+    <div class="top-actions">
+      <label class="btn primary" for="fileInput">Open model…</label>
+      <input type="file" id="fileInput" multiple hidden accept=".fbx,.obj,.mtl,.glb,.gltf,.bin,.stl,.ply,.png,.jpg,.jpeg,.webp,.tga,.bmp">
+    </div>
+  </header>
+
+  <aside class="side" aria-label="Settings">
+    <section class="sec" aria-labelledby="hModel">
+      <h2 id="hModel">Model</h2>
+      <dl class="stats" id="modelStats"></dl>
+      <div class="texpanel">
+        <div class="texhead"><span>Textures</span><button type="button" class="btn small" id="addTexBtn">Add textures…</button></div>
+        <ul class="texlist" id="texList"></ul>
+        <input type="file" id="texInput" multiple hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
+        <input type="file" id="texOneInput" hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
+      </div>
+      <ul class="chips" id="diag"></ul>
+    </section>
+
+    <section class="sec" aria-labelledby="hBudget">
+      <h2 id="hBudget">Triangle budget</h2>
+      <div class="readout"><output class="big" id="targetOut">—</output><span class="of" id="targetOf"></span></div>
+      <input type="range" id="targetSlider" min="0" max="1000" step="1" aria-label="Triangle budget">
+      <div class="row">
+        <label class="field"><span>Triangles</span><input type="number" id="targetNum" min="1" step="1"></label>
+        <div class="seg" role="group" aria-label="Quick budget" id="quickSeg">
+          <button type="button" data-pct="50">50%</button><button type="button" data-pct="25">25%</button><button type="button" data-pct="10">10%</button><button type="button" data-pct="5">5%</button>
+        </div>
+      </div>
+      <label class="field"><span>Stop early at error</span>
+        <select id="maxErr">
+          <option value="0">No limit — always reach the budget</option>
+          <option value="0.001">0.1% of model size</option>
+          <option value="0.0025">0.25% of model size</option>
+          <option value="0.005">0.5% of model size</option>
+          <option value="0.01">1% of model size</option>
+          <option value="0.02">2% of model size</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="sec" aria-labelledby="hSym">
+      <h2 id="hSym">Symmetry</h2>
+      <label class="check"><input type="checkbox" id="symOn"><span>Mirror across a plane<small>Reduces one half and mirrors it, so every vertex has an exact partner on the other side</small></span></label>
+      <div class="symbody" id="symBody">
+        <div class="row">
+          <div class="seg" role="group" aria-label="Mirror plane axis" id="symAxisSeg">
+            <button type="button" data-axis="0">X</button><button type="button" data-axis="1">Y</button><button type="button" data-axis="2">Z</button>
+          </div>
+          <div class="seg" role="group" aria-label="Half to keep" id="symSideSeg">
+            <button type="button" data-side="-">Keep −X</button><button type="button" data-side="+">Keep +X</button>
+          </div>
+          <button type="button" class="btn" id="symDetect">Detect plane</button>
+        </div>
+        <div class="field">
+          <span>Plane position</span>
+          <div class="row nowrap"><input type="range" id="symOffset" min="0" max="1000" step="1" aria-label="Plane position"><input type="number" id="symOffNum" step="any" aria-label="Plane position value"></div>
+        </div>
+        <p class="note" id="symFit"></p>
+        <label class="check"><input type="checkbox" id="tintMirror"><span>Tint the mirrored half<small>Both views show the mirrored model; the tint marks the generated copy. Paint on either half applies to both.</small></span></label>
+      </div>
+    </section>
+
+    <section class="sec" aria-labelledby="hUV">
+      <h2 id="hUV">Texture mapping</h2>
+      <div class="seg" role="group" aria-label="Texture mapping" id="uvModeSeg">
+        <button type="button" data-uvmode="auto">Auto</button><button type="button" data-uvmode="keep">Original UVs</button><button type="button" data-uvmode="new">New UVs</button>
+      </div>
+      <p class="note" id="uvNote"></p>
+      <label class="field"><span>Baked texture size</span>
+        <select id="bakeSize">
+          <option value="512">512 px</option>
+          <option value="1024">1024 px</option>
+          <option value="2048">2048 px</option>
+        </select>
+      </label>
+      <div class="uvopts" id="keepUVOpts">
+        <label class="check"><input type="checkbox" id="permissive"><span>Allow collapsing across seams<small>With the original UVs: reaches lower counts, but the texture can smear at seams</small></span></label>
+        <label class="field"><span>Protect texture <output id="uvwOut"></output></span><input type="range" id="uvWeight" min="0" max="3" step="0.05"></label>
+      </div>
+    </section>
+
+    <section class="sec" aria-labelledby="hPaint">
+      <h2 id="hPaint">Detail painting</h2>
+      <div class="tools" role="group" aria-label="Tool">
+        <button type="button" class="tool" data-tool="orbit" id="toolOrbit"><span class="dot orbit"></span>Orbit<kbd>O</kbd></button>
+        <button type="button" class="tool" data-tool="more" id="toolMore"><span class="dot more"></span>More detail<kbd>M</kbd></button>
+        <button type="button" class="tool" data-tool="less" id="toolLess"><span class="dot less"></span>Less detail<kbd>L</kbd></button>
+        <button type="button" class="tool" data-tool="keep" id="toolKeep"><span class="dot keep"></span>Keep original<kbd>K</kbd></button>
+        <button type="button" class="tool" data-tool="erase" id="toolErase"><span class="dot erase"></span>Erase<kbd>E</kbd></button>
+      </div>
+      <div class="row">
+        <div class="seg" role="group" aria-label="Brush mode" id="modeSeg">
+          <button type="button" data-mode="brush">Brush</button><button type="button" data-mode="fill">Fill part<kbd>F</kbd></button>
+        </div>
+        <div class="seg" role="group" aria-label="Strength" id="strengthSeg">
+          <button type="button" data-strength="1">×2</button><button type="button" data-strength="2">×4</button><button type="button" data-strength="3">×8</button>
+        </div>
+      </div>
+      <label class="field"><span>Brush size <output id="brushOut"></output></span><input type="range" id="brushSize" min="0.5" max="30" step="0.5"></label>
+      <div class="row">
+        <button type="button" class="btn" id="undoBtn" disabled>Undo<kbd id="undoKey">⌘Z</kbd></button>
+        <button type="button" class="btn" id="redoBtn" disabled>Redo<kbd id="redoKey">⇧⌘Z</kbd></button>
+        <button type="button" class="btn" id="clearBtn">Clear paint</button>
+        <label class="check"><input type="checkbox" id="showPaint">Show paint</label>
+      </div>
+      <ul class="legend" id="legend"></ul>
+    </section>
+
+    <details class="sec" id="secShape" open>
+      <summary><h2>Shape &amp; shading</h2></summary>
+      <div class="field"><span>Normals</span>
+        <div class="seg" role="group" aria-label="Normals" id="normalsSeg">
+          <button type="button" data-normals="original">Original</button><button type="button" data-normals="smooth">Smooth</button><button type="button" data-normals="crease">Creased</button>
+        </div>
+      </div>
+      <label class="field" id="creaseField"><span>Crease angle <output id="creaseOut"></output></span><input type="range" id="creaseAngle" min="10" max="90" step="1"></label>
+      <label class="check"><input type="checkbox" id="optPos"><span>Optimize vertex positions<small>Moves kept vertices to hold the shape; less shrinking and melting</small></span></label>
+      <label class="check"><input type="checkbox" id="lockBorder"><span>Lock open borders</span></label>
+      <label class="check"><input type="checkbox" id="prune"><span>Remove tiny floating parts</span></label>
+      <label class="check"><input type="checkbox" id="sloppy"><span>Fast mode<small>Ignores topology — only for models seen from far away</small></span></label>
+      <div class="field"><span>Triangle shape</span>
+        <div class="seg" role="group" aria-label="Triangle shape" id="regSeg">
+          <button type="button" data-reg="0">Any</button><button type="button" data-reg="1">Even</button><button type="button" data-reg="2">Very even</button>
+        </div>
+      </div>
+      <label class="field"><span>Protect shading <output id="nwOut"></output></span><input type="range" id="normalWeight" min="0" max="2" step="0.05"></label>
+    </details>
+
+    <details class="sec" id="secWeld">
+      <summary><h2>Welding</h2></summary>
+      <p class="note">Files often store a separate copy of each vertex per triangle corner. Decimators can't collapse those, so they're merged first. Normals further apart than the hard edge angle stay split.</p>
+      <label class="field"><span>Hard edge angle <output id="hardOut"></output></span><input type="range" id="hardAngle" min="0" max="90" step="1"></label>
+      <label class="field"><span>Merge distance <output id="tolOut"></output></span><input type="range" id="weldTol" min="0" max="100" step="1"></label>
+    </details>
+
+    <section class="sec" aria-labelledby="hExport">
+      <h2 id="hExport">Export</h2>
+      <div class="field"><span>Format</span>
+        <div class="seg" role="group" aria-label="Format" id="formatSeg">
+          <button type="button" data-format="fbx">FBX</button><button type="button" data-format="glb">GLB</button><button type="button" data-format="obj">OBJ</button>
+        </div>
+      </div>
+      <label class="field"><span>Units</span>
+        <select id="units">
+          <option value="auto">Same as source file</option>
+          <option value="m">Metres</option>
+          <option value="cm">Centimetres</option>
+        </select>
+      </label>
+      <button type="button" class="btn primary wide" id="exportBtn">Export .zip</button>
+      <p class="note" id="exportNote">The zip holds the model and the textures it uses.</p>
+    </section>
+  </aside>
+
+  <main class="stage">
+    <div class="stagebar">
+      <div class="seg" role="group" aria-label="View" id="viewSeg">
+        <button type="button" data-view="split">Side by side<kbd>1</kbd></button><button type="button" data-view="original">Original<kbd>2</kbd></button><button type="button" data-view="reduced">Reduced<kbd>3</kbd></button>
+      </div>
+      <div class="seg" role="group" aria-label="Shading" id="shadeSeg">
+        <button type="button" data-shade="textured">Textured</button><button type="button" data-shade="clay">Clay</button><button type="button" data-shade="facets">Facets</button>
+      </div>
+      <label class="check"><input type="checkbox" id="wire"><span>Wireframe</span></label>
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost" id="frameBtn">Frame model</button>
+    </div>
+    <div class="viewport" id="viewport">
+      <canvas id="gl" tabindex="0" aria-label="Model preview"></canvas>
+      <div class="divider" id="divider"></div>
+      <div class="vlabel" id="labelL"><b>Original</b><span id="labelLText"></span></div>
+      <div class="vlabel" id="labelR"><b>Reduced</b><span id="labelRText"></span></div>
+      <div class="hint" id="hint"></div>
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+      <div class="drop" id="drop" hidden><div>Drop a model with its textures, or textures for the open model</div></div>
+    </div>
+    <footer class="budget">
+      <div class="bstats"><span><b id="resTris">—</b> tris</span><span><b id="resVerts">—</b> verts</span><span>deviation <b id="resErr">—</b></span><span class="sym-ok" id="resSym" hidden>mirror <b id="resSymText"></b></span><span><b id="resTime">—</b></span></div>
+      <div class="bar" id="bar" role="img" aria-label="Triangle budget by painted region">
+        <i class="seg-keep" id="bKeep"></i><i class="seg-more" id="bMore"></i><i class="seg-less" id="bLess"></i><i class="seg-rest" id="bRest"></i><b class="marker" id="bMarker"></b>
+      </div>
+      <div class="bnote" id="bNote"></div>
+    </footer>
+  </main>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.15/build/index.module.js"
+  }
+}
+</script>
+<script type="text/plain" id="worker-src">/*WORKER*/</script>
+<script type="module">/*MAIN*/</script>
