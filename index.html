@@ -540,7 +540,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
       <label class="check"><input type="checkbox" id="optPos"><span>Optimize vertex positions<small>Moves kept vertices to hold the shape; less shrinking and melting</small></span></label>
       <label class="check"><input type="checkbox" id="lockBorder"><span>Lock open borders</span></label>
       <label class="check"><input type="checkbox" id="prune"><span>Remove tiny floating parts</span></label>
-      <label class="check"><input type="checkbox" id="sloppy"><span>Fast mode<small>Ignores topology — only for models seen from far away</small></span></label>
       <div class="field"><span>Triangle shape</span>
         <div class="seg" role="group" aria-label="Triangle shape" id="regSeg">
           <button type="button" data-reg="0">Any</button><button type="button" data-reg="1">Even</button><button type="button" data-reg="2">Very even</button>
@@ -991,7 +990,6 @@ function reduce(S, mesh, packed, labels, st) {
 
   const lock = new Uint8Array(V);
   let keepCount = 0, borderLocked = false;
-  if (st.lockMask) for (let i = 0; i < V; i++) if (st.lockMask[i]) lock[i] = 1;
   if (borderLock) for (let i = 0; i < V; i++) if (borderLock[i]) { lock[i] = 1; borderLocked = true; }
   if (labels) {
     for (let i = 0; i < V; i++) {
@@ -1006,14 +1004,10 @@ function reduce(S, mesh, packed, labels, st) {
     for (let k = 0; k < r.length; k++) if (labels[r[k]] === lvl) lock[r[k]] = 1;
   }
 
-  const anyLock = (labels && present.size > 0) || !!st.lockMask || borderLocked;
+  const anyLock = (labels && present.size > 0) || borderLocked;
   const targetIdx = Math.min(index.length, target * 3);
   let out, error;
-  if (st.sloppy) {
-    const hard = new Uint8Array(V);
-    for (let i = 0; i < V; i++) hard[i] = lock[i] & 1;
-    [out, error] = S.simplifySloppy(index, positions, 3, anyLock ? hard : null, targetIdx, maxError);
-  } else if (st.optimizePositions) {
+  if (st.optimizePositions) {
     const work = index.slice();
     const [count, e] = S.simplifyWithUpdate(work, positions, 3, attrs, stride, weights, anyLock ? lock : null, targetIdx, maxError, flags);
     out = work.slice(0, count);
@@ -2435,7 +2429,7 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   }
   const halfTarget = Math.max(2, Math.round(st.targetTris / 2));
   if (st.lockBorder && !H.border) H.border = openBorderVertices(H.mesh, H.onPlane);
-  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, lockMask: st.sloppy ? H.onPlane : null, seam: H.onPlane, border: st.lockBorder ? H.border : null });
+  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, seam: H.onPlane, border: st.lockBorder ? H.border : null });
   const axis = sym.axis, off32 = Math.fround(sym.offset);
   for (let v = 0; v < H.onPlane.length; v++) if (H.onPlane[v]) red.positions[v * 3 + axis] = off32;
   const fin = finalize(H.mesh, red, fopt);
@@ -2511,7 +2505,7 @@ function runReduction(S, ctx, labels, st, fopt) {
   if (mode === 'new') return fresh();
   // Misplacement only grows as the budget drops, so once the original UVs failed at some budget, lower budgets
   // with the same settings skip straight to new UVs.
-  const sig = JSON.stringify([st.symmetry, st.permissive, st.regularize, st.lockBorder, st.prune, st.sloppy, st.optimizePositions, st.normalWeight, st.uvWeight, st.maxError, st.hardAngle, fopt]);
+  const sig = JSON.stringify([st.symmetry, st.permissive, st.regularize, st.lockBorder, st.prune, st.optimizePositions, st.normalWeight, st.uvWeight, st.maxError, st.hardAngle, fopt]);
   const failed = ctx.autoFail && ctx.autoFail.sig === sig ? ctx.autoFail : null;
   if (failed && st.targetTris <= failed.target) {
     const out = fresh();
@@ -2960,7 +2954,6 @@ function reduce(S, mesh, packed, labels, st) {
 
   const lock = new Uint8Array(V);
   let keepCount = 0, borderLocked = false;
-  if (st.lockMask) for (let i = 0; i < V; i++) if (st.lockMask[i]) lock[i] = 1;
   if (borderLock) for (let i = 0; i < V; i++) if (borderLock[i]) { lock[i] = 1; borderLocked = true; }
   if (labels) {
     for (let i = 0; i < V; i++) {
@@ -2975,14 +2968,10 @@ function reduce(S, mesh, packed, labels, st) {
     for (let k = 0; k < r.length; k++) if (labels[r[k]] === lvl) lock[r[k]] = 1;
   }
 
-  const anyLock = (labels && present.size > 0) || !!st.lockMask || borderLocked;
+  const anyLock = (labels && present.size > 0) || borderLocked;
   const targetIdx = Math.min(index.length, target * 3);
   let out, error;
-  if (st.sloppy) {
-    const hard = new Uint8Array(V);
-    for (let i = 0; i < V; i++) hard[i] = lock[i] & 1;
-    [out, error] = S.simplifySloppy(index, positions, 3, anyLock ? hard : null, targetIdx, maxError);
-  } else if (st.optimizePositions) {
+  if (st.optimizePositions) {
     const work = index.slice();
     const [count, e] = S.simplifyWithUpdate(work, positions, 3, attrs, stride, weights, anyLock ? lock : null, targetIdx, maxError, flags);
     out = work.slice(0, count);
@@ -4404,7 +4393,7 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   }
   const halfTarget = Math.max(2, Math.round(st.targetTris / 2));
   if (st.lockBorder && !H.border) H.border = openBorderVertices(H.mesh, H.onPlane);
-  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, lockMask: st.sloppy ? H.onPlane : null, seam: H.onPlane, border: st.lockBorder ? H.border : null });
+  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, seam: H.onPlane, border: st.lockBorder ? H.border : null });
   const axis = sym.axis, off32 = Math.fround(sym.offset);
   for (let v = 0; v < H.onPlane.length; v++) if (H.onPlane[v]) red.positions[v * 3 + axis] = off32;
   const fin = finalize(H.mesh, red, fopt);
@@ -4480,7 +4469,7 @@ function runReduction(S, ctx, labels, st, fopt) {
   if (mode === 'new') return fresh();
   // Misplacement only grows as the budget drops, so once the original UVs failed at some budget, lower budgets
   // with the same settings skip straight to new UVs.
-  const sig = JSON.stringify([st.symmetry, st.permissive, st.regularize, st.lockBorder, st.prune, st.sloppy, st.optimizePositions, st.normalWeight, st.uvWeight, st.maxError, st.hardAngle, fopt]);
+  const sig = JSON.stringify([st.symmetry, st.permissive, st.regularize, st.lockBorder, st.prune, st.optimizePositions, st.normalWeight, st.uvWeight, st.maxError, st.hardAngle, fopt]);
   const failed = ctx.autoFail && ctx.autoFail.sig === sig ? ctx.autoFail : null;
   if (failed && st.targetTris <= failed.target) {
     const out = fresh();
@@ -4605,13 +4594,17 @@ const MESHOPT_URL = 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_si
 const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
   targetPct: 10, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
-  optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false, sloppy: false,
+  optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true,
 };
 const settings = { ...DEFAULTS };
-try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch { /* storage unavailable */ }
+// Only settings the tool still has are read back, so options removed since they were saved drop out.
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+  for (const key of Object.keys(DEFAULTS)) if (key in saved) settings[key] = saved[key];
+} catch { /* storage unavailable */ }
 let saveTimer = 0;
 function saveSettings() {
   clearTimeout(saveTimer);
@@ -6332,7 +6325,7 @@ function reduceSettings(target) {
   return {
     targetTris: target ?? targetTris(), maxError: Number(settings.maxError), lockBorder: settings.lockBorder,
     permissive: settings.permissive, prune: settings.prune, regularize: settings.regularize, normalWeight: settings.normalWeight,
-    uvWeight: settings.uvWeight, sloppy: settings.sloppy, optimizePositions: settings.optimizePositions,
+    uvWeight: settings.uvWeight, optimizePositions: settings.optimizePositions,
     uvMode: settings.uvMode, deferUV: true, hardAngle: settings.hardAngle,
     symmetry: settings.symmetry && symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset, keepPositive: settings.symSide !== '-' } : null,
   };
@@ -6804,7 +6797,6 @@ function syncControls() {
   $('permissive').checked = settings.permissive;
   $('lockBorder').checked = settings.lockBorder;
   $('prune').checked = settings.prune;
-  $('sloppy').checked = settings.sloppy;
   $('creaseAngle').value = String(settings.creaseAngle);
   $('creaseOut').textContent = `${settings.creaseAngle}°`;
   $('creaseField').hidden = settings.normals !== 'crease';
@@ -6869,7 +6861,6 @@ bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
 bindCheck('permissive', 'permissive', () => scheduleReduce());
 bindCheck('lockBorder', 'lockBorder', () => scheduleReduce());
 bindCheck('prune', 'prune', () => scheduleReduce());
-bindCheck('sloppy', 'sloppy', () => scheduleReduce());
 bindCheck('tintMirror', 'tintMirror', applyDisplaySettings);
 bindCheck('showPlane', 'showPlane', updatePlaneHelper);
 $('symOn').addEventListener('change', async e => {

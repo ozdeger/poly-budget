@@ -373,7 +373,6 @@ export function reduce(S, mesh, packed, labels, st) {
 
   const lock = new Uint8Array(V);
   let keepCount = 0, borderLocked = false;
-  if (st.lockMask) for (let i = 0; i < V; i++) if (st.lockMask[i]) lock[i] = 1;
   if (borderLock) for (let i = 0; i < V; i++) if (borderLock[i]) { lock[i] = 1; borderLocked = true; }
   if (labels) {
     for (let i = 0; i < V; i++) {
@@ -388,14 +387,10 @@ export function reduce(S, mesh, packed, labels, st) {
     for (let k = 0; k < r.length; k++) if (labels[r[k]] === lvl) lock[r[k]] = 1;
   }
 
-  const anyLock = (labels && present.size > 0) || !!st.lockMask || borderLocked;
+  const anyLock = (labels && present.size > 0) || borderLocked;
   const targetIdx = Math.min(index.length, target * 3);
   let out, error;
-  if (st.sloppy) {
-    const hard = new Uint8Array(V);
-    for (let i = 0; i < V; i++) hard[i] = lock[i] & 1;
-    [out, error] = S.simplifySloppy(index, positions, 3, anyLock ? hard : null, targetIdx, maxError);
-  } else if (st.optimizePositions) {
+  if (st.optimizePositions) {
     const work = index.slice();
     const [count, e] = S.simplifyWithUpdate(work, positions, 3, attrs, stride, weights, anyLock ? lock : null, targetIdx, maxError, flags);
     out = work.slice(0, count);
@@ -1817,7 +1812,7 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   }
   const halfTarget = Math.max(2, Math.round(st.targetTris / 2));
   if (st.lockBorder && !H.border) H.border = openBorderVertices(H.mesh, H.onPlane);
-  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, lockMask: st.sloppy ? H.onPlane : null, seam: H.onPlane, border: st.lockBorder ? H.border : null });
+  const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, seam: H.onPlane, border: st.lockBorder ? H.border : null });
   const axis = sym.axis, off32 = Math.fround(sym.offset);
   for (let v = 0; v < H.onPlane.length; v++) if (H.onPlane[v]) red.positions[v * 3 + axis] = off32;
   const fin = finalize(H.mesh, red, fopt);
@@ -1893,7 +1888,7 @@ export function runReduction(S, ctx, labels, st, fopt) {
   if (mode === 'new') return fresh();
   // Misplacement only grows as the budget drops, so once the original UVs failed at some budget, lower budgets
   // with the same settings skip straight to new UVs.
-  const sig = JSON.stringify([st.symmetry, st.permissive, st.regularize, st.lockBorder, st.prune, st.sloppy, st.optimizePositions, st.normalWeight, st.uvWeight, st.maxError, st.hardAngle, fopt]);
+  const sig = JSON.stringify([st.symmetry, st.permissive, st.regularize, st.lockBorder, st.prune, st.optimizePositions, st.normalWeight, st.uvWeight, st.maxError, st.hardAngle, fopt]);
   const failed = ctx.autoFail && ctx.autoFail.sig === sig ? ctx.autoFail : null;
   if (failed && st.targetTris <= failed.target) {
     const out = fresh();

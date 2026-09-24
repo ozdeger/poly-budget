@@ -30,13 +30,17 @@ const MESHOPT_URL = 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_si
 const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
   targetPct: 10, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
-  optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false, sloppy: false,
+  optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true,
 };
 const settings = { ...DEFAULTS };
-try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch { /* storage unavailable */ }
+// Only settings the tool still has are read back, so options removed since they were saved drop out.
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+  for (const key of Object.keys(DEFAULTS)) if (key in saved) settings[key] = saved[key];
+} catch { /* storage unavailable */ }
 let saveTimer = 0;
 function saveSettings() {
   clearTimeout(saveTimer);
@@ -1757,7 +1761,7 @@ function reduceSettings(target) {
   return {
     targetTris: target ?? targetTris(), maxError: Number(settings.maxError), lockBorder: settings.lockBorder,
     permissive: settings.permissive, prune: settings.prune, regularize: settings.regularize, normalWeight: settings.normalWeight,
-    uvWeight: settings.uvWeight, sloppy: settings.sloppy, optimizePositions: settings.optimizePositions,
+    uvWeight: settings.uvWeight, optimizePositions: settings.optimizePositions,
     uvMode: settings.uvMode, deferUV: true, hardAngle: settings.hardAngle,
     symmetry: settings.symmetry && symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset, keepPositive: settings.symSide !== '-' } : null,
   };
@@ -2229,7 +2233,6 @@ function syncControls() {
   $('permissive').checked = settings.permissive;
   $('lockBorder').checked = settings.lockBorder;
   $('prune').checked = settings.prune;
-  $('sloppy').checked = settings.sloppy;
   $('creaseAngle').value = String(settings.creaseAngle);
   $('creaseOut').textContent = `${settings.creaseAngle}°`;
   $('creaseField').hidden = settings.normals !== 'crease';
@@ -2294,7 +2297,6 @@ bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
 bindCheck('permissive', 'permissive', () => scheduleReduce());
 bindCheck('lockBorder', 'lockBorder', () => scheduleReduce());
 bindCheck('prune', 'prune', () => scheduleReduce());
-bindCheck('sloppy', 'sloppy', () => scheduleReduce());
 bindCheck('tintMirror', 'tintMirror', applyDisplaySettings);
 bindCheck('showPlane', 'showPlane', updatePlaneHelper);
 $('symOn').addEventListener('change', async e => {

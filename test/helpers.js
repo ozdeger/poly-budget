@@ -12,7 +12,7 @@ await MeshoptSimplifier.ready;
 
 export { THREE, core, collectScene };
 export const S = MeshoptSimplifier;
-export const settings = { maxError: 0, lockBorder: false, permissive: false, prune: false, regularize: 1, normalWeight: 0.5, uvWeight: 1, sloppy: false, optimizePositions: true, hardAngle: 30 };
+export const settings = { maxError: 0, lockBorder: false, permissive: false, prune: false, regularize: 1, normalWeight: 0.5, uvWeight: 1, optimizePositions: true, hardAngle: 30 };
 
 let failures = 0;
 export function check(ok, message) {
