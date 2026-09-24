@@ -33,7 +33,7 @@ const DEFAULTS = {
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false, sloppy: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
-  symmetry: false, symSide: '+', tintMirror: true,
+  symmetry: false, symSide: '+', tintMirror: true, showPlane: true,
 };
 const settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch { /* storage unavailable */ }
@@ -1648,7 +1648,7 @@ async function refreshMirrorView() {
   }
 }
 function updatePlaneHelper() {
-  const on = settings.symmetry && symPlane.ready && state.welded;
+  const on = settings.symmetry && settings.showPlane && symPlane.ready && state.welded;
   planeL.visible = planeR.visible = !!on;
   if (on) {
     const b = bounds(state.welded.positions);
@@ -1669,6 +1669,7 @@ function syncSymmetryUI() {
   $('symOn').checked = settings.symmetry;
   $('symBody').hidden = !settings.symmetry;
   $('tintMirror').checked = settings.tintMirror;
+  $('showPlane').checked = settings.showPlane;
   pressSeg('symAxisSeg', 'axis', symPlane.axis);
   pressSeg('symSideSeg', 'side', settings.symSide);
   const a = AXES[symPlane.axis];
@@ -2295,6 +2296,7 @@ bindCheck('lockBorder', 'lockBorder', () => scheduleReduce());
 bindCheck('prune', 'prune', () => scheduleReduce());
 bindCheck('sloppy', 'sloppy', () => scheduleReduce());
 bindCheck('tintMirror', 'tintMirror', applyDisplaySettings);
+bindCheck('showPlane', 'showPlane', updatePlaneHelper);
 $('symOn').addEventListener('change', async e => {
   settings.symmetry = e.target.checked;
   saveSettings();
