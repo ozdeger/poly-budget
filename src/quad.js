@@ -26,8 +26,9 @@
 //
 // Instant Meshes leaves a few triangles and pentagons among the quads and offers all quads only by splitting every
 // face in four. Here each leftover odd face is instead paired with its nearest odd neighbour, and the strip of faces
-// between them is split in two lengthwise, which turns every face into quads while the density barely changes. The
-// vertices are then relaxed along the original surface.
+// between them is split in two lengthwise, which turns every face into quads while the density barely changes. Edge
+// rotations and diagonal collapses then lower the pole count, long sharp edges are kept as edge loops, and the
+// vertices are relaxed along the original surface.
 
 const NONE = 0xffffffff;
 
@@ -289,28 +290,7 @@ function compatOrient(Qa, ia, Na, ja, Qb, ib, Nb, jb) {
   if (bi === 0) { R[3] = q1x * s; R[4] = q1y * s; R[5] = q1z * s; } else { R[3] = b1x * s; R[4] = b1y * s; R[5] = b1z * s; }
 }
 
-// The intrinsic variant (compat_orientation_intrinsic_4): q1 is first turned into n0's plane, then the closest of its
-// quarter turns to q0 is taken; it only looks at the surface, not at how it bends.
-function compatOrientIntrinsic(Qa, ia, Na, ja, Qb, ib, Nb, jb) {
-  const q0x = Qa[ia], q0y = Qa[ia + 1], q0z = Qa[ia + 2], n0x = Na[ja], n0y = Na[ja + 1], n0z = Na[ja + 2];
-  let q1x = Qb[ib], q1y = Qb[ib + 1], q1z = Qb[ib + 2];
-  const n1x = Nb[jb], n1y = Nb[jb + 1], n1z = Nb[jb + 2];
-  const c = n1x * n0x + n1y * n0y + n1z * n0z;
-  if (c < 0.9999) {
-    const ax = n1y * n0z - n1z * n0y, ay = n1z * n0x - n1x * n0z, az = n1x * n0y - n1y * n0x, aa = ax * ax + ay * ay + az * az;
-    const f = aa > 0 ? (ax * q1x + ay * q1y + az * q1z) * (1 - c) / aa : 0;
-    const x = q1x * c + (ay * q1z - az * q1y) + ax * f, y = q1y * c + (az * q1x - ax * q1z) + ay * f, z = q1z * c + (ax * q1y - ay * q1x) + az * f;
-    q1x = x; q1y = y; q1z = z;
-  }
-  const tx = n0y * q1z - n0z * q1y, ty = n0z * q1x - n0x * q1z, tz = n0x * q1y - n0y * q1x;
-  const d0 = q1x * q0x + q1y * q0y + q1z * q0z, d1 = tx * q0x + ty * q0y + tz * q0z;
-  R[0] = q0x; R[1] = q0y; R[2] = q0z;
-  if (Math.abs(d0) > Math.abs(d1)) { const sg = d0 < 0 ? -1 : 1; R[3] = q1x * sg; R[4] = q1y * sg; R[5] = q1z * sg; }
-  else { const sg = d1 < 0 ? -1 : 1; R[3] = tx * sg; R[4] = ty * sg; R[5] = tz * sg; }
-}
-
-function optimizeOrientations(L, iterations, intrinsic = false) {
-  const compat = intrinsic ? compatOrientIntrinsic : compatOrient;
+function optimizeOrientations(L, iterations) {
   const { n, start, id, w, N, Q } = L;
   const CQ = L.CQ, Cw = L.Cw;
   const S3 = new Float64Array(3);
@@ -321,7 +301,7 @@ function optimizeOrientations(L, iterations, intrinsic = false) {
       let wsum = 0;
       for (let l = start[i]; l < start[i + 1]; l++) {
         const j = id[l], wt = w[l];
-        compat(S3, 0, N, i * 3, Q, j * 3, N, j * 3);
+        compatOrient(S3, 0, N, i * 3, Q, j * 3, N, j * 3);
         let x = R[0] * wsum + R[3] * wt, y = R[1] * wsum + R[4] * wt, z = R[2] * wsum + R[5] * wt;
         const d = nx * x + ny * y + nz * z;
         x -= nx * d; y -= ny * d; z -= nz * d;
@@ -432,35 +412,8 @@ function optimizePositions(L, iterations) {
   }
 }
 
-// Triangles around which the direction field turns by a quarter (index ±1): where poles will be.
-function orientationSingularities(L, index) {
-  const { Q, N } = L;
-  let count = 0;
-  const rot = (ia, ib) => {
-    // Integer quarter turns from a to b (Instant Meshes' compat_orientation_extrinsic_index_4).
-    const q0x = Q[ia], q0y = Q[ia + 1], q0z = Q[ia + 2], n0x = N[ia], n0y = N[ia + 1], n0z = N[ia + 2];
-    const q1x = Q[ib], q1y = Q[ib + 1], q1z = Q[ib + 2], n1x = N[ib], n1y = N[ib + 1], n1z = N[ib + 2];
-    const A = [[q0x, q0y, q0z], [n0y * q0z - n0z * q0y, n0z * q0x - n0x * q0z, n0x * q0y - n0y * q0x]];
-    const B = [[q1x, q1y, q1z], [n1y * q1z - n1z * q1y, n1z * q1x - n1x * q1z, n1x * q1y - n1y * q1x]];
-    let best = -1, ba = 0, bb = 0;
-    for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
-      const d = Math.abs(A[i][0] * B[j][0] + A[i][1] * B[j][1] + A[i][2] * B[j][2]);
-      if (d > best) { best = d; ba = i; bb = j; }
-    }
-    if (A[ba][0] * B[bb][0] + A[ba][1] * B[bb][1] + A[ba][2] * B[bb][2] < 0) bb += 2;
-    return bb - ba;
-  };
-  for (let t = 0; t < index.length; t += 3) {
-    let idx = 0;
-    for (let k = 0; k < 3; k++) idx += rot(index[t + k] * 3, index[t + (k + 1) % 3] * 3);
-    idx = ((idx % 4) + 4) % 4;
-    if (idx === 1 || idx === 3) count++;
-  }
-  return count;
-}
-
 // The direction field alone, from the coarsest level down (the position field follows in resolvePositions).
-function solveOrientations(levels, seed, progress, iterations = 6, intrinsic = false) {
+function solveOrientations(levels, seed, progress) {
   const rand = random(seed), top = levels[levels.length - 1], T6 = new Float64Array(6);
   for (const L of levels) { if (!L.Q) L.Q = new Float64Array(L.n * 3); if (!L.O) L.O = new Float64Array(L.n * 3); }
   for (let i = 0; i < top.n; i++) {
@@ -472,7 +425,7 @@ function solveOrientations(levels, seed, progress, iterations = 6, intrinsic = f
   let done = 0;
   for (let l = levels.length - 1; l >= 0; l--) {
     const L = levels[l];
-    optimizeOrientations(L, iterations, intrinsic);
+    optimizeOrientations(L, 6);
     done += L.n;
     if (progress) progress('orientation', done / total);
     if (l === 0) break;
@@ -488,51 +441,6 @@ function solveOrientations(levels, seed, progress, iterations = 6, intrinsic = f
         const len = Math.hypot(x, y, z);
         if (len > 1e-30) { x /= len; y /= len; z /= len; } else { tangents(nx, ny, nz, T6); x = T6[0]; y = T6[1]; z = T6[2]; }
         F.Q[c * 3] = x; F.Q[c * 3 + 1] = y; F.Q[c * 3 + 2] = z;
-      }
-    }
-  }
-}
-
-function solveFields(levels, seed, progress, iterations = 6, intrinsic = false) {
-  const rand = random(seed);
-  const top = levels[levels.length - 1], T6 = new Float64Array(6);
-  for (const L of levels) { L.Q = new Float64Array(L.n * 3); L.O = new Float64Array(L.n * 3); }
-  for (let i = 0; i < top.n; i++) {
-    tangents(top.N[i * 3], top.N[i * 3 + 1], top.N[i * 3 + 2], T6);
-    const a = rand() * 2 * Math.PI, c = Math.cos(a), s = Math.sin(a);
-    for (let d = 0; d < 3; d++) top.Q[i * 3 + d] = T6[d] * c + T6[3 + d] * s;
-    const x = rand() * 2 - 1, y = rand() * 2 - 1;
-    for (let d = 0; d < 3; d++) top.O[i * 3 + d] = top.V[i * 3 + d] + (T6[d] * x + T6[3 + d] * y) * top.S[i];
-  }
-  const total = levels.reduce((s, L) => s + L.n, 0);
-  let done = 0;
-  for (const kind of ['orientation', 'position']) {
-    done = 0;
-    for (let l = levels.length - 1; l >= 0; l--) {
-      const L = levels[l];
-      if (kind === 'orientation') optimizeOrientations(L, iterations, intrinsic); else optimizePositions(L, iterations);
-      done += L.n;
-      if (progress) progress(kind, done / total);
-      if (l === 0) break;
-      const F = levels[l - 1];
-      for (let i = 0; i < L.n; i++) {
-        for (let h = 0; h < 2; h++) {
-          const c = L.up[i * 2 + h];
-          if (c < 0) continue;
-          const nx = F.N[c * 3], ny = F.N[c * 3 + 1], nz = F.N[c * 3 + 2];
-          if (kind === 'orientation') {
-            let x = L.Q[i * 3], y = L.Q[i * 3 + 1], z = L.Q[i * 3 + 2];
-            const d = nx * x + ny * y + nz * z;
-            x -= nx * d; y -= ny * d; z -= nz * d;
-            const len = Math.hypot(x, y, z);
-            if (len > 1e-30) { x /= len; y /= len; z /= len; } else { tangents(nx, ny, nz, T6); x = T6[0]; y = T6[1]; z = T6[2]; }
-            F.Q[c * 3] = x; F.Q[c * 3 + 1] = y; F.Q[c * 3 + 2] = z;
-          } else {
-            let x = L.O[i * 3], y = L.O[i * 3 + 1], z = L.O[i * 3 + 2];
-            const d = nx * (x - F.V[c * 3]) + ny * (y - F.V[c * 3 + 1]) + nz * (z - F.V[c * 3 + 2]);
-            F.O[c * 3] = x - nx * d; F.O[c * 3 + 1] = y - ny * d; F.O[c * 3 + 2] = z - nz * d;
-          }
-        }
       }
     }
   }
@@ -865,7 +773,6 @@ function extractFaces(G) {
       }
     }
   };
-  let origin = 0;
   const taken = (a, b) => adj[a].includes(b);
   const fill = poly => {
     // Odd faces keep five sides (or three) for the all-quad pass; the rest become quads.
@@ -875,19 +782,16 @@ function extractFaces(G) {
         const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % poly.length])) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0);
         if (s < best) { best = s; bi = i; }
       }
-      const q = [0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]);
-      q.origin = 10 + origin;
-      faces.push(q);
+      faces.push([0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]));
       poly = poly.filter((_, k) => k !== (bi + 1) % poly.length && k !== (bi + 2) % poly.length);
     }
     if (poly.length >= 6) {
-      for (const q of evenToQuads(P, poly, taken).quads) { q.origin = 10 + origin; faces.push(q); }
+      faces.push(...evenToQuads(P, poly, taken).quads);
       return;
     }
-    if (poly.length >= 3) { poly.origin = origin; faces.push(poly); }
+    if (poly.length >= 3) faces.push(poly);
   };
   for (const target of [4, 3, 5, 6, 7, 8]) {
-    origin = target;
     for (let i = 0; i < nv; i++) {
       for (let j = 0; j < adj[i].length; j++) {
         const poly = walk(i, j, target);
@@ -942,7 +846,6 @@ function extractFaces(G) {
   }
   links = rimAdj;
   used = rimUsed;
-  origin = 99;
   maxHole = 64;
   // Loops along real open borders (their vertices carry the border constraint) stay open; others are holes the grid
   // tore where the surface folds tighter than a grid step, and are closed.
@@ -1581,8 +1484,8 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   }
   // Smoother normals for the fields, so bumps smaller than a quad don't pull the directions around: each normal is
   // averaged with its neighbours', weighted down fast as they turn away, so sharp edges keep their crease.
-  const creaseCos = Math.cos(((opt.smoothAngle ?? 60) * Math.PI) / 180);
-  for (let it = 0; it < (opt.normalSmooth ?? 10); it++) {
+  const creaseCos = Math.cos((60 * Math.PI) / 180);
+  for (let it = 0; it < 10; it++) {
     const Nn = new Float64Array(n * 3);
     for (let i = 0; i < n; i++) {
       const ax = L0.N[i * 3], ay = L0.N[i * 3 + 1], az = L0.N[i * 3 + 2];
@@ -1711,7 +1614,9 @@ class SegmentGrid {
 
 // mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
 // opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), boundary: align open borders (true),
-//        plane: { axis, offset } whose border is kept exactly on the plane, seed, relax: iterations, progress(stage, f) }
+//        plane: { axis, offset } whose border is kept exactly on the plane, sharp: the angle past which long sharp
+//        edges become edge loops (0: off), pure: all quads (true), seed, relax: iterations, progress(stage, f),
+//        cache and cacheKey: where to keep the working surface and direction field between calls }
 // Returns { positions (Float32Array), faces (Uint32Array, 4 per face, NONE in the 4th for a triangle), faceCount,
 //           hit: { tri (Int32Array), bary (Float32Array, 3 per vertex) }: where each vertex sits on the input surface,
 //           faceTri (Int32Array): the input triangle under each face's middle, stats }.
@@ -1738,10 +1643,10 @@ export function remeshQuads(mesh, opt) {
 
   // The working surface, its hierarchy and the direction field don't depend on the exact budget: they are kept in
   // opt.cache and reused while the grid size stays within the same step of 2^(1/4) and nothing else changed.
-  const cellFactor = opt.cellFactor ?? 2.5, splitFactor = opt.splitFactor ?? 0.7;
+  const cellFactor = 2.5, splitFactor = 0.7;
   const seed = opt.seed ?? 12345;
   const bucket = Math.round(4 * Math.log2(scale / cellFactor));
-  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, opt.normalSmooth ?? 10, opt.smoothAngle ?? 60, opt.intrinsic ? 1 : 0, seed, cellFactor, splitFactor, opt.sharp || 0].join('|');
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0].join('|');
   const cache = opt.cache || null;
   let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
   if (work) {
@@ -1753,12 +1658,11 @@ export function remeshQuads(mesh, opt) {
     work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress);
     work.scale = scale;
     work.baseS = work.levels.map(L => L.S.slice());
-    solveOrientations(work.levels, seed, progress, opt.iterations, opt.intrinsic);
+    solveOrientations(work.levels, seed, progress);
     mark('orientation');
     if (cache) { cache.key = key; cache.work = work; }
   }
   const { levels, n, nC, WI } = work, L0 = levels[0];
-  if (opt.debug === 'singularities') return { singularities: orientationSingularities(L0, WI), n };
   resolvePositions(levels, seed, progress);
   mark('positions');
 
@@ -1784,15 +1688,13 @@ export function remeshQuads(mesh, opt) {
       agree += nx * vx + ny * vy + nz * vz > 0 ? 1 : -1;
     }
     if (agree < 0) for (const p of polys) p.reverse();
-    if (opt.debug === 'polys') return { positions: G.P, polys, G, stats: { scale, count: polys.length } };
     const even = opt.pure === false
       ? { faces: polys.flatMap(p => (p.length === 5 ? pentagonSplit(G.P, p) : [p])), positions: G.P, nv: G.nv, unpaired: 0 }
       : evenFaces(polys, G.P, G.nv);
     if (progress) progress('extract', 1);
     const count = even.faces.length;
-    result = { G, even, count, rawPolys: opt.debug === 'stages' ? polys.map(p => p.slice()) : null };
+    result = { G, even, count };
     attempts.push(count);
-    if (opt.debug === 'even') return { positions: even.positions, polys: even.faces, rawPolys: polys, G, nv0: G.nv, stats: { scale, count } };
     mark(`extract${attempt}`);
     // Close enough to the budget, or out of attempts: keep it. Otherwise resize the grid and solve positions again.
     if (Math.abs(count / target - 1) < 0.04 || attempt === 2 || count === 0) break;
@@ -1806,12 +1708,7 @@ export function remeshQuads(mesh, opt) {
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
   const nv = even.nv, P = even.positions;
-  if (opt.debug === 'stages') {
-    const openOf = list => { const c = new Map(); for (const p of list) for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; c.set(key, (c.get(key) || 0) + 1); } let o = 0; for (const v of c.values()) if (v === 1) o++; return o; };
-    result.stageOpen = { extracted: openOf(result.rawPolys || []), even: openOf(even.faces) };
-  }
-  const tidy = opt.valence === false ? { faces: even.faces, moves: 0 } : optimizeValence(even.faces, P);
-  if (result.stageOpen) result.stageOpen.valence = (() => { const c = new Map(); for (const p of tidy.faces) for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; c.set(key, (c.get(key) || 0) + 1); } let o = 0; for (const v of c.values()) if (v === 1) o++; return o; })();
+  const tidy = optimizeValence(even.faces, P);
   // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open.
   const keepOpen = v => v < result.G.nv && result.G.fixed[v] === 1;
   const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
@@ -1932,7 +1829,7 @@ export function remeshQuads(mesh, opt) {
   });
   return {
     positions, faces: out, faceCount: faces.length, hit: { tri, bary: bc }, faceTri,
-    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, stageOpen: result.stageOpen, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
+    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
   };
 }
 
