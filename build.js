@@ -5,14 +5,16 @@ const strip = src => src.replace(IMPORT, m => (/from '\.\//.test(m) || /from 'th
 const core = strip(read('./src/core.js'));
 // The remesher keeps its helpers to itself; only its exports join the shared scope.
 const quad = `const { remeshQuads, QUAD_NONE } = (() => {\n${strip(read('./src/quad.js'))}\nreturn { remeshQuads, QUAD_NONE };\n})();`;
+// So does the visibility pass for hidden areas.
+const visibility = `const { computeVisibility } = (() => {\n${strip(read('./src/visibility.js'))}\nreturn { computeVisibility };\n})();`;
 const collect = strip(read('./src/collect.js'));
 const app = read('./src/app.js');
 const appImports = (app.match(IMPORT) || []).filter(l => !/from '\.\//.test(l)).join('\n');
 const appBody = app.replace(IMPORT, '');
-const main = `${appImports}\n${quad}\n${core}\n${collect}\nconst FBX_TEMPLATE = ${read('./src/fbx_template.json')};\n${appBody}`;
+const main = `${appImports}\n${quad}\n${visibility}\n${core}\n${collect}\nconst FBX_TEMPLATE = ${read('./src/fbx_template.json')};\n${appBody}`;
 const worker = read('./src/worker.js');
 const workerImports = (worker.match(IMPORT) || []).filter(l => !/from '\.\//.test(l)).join('\n');
-const workerSrc = `${workerImports}\n${quad}\n${core}\n${worker.replace(IMPORT, '')}`;
+const workerSrc = `${workerImports}\n${quad}\n${visibility}\n${core}\n${worker.replace(IMPORT, '')}`;
 if (/<\/script/i.test(main + workerSrc)) throw new Error('script terminator inside inlined code');
 const html = read('./src/index.html').replace('/*WORKER*/', () => workerSrc).replace('/*MAIN*/', () => main);
 

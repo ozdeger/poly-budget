@@ -26,6 +26,8 @@
   --more: #3dd39a;
   --less: #f2719e;
   --keep: #6fa8ff;
+  --hidden: #a98bff;
+  --plain: #9fb4c7;
   --warn: #ff9d57;
   --crit: #ff6b6b;
   --ok: #3dd39a;
@@ -58,6 +60,8 @@
     --more: #0f9a68;
     --less: #cc3d77;
     --keep: #2c67d4;
+    --hidden: #6d4fd1;
+    --plain: #4f6b85;
     --warn: #b5530c;
     --crit: #bf332e;
     --ok: #0f9a68;
@@ -85,6 +89,8 @@
   --more: #0f9a68;
   --less: #cc3d77;
   --keep: #2c67d4;
+  --hidden: #6d4fd1;
+  --plain: #4f6b85;
   --warn: #b5530c;
   --crit: #bf332e;
   --ok: #0f9a68;
@@ -418,6 +424,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 .seg-keep { background: var(--keep); }
 .seg-more { background: var(--more); }
 .seg-less { background: var(--less); }
+.seg-hidden { background: var(--hidden); }
 .seg-rest { background: var(--clay); }
 .bar .marker { position: absolute; top: -4px; bottom: -4px; width: 2px; border-radius: 1px; background: var(--text); }
 .bar-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 3px 12px; color: var(--muted); font: 11px/1.4 var(--font-num); }
@@ -439,8 +446,8 @@ details.more[open] > summary { margin-bottom: 8px; }
 .status-line.warn b { color: var(--warn); }
 .status-line span { grid-column: 2; color: var(--muted); font-size: 11.5px; }
 
-/* symmetry */
-.symbody { display: flex; flex-direction: column; gap: 11px; }
+/* symmetry, hidden areas */
+.symbody, .hiddenbody { display: flex; flex-direction: column; gap: 11px; }
 .num-input { width: 96px; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--raise); font-family: var(--font-num); font-size: 12px; }
 .pair { font-size: 12px; color: var(--muted); }
 .pair b { font-weight: 500; color: var(--ok); }
@@ -632,6 +639,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 .swatch.more { background: var(--more); }
 .swatch.less { background: var(--less); }
 .swatch.keep { background: var(--keep); }
+.swatch.plain { background: var(--plain); }
 .toolopts {
   top: 10px;
   left: 50%;
@@ -650,6 +658,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 .opt-name[data-tool="more"]::before { background: var(--more); }
 .opt-name[data-tool="less"]::before { background: var(--less); }
 .opt-name[data-tool="keep"]::before { background: var(--keep); }
+.opt-name[data-tool="plain"]::before { background: var(--plain); }
 .opt-size { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .opt-size input { width: 200px; }
 .opt-size output { min-width: 3.5em; font: 12px/1 var(--font-num); font-variant-numeric: tabular-nums; color: var(--text); }
@@ -670,6 +679,8 @@ details.more[open] > summary { margin-bottom: 8px; }
 .dot.more { background: var(--more); }
 .dot.less { background: var(--less); }
 .dot.keep { background: var(--keep); }
+.dot.plain { background: var(--plain); }
+.dot.hidden { background: var(--hidden); }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; }
 .empty-card {
   max-width: 440px;
@@ -793,7 +804,7 @@ details.more[open] > summary { margin-bottom: 8px; }
           <dt>Texture</dt><dd id="resTex">—</dd>
         </dl>
         <div class="bar" id="bar" role="img" aria-label="Result triangles by painted region">
-          <i class="seg-keep" id="bKeep"></i><i class="seg-more" id="bMore"></i><i class="seg-less" id="bLess"></i><i class="seg-rest" id="bRest"></i><b class="marker" id="bMarker"></b>
+          <i class="seg-keep" id="bKeep"></i><i class="seg-more" id="bMore"></i><i class="seg-less" id="bLess"></i><i class="seg-hidden" id="bHidden"></i><i class="seg-rest" id="bRest"></i><b class="marker" id="bMarker"></b>
         </div>
         <ul class="bar-legend" id="barLegend"></ul>
         <p class="result-why" id="resWhy" hidden></p>
@@ -845,6 +856,18 @@ details.more[open] > summary { margin-bottom: 8px; }
         <p class="pair" id="resSym" hidden>Pairs · <b id="resSymText"></b></p>
         <label class="check"><input type="checkbox" id="showPlane"><span>Show the mirror plane</span></label>
         <label class="check"><input type="checkbox" id="tintMirror"><span>Tint the mirrored half<small>Paint on either half applies to both</small></span></label>
+      </div>
+    </section>
+
+    <section class="sec" id="secHidden" aria-labelledby="hHidden" data-needs-model>
+      <div class="sec-head"><h2 id="hHidden">Hidden areas</h2><label class="switch" title="Spend less on surface that is hard to see"><input type="checkbox" id="hiddenOn" role="switch" aria-label="Spend less on hidden areas"><span></span></label></div>
+      <p class="note">Crevices and covered surface get fewer triangles, judged by how much of the view from all sides reaches them. Painted areas keep their paint; the Normal detail brush keeps an area out. Turn it off for rooms and other models seen from inside.</p>
+      <div class="hiddenbody" id="hiddenBody">
+        <div class="seg fill" role="group" aria-label="How much less" id="hiddenLevelSeg">
+          <button type="button" data-level="gentle" title="Only the most hidden surface: a quarter of the detail where almost nothing sees it, half where little does">Gentle</button><button type="button" data-level="medium" title="An eighth of the detail where almost nothing sees it, a quarter where little does, half where it's mostly covered">Medium</button><button type="button" data-level="strong" title="Like Medium, reaching further out from the crevices">Strong</button>
+        </div>
+        <label class="check"><input type="checkbox" id="hiddenCull"><span>Delete faces nothing can see<small>Removes surface that no direction reaches, such as parts buried inside others or sealed-off pockets</small></span></label>
+        <div class="status-line" id="hiddenStatus"><b id="hiddenHead"></b><span id="hiddenNote"></span></div>
       </div>
     </section>
 
@@ -917,6 +940,7 @@ details.more[open] > summary { margin-bottom: 8px; }
         <button type="button" class="tool" data-tool="more" id="toolMore" title="More detail (M)" aria-label="More detail"><span class="swatch more" aria-hidden="true">+</span></button>
         <button type="button" class="tool" data-tool="less" id="toolLess" title="Less detail (L)" aria-label="Less detail"><span class="swatch less" aria-hidden="true">−</span></button>
         <button type="button" class="tool" data-tool="keep" id="toolKeep" title="Keep original (K)" aria-label="Keep original"><span class="swatch keep" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="6" y="11" width="12" height="9" rx="1.5"/><path d="M9 11V8a3 3 0 0 1 6 0v3"/></svg></span></button>
+        <button type="button" class="tool" data-tool="plain" id="toolPlain" title="Normal detail (N): keeps an area out of the hidden-area reduction" aria-label="Normal detail"><span class="swatch plain" aria-hidden="true">=</span></button>
         <button type="button" class="tool" data-tool="erase" id="toolErase" title="Erase paint (E)" aria-label="Erase paint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 20H9l-4.4-4.4a2 2 0 0 1 0-2.8l8-8a2 2 0 0 1 2.8 0l4 4a2 2 0 0 1 0 2.8L12 19"/><path d="m9.5 8.5 6 6"/></svg></button>
         <span class="pal-sep" aria-hidden="true"></span>
         <button type="button" class="palbtn" id="undoBtn" aria-label="Undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H12"/></svg></button>
@@ -2847,9 +2871,348 @@ const QUAD_NONE = NONE;
 
 return { remeshQuads, QUAD_NONE };
 })();
+const { computeVisibility } = (() => {
+// How visible each vertex is from all sides: the share of a surrounding sphere of view directions that sees it, with
+// head-on views weighted more, after Zhang & Turk, "Visibility-guided simplification" (IEEE Visualization 2002).
+// 1 anywhere on a convex shape, 0 where no direction can see the surface (enclosed or buried).
+// Rays are cast from every vertex (every distinct position) over a cosine-weighted hemisphere, a few per vertex on
+// dense meshes, then averaged over neighbours. Closed shapes look outward only (inside-out ones are flipped first);
+// open surfaces such as cards and cloth count whichever side is more visible.
+
+// Rays for the whole model; dense meshes get fewer per vertex and more smoothing.
+const RAY_BUDGET = 1.5e6;
+const MIN_RAYS = 1, MAX_RAYS = 64;
+// Vertices that come out as never seen are checked again with this many rays before anything counts as hidden for good.
+const CONFIRM_RAYS = 32;
+// Visibility histogram bins, a hundredth wide; the last one also holds everything above.
+const HIST_BINS = 50;
+
+// Open-addressing table of distinct positions (bit-identical floats, which the weld guarantees for copies).
+function positionGroups(P, V) {
+  const bits = new Int32Array(P.buffer, P.byteOffset, V * 3);
+  let size = 1;
+  while (size < V * 2) size <<= 1;
+  const table = new Int32Array(size).fill(-1), group = new Int32Array(V), mask = size - 1;
+  let count = 0;
+  for (let v = 0; v < V; v++) {
+    const x = bits[v * 3], y = bits[v * 3 + 1], z = bits[v * 3 + 2];
+    let h = Math.imul(x, 0x9e3779b1) ^ Math.imul(y, 0x85ebca77) ^ Math.imul(z, 0xc2b2ae3d);
+    h = (h ^ (h >>> 15)) & mask;
+    for (;;) {
+      const r = table[h];
+      if (r < 0) { table[h] = v; group[v] = count++; break; }
+      if (bits[r * 3] === x && bits[r * 3 + 1] === y && bits[r * 3 + 2] === z) { group[v] = group[r]; break; }
+      h = (h + 1) & mask;
+    }
+  }
+  return { group, count };
+}
+
+// Median-split BVH for occlusion rays. Triangles are stored in leaf order as a corner and two edges.
+function buildBVH(P, I, T) {
+  const cen = new Float32Array(T * 3);
+  for (let t = 0; t < T; t++) {
+    const a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, c = I[t * 3 + 2] * 3;
+    cen[t * 3] = P[a] + P[b] + P[c]; cen[t * 3 + 1] = P[a + 1] + P[b + 1] + P[c + 1]; cen[t * 3 + 2] = P[a + 2] + P[b + 2] + P[c + 2];
+  }
+  const order = new Uint32Array(T);
+  for (let t = 0; t < T; t++) order[t] = t;
+  const maxNodes = 2 * Math.ceil(T / 2) + 1;
+  const box = new Float32Array(maxNodes * 6), right = new Int32Array(maxNodes), first = new Uint32Array(maxNodes);
+  const count = new Uint8Array(maxNodes), axisOf = new Uint8Array(maxNodes);
+  let nodes = 0;
+  const select = (lo, hi, k, ax) => {
+    while (hi > lo) {
+      const pivot = cen[order[(lo + hi) >> 1] * 3 + ax];
+      let i = lo, j = hi;
+      while (i <= j) {
+        while (cen[order[i] * 3 + ax] < pivot) i++;
+        while (cen[order[j] * 3 + ax] > pivot) j--;
+        if (i <= j) { const s = order[i]; order[i] = order[j]; order[j] = s; i++; j--; }
+      }
+      if (k <= j) hi = j; else if (k >= i) lo = i; else return;
+    }
+  };
+  // Iterative build in depth-first order, so a left child always follows its parent; a right child's id is known once
+  // it is popped. Pending entries: start, end, parent (-1 for the root).
+  const todo = [[0, T, -1]];
+  while (todo.length) {
+    const [s, e, parent] = todo.pop();
+    const node = nodes++;
+    if (parent >= 0) right[parent] = node;
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    let cx0 = Infinity, cy0 = Infinity, cz0 = Infinity, cx1 = -Infinity, cy1 = -Infinity, cz1 = -Infinity;
+    for (let i = s; i < e; i++) {
+      const t = order[i];
+      for (let k = 0; k < 3; k++) {
+        const v = I[t * 3 + k] * 3, x = P[v], y = P[v + 1], z = P[v + 2];
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (z < z0) z0 = z; if (z > z1) z1 = z;
+      }
+      const cx = cen[t * 3], cy = cen[t * 3 + 1], cz = cen[t * 3 + 2];
+      if (cx < cx0) cx0 = cx; if (cx > cx1) cx1 = cx;
+      if (cy < cy0) cy0 = cy; if (cy > cy1) cy1 = cy;
+      if (cz < cz0) cz0 = cz; if (cz > cz1) cz1 = cz;
+    }
+    const o = node * 6;
+    box[o] = x0; box[o + 1] = y0; box[o + 2] = z0; box[o + 3] = x1; box[o + 4] = y1; box[o + 5] = z1;
+    if (e - s <= 4) { right[node] = -1; first[node] = s; count[node] = e - s; continue; }
+    const dx = cx1 - cx0, dy = cy1 - cy0, dz = cz1 - cz0;
+    const ax = dx >= dy && dx >= dz ? 0 : dy >= dz ? 1 : 2;
+    const mid = (s + e) >> 1;
+    select(s, e - 1, mid, ax);
+    axisOf[node] = ax;
+    right[node] = 0;
+    // The left range is pushed last so it is built next and gets id node + 1.
+    todo.push([mid, e, node]);
+    todo.push([s, mid, -2 - node]);
+  }
+  // Leaf-ordered triangle data.
+  const tri = new Float32Array(T * 9);
+  for (let i = 0; i < T; i++) {
+    const t = order[i], a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, c = I[t * 3 + 2] * 3, o = i * 9;
+    tri[o] = P[a]; tri[o + 1] = P[a + 1]; tri[o + 2] = P[a + 2];
+    tri[o + 3] = P[b] - P[a]; tri[o + 4] = P[b + 1] - P[a + 1]; tri[o + 5] = P[b + 2] - P[a + 2];
+    tri[o + 6] = P[c] - P[a]; tri[o + 7] = P[c + 1] - P[a + 1]; tri[o + 8] = P[c + 2] - P[a + 2];
+  }
+  return { box, right, first, count, axisOf, tri };
+}
+
+// True when the ray (origin o, unit direction d) hits any triangle at a distance in (tmin, infinity).
+const STACK = new Int32Array(128);
+function occluded(bvh, ox, oy, oz, dx, dy, dz, tmin) {
+  const { box, right, first, count, axisOf, tri } = bvh;
+  const ix = 1 / dx, iy = 1 / dy, iz = 1 / dz;
+  let sp = 0;
+  STACK[sp++] = 0;
+  while (sp > 0) {
+    const node = STACK[--sp], b = node * 6;
+    let t0 = (box[b] - ox) * ix, t1 = (box[b + 3] - ox) * ix;
+    if (t0 > t1) { const s = t0; t0 = t1; t1 = s; }
+    let u0 = (box[b + 1] - oy) * iy, u1 = (box[b + 4] - oy) * iy;
+    if (u0 > u1) { const s = u0; u0 = u1; u1 = s; }
+    if (u0 > t0) t0 = u0;
+    if (u1 < t1) t1 = u1;
+    let w0 = (box[b + 2] - oz) * iz, w1 = (box[b + 5] - oz) * iz;
+    if (w0 > w1) { const s = w0; w0 = w1; w1 = s; }
+    if (w0 > t0) t0 = w0;
+    if (w1 < t1) t1 = w1;
+    if (t0 > t1 || t1 < tmin) continue;
+    const r = right[node];
+    if (r >= 0) {
+      // Near child on top, so occluders close to the origin are found first.
+      const ax = axisOf[node];
+      if (ax === 0 ? dx < 0 : ax === 1 ? dy < 0 : dz < 0) { STACK[sp++] = node + 1; STACK[sp++] = r; } else { STACK[sp++] = r; STACK[sp++] = node + 1; }
+      continue;
+    }
+    for (let i = first[node], e = i + count[node]; i < e; i++) {
+      const o = i * 9;
+      const e1x = tri[o + 3], e1y = tri[o + 4], e1z = tri[o + 5], e2x = tri[o + 6], e2y = tri[o + 7], e2z = tri[o + 8];
+      const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (det > -1e-20 && det < 1e-20) continue;
+      const inv = 1 / det, sx = ox - tri[o], sy = oy - tri[o + 1], sz = oz - tri[o + 2];
+      const u = (sx * px + sy * py + sz * pz) * inv;
+      if (u < 0 || u > 1) continue;
+      const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+      const v = (dx * qx + dy * qy + dz * qz) * inv;
+      if (v < 0 || u + v > 1) continue;
+      if ((e2x * qx + e2y * qy + e2z * qz) * inv > tmin) return true;
+    }
+  }
+  return false;
+}
+
+// Components of the position-welded surface: whether each is closed (no open edge) and, if closed, inside-out.
+function components(I, T, group, G, P) {
+  const root = new Int32Array(G);
+  for (let g = 0; g < G; g++) root[g] = g;
+  const find = x => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+  const keys = new Float64Array(T * 3);
+  let n = 0;
+  for (let t = 0; t < T; t++) {
+    const a = group[I[t * 3]], b = group[I[t * 3 + 1]], c = group[I[t * 3 + 2]];
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) root[ra] = rb;
+    const rc = find(c), rb2 = find(b);
+    if (rc !== rb2) root[rc] = rb2;
+    if (a !== b) keys[n++] = a < b ? a * G + b : b * G + a;
+    if (b !== c) keys[n++] = b < c ? b * G + c : c * G + b;
+    if (c !== a) keys[n++] = c < a ? c * G + a : a * G + c;
+  }
+  const edges = keys.subarray(0, n).sort();
+  const open = new Uint8Array(G);
+  for (let i = 0; i < n;) {
+    let j = i + 1;
+    while (j < n && edges[j] === edges[i]) j++;
+    if (j - i === 1) { const a = Math.floor(edges[i] / G); open[find(a)] = 1; }
+    i = j;
+  }
+  // Signed volume per component; a closed one with negative volume faces inward.
+  const vol = new Float64Array(G);
+  for (let t = 0; t < T; t++) {
+    const a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, c = I[t * 3 + 2] * 3;
+    const cx = P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1], cy = P[b + 2] * P[c] - P[b] * P[c + 2], cz = P[b] * P[c + 1] - P[b + 1] * P[c];
+    vol[find(group[I[t * 3]])] += P[a] * cx + P[a + 1] * cy + P[a + 2] * cz;
+  }
+  const twoSided = new Uint8Array(G), flip = new Uint8Array(G);
+  for (let g = 0; g < G; g++) {
+    const r = find(g);
+    if (open[r]) twoSided[g] = 1;
+    else if (vol[r] < 0) flip[g] = 1;
+  }
+  return { twoSided, flip };
+}
+
+// Fraction of R cosine-weighted rays around normal n that escape. rot and jit decorrelate neighbouring vertices.
+function escaping(bvh, px, py, pz, nx, ny, nz, R, rot, jit, eps, tmin) {
+  // Orthonormal frame around n (Duff et al. 2017).
+  const s = nz >= 0 ? 1 : -1, a = -1 / (s + nz), b = nx * ny * a;
+  const tx = 1 + s * nx * nx * a, ty = s * b, tz = -s * nx;
+  const bx = b, by = s + ny * ny * a, bz = -ny;
+  const ox = px + nx * eps, oy = py + ny * eps, oz = pz + nz * eps;
+  let free = 0;
+  for (let i = 0; i < R; i++) {
+    // Fibonacci disk lifted onto the hemisphere: cosine-weighted and evenly spread.
+    const r = Math.sqrt((i + jit) / R), phi = 6.283185307179586 * (i * 0.6180339887498949 + rot);
+    const u = r * Math.cos(phi), v = r * Math.sin(phi), w = Math.sqrt(Math.max(0, 1 - r * r));
+    const dx = tx * u + bx * v + nx * w, dy = ty * u + by * v + ny * w, dz = tz * u + bz * v + nz * w;
+    if (!occluded(bvh, ox, oy, oz, dx, dy, dz, tmin)) free++;
+  }
+  return free / R;
+}
+
+// mesh: { positions, index, vertexCount }. Returns { vis: Float32Array per vertex in [0, 1], stats }.
+// opt.rays overrides the ray budget; opt.progress(frac) reports how far it got.
+function computeVisibility(mesh, opt = {}) {
+  const t0 = Date.now();
+  const P = mesh.positions, I = mesh.index, V = mesh.vertexCount, T = I.length / 3;
+  const { group, count: G } = positionGroups(P, V);
+  // Area-weighted normals from the winding, and area per position.
+  const N = new Float64Array(G * 3), area = new Float64Array(G);
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let v = 0; v < V; v++) {
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const diag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) || 1;
+  for (let t = 0; t < T; t++) {
+    const a = I[t * 3], b = I[t * 3 + 1], c = I[t * 3 + 2];
+    const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2];
+    const wx = P[c * 3] - P[a * 3], wy = P[c * 3 + 1] - P[a * 3 + 1], wz = P[c * 3 + 2] - P[a * 3 + 2];
+    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx, A = Math.hypot(nx, ny, nz) / 6;
+    for (let k = 0; k < 3; k++) {
+      const g = group[I[t * 3 + k]];
+      N[g * 3] += nx; N[g * 3 + 1] += ny; N[g * 3 + 2] += nz;
+      area[g] += A;
+    }
+  }
+  const { twoSided, flip } = components(I, T, group, G, P);
+  const bvh = buildBVH(P, I, T);
+
+  let sides = 0;
+  for (let g = 0; g < G; g++) sides += twoSided[g] ? 2 : 1;
+  const R = Math.max(MIN_RAYS, Math.min(MAX_RAYS, Math.floor((opt.rays || RAY_BUDGET) / Math.max(1, sides))));
+  const eps = 2e-5 * diag, tmin = 1e-6 * diag;
+  // Positions: the first vertex of each group.
+  const first = new Int32Array(G).fill(-1);
+  for (let v = 0; v < V; v++) if (first[group[v]] < 0) first[group[v]] = v;
+  const vg = new Float32Array(G);
+  let rays = 0;
+  for (let g = 0; g < G; g++) {
+    let nx = N[g * 3], ny = N[g * 3 + 1], nz = N[g * 3 + 2];
+    const l = Math.hypot(nx, ny, nz);
+    if (!(l > 0)) { vg[g] = 1; continue; }
+    const k = flip[g] ? -1 / l : 1 / l;
+    nx *= k; ny *= k; nz *= k;
+    const v = first[g], px = P[v * 3], py = P[v * 3 + 1], pz = P[v * 3 + 2];
+    // Low-discrepancy per-vertex offsets (R2 sequence).
+    const rot = (g * 0.7548776662466927) % 1, jit = (g * 0.5698402909980532 + 0.5) % 1;
+    let f = escaping(bvh, px, py, pz, nx, ny, nz, R, rot, jit, eps, tmin);
+    rays += R;
+    if (twoSided[g] && f < 1) {
+      f = Math.max(f, escaping(bvh, px, py, pz, -nx, -ny, -nz, R, rot, jit, eps, tmin));
+      rays += R;
+    }
+    vg[g] = f;
+    if (opt.progress && (g & 16383) === 0) opt.progress(0.85 * (g / G));
+  }
+  // Average over neighbours to calm the noise of few rays: each pass takes the mean over the vertex's triangle fan.
+  const passes = R >= 48 ? 0 : R >= 24 ? 1 : R >= 12 ? 2 : R >= 6 ? 3 : R >= 4 ? 4 : R >= 2 ? 6 : 8;
+  const acc = new Float32Array(G), cnt = new Float32Array(G);
+  for (let pass = 0; pass < passes; pass++) {
+    acc.fill(0); cnt.fill(0);
+    for (let t = 0; t < T; t++) {
+      const a = group[I[t * 3]], b = group[I[t * 3 + 1]], c = group[I[t * 3 + 2]];
+      const s = vg[a] + vg[b] + vg[c];
+      acc[a] += s; acc[b] += s; acc[c] += s;
+      cnt[a] += 3; cnt[b] += 3; cnt[c] += 3;
+    }
+    for (let g = 0; g < G; g++) if (cnt[g] > 0) vg[g] = acc[g] / cnt[g];
+  }
+  // Few rays can miss a narrow opening, so a vertex only stays at zero if many more rays confirm it.
+  let confirmed = 0, reopened = 0;
+  for (let g = 0; g < G; g++) {
+    if (vg[g] > 1e-6) continue;
+    let nx = N[g * 3], ny = N[g * 3 + 1], nz = N[g * 3 + 2];
+    const l = Math.hypot(nx, ny, nz);
+    if (!(l > 0)) continue;
+    const k = flip[g] ? -1 / l : 1 / l;
+    nx *= k; ny *= k; nz *= k;
+    const v = first[g], px = P[v * 3], py = P[v * 3 + 1], pz = P[v * 3 + 2];
+    const rot = (g * 0.7548776662466927 + 0.37) % 1, jit = (g * 0.5698402909980532 + 0.13) % 1;
+    let f = escaping(bvh, px, py, pz, nx, ny, nz, CONFIRM_RAYS, rot, jit, eps, tmin);
+    rays += CONFIRM_RAYS;
+    if (twoSided[g] && f === 0) { f = escaping(bvh, px, py, pz, -nx, -ny, -nz, CONFIRM_RAYS, rot, jit, eps, tmin); rays += CONFIRM_RAYS; }
+    if (f > 0) { vg[g] = f; reopened++; } else confirmed++;
+    if (opt.progress && (g & 16383) === 0) opt.progress(0.85 + 0.15 * (g / G));
+  }
+  // A barely visible vertex whose neighbours are nearly all hidden sits inside a hidden region (the odd ray that slipped
+  // through); it counts as hidden too, or deleting the region would leave it behind as a floating scrap.
+  // seenNear / allNear: fan neighbours that are visible at all, and all of them (counted once per triangle).
+  const seenNear = new Uint32Array(G), allNear = new Uint32Array(G);
+  for (let pass = 0; pass < 3; pass++) {
+    seenNear.fill(0); allNear.fill(0);
+    for (let t = 0; t < T; t++) {
+      const a = group[I[t * 3]], b = group[I[t * 3 + 1]], c = group[I[t * 3 + 2]];
+      const sa = vg[a] > 0 ? 1 : 0, sb = vg[b] > 0 ? 1 : 0, sc = vg[c] > 0 ? 1 : 0;
+      seenNear[a] += sb + sc; seenNear[b] += sa + sc; seenNear[c] += sa + sb;
+      allNear[a] += 2; allNear[b] += 2; allNear[c] += 2;
+    }
+    let changed = 0;
+    for (let g = 0; g < G; g++) if (vg[g] > 0 && vg[g] < 0.05 && seenNear[g] * 5 <= allNear[g]) { vg[g] = 0; changed++; }
+    if (!changed) break;
+  }
+  const vis = new Float32Array(V);
+  for (let v = 0; v < V; v++) vis[v] = vg[group[v]];
+  // Share of the surface by visibility: hist[0] is never seen, hist[i] up to i/100 (the last bin takes the rest); and the
+  // mean, Zhang & Turk's visibility of the whole mesh.
+  let total = 0, mean = 0;
+  const hist = new Array(HIST_BINS + 1).fill(0);
+  for (let g = 0; g < G; g++) {
+    const A = area[g], x = vg[g];
+    total += A; mean += A * x;
+    hist[x <= 1e-6 ? 0 : Math.min(HIST_BINS, Math.ceil(x * 100))] += A;
+  }
+  for (let i = 0; i <= HIST_BINS; i++) hist[i] = total > 0 ? hist[i] / total : 0;
+  let open = 0;
+  for (let g = 0; g < G; g++) if (twoSided[g]) open++;
+  return {
+    vis,
+    stats: { ms: Date.now() - t0, rays, raysPerVertex: R, passes, positions: G, confirmed, reopened, openShare: open / Math.max(1, G), mean: total > 0 ? mean / total : 1, hist },
+  };
+}
+
+return { computeVisibility };
+})();
 
 
-const LABEL = { NONE: 0, MORE1: 1, MORE2: 2, MORE3: 3, LESS1: -1, LESS2: -2, LESS3: -3, KEEP: 100 };
+// PLAIN is painted normal detail: it only blocks the automatic hidden-area levels and reaches the reducer as NONE.
+// CULL marks surface that no direction can see, for Delete faces nothing can see.
+const LABEL = { NONE: 0, MORE1: 1, MORE2: 2, MORE3: 3, LESS1: -1, LESS2: -2, LESS3: -3, KEEP: 100, PLAIN: 50, CULL: -100 };
 const MORE_MULT = { 1: 2, 2: 4, 3: 8 };
 const LESS_MULT = { '-1': 0.5, '-2': 0.25, '-3': 0.125 };
 const PRIORITY_FLAG = 4;
@@ -3143,7 +3506,7 @@ function packAttributes(mesh) {
 function categorize(index, labels) {
   const out = { keep: 0, more: 0, less: 0, rest: 0 };
   if (!labels) { out.rest = index.length / 3; return out; }
-  const kind = l => (l === LABEL.KEEP ? 'keep' : l > 0 ? 'more' : l < 0 ? 'less' : 'rest');
+  const kind = l => (l === LABEL.KEEP ? 'keep' : l === LABEL.PLAIN ? 'rest' : l > 0 ? 'more' : l < 0 ? 'less' : 'rest');
   for (let t = 0; t < index.length; t += 3) {
     const a = kind(labels[index[t]]), b = kind(labels[index[t + 1]]), c = kind(labels[index[t + 2]]);
     out[a === b || a === c ? a : b === c ? b : a]++;
@@ -3170,6 +3533,39 @@ function concatIndex(a, b) {
 // Remove tiny floating parts: pieces smaller than this share of the model's size.
 const PRUNE_SIZE = 0.01;
 
+// Visibility bands for the automatic hidden-area levels, from most to least hidden: [visibility below, Less level].
+const HIDDEN_LEVELS = {
+  gentle: [[0.03, LABEL.LESS2], [0.12, LABEL.LESS1]],
+  medium: [[0.03, LABEL.LESS3], [0.12, LABEL.LESS2], [0.25, LABEL.LESS1]],
+  strong: [[0.08, LABEL.LESS3], [0.2, LABEL.LESS2], [0.35, LABEL.LESS1]],
+};
+
+// Less levels per vertex from its visibility (0 never seen … 1 fully open); with cull, vertices nothing sees get CULL.
+function hiddenLabels(vis, level = 'medium', cull = false) {
+  const bands = HIDDEN_LEVELS[level] || HIDDEN_LEVELS.medium, out = new Int8Array(vis.length);
+  for (let v = 0; v < vis.length; v++) {
+    const x = vis[v];
+    if (cull && x <= 1e-6) { out[v] = LABEL.CULL; continue; }
+    for (const [below, l] of bands) if (x < below) { out[v] = l; break; }
+  }
+  return out;
+}
+
+// Drops the triangles whose three corners are all culled (labelOf(v) === CULL). Returns index itself when none are.
+function dropCulled(index, labelOf) {
+  const keep = new Uint8Array(index.length / 3);
+  let n = 0;
+  for (let t = 0; t < keep.length; t++) {
+    if (labelOf(index[t * 3]) === LABEL.CULL && labelOf(index[t * 3 + 1]) === LABEL.CULL && labelOf(index[t * 3 + 2]) === LABEL.CULL) continue;
+    keep[t] = 1;
+    n++;
+  }
+  if (n === keep.length) return index;
+  const out = new Uint32Array(n * 3);
+  for (let t = 0, o = 0; t < keep.length; t++) if (keep[t]) { out[o++] = index[t * 3]; out[o++] = index[t * 3 + 1]; out[o++] = index[t * 3 + 2]; }
+  return out;
+}
+
 // Region-aware reduction. labels: Int8Array per vertex (LABEL values).
 // st.seam (under symmetry): vertices on the mirror plane. They are the cut half's border but not a real one, so they stay
 // free to simplify along the plane; LockBorder then becomes explicit locks on the real open borders in st.border.
@@ -3193,6 +3589,11 @@ function reduce(S, mesh, packed, labels, st) {
   // Tiny floating parts go first, by their size alone. The simplifier's own Prune option cuts at the error limit, and
   // with no limit it removes whole pieces, the model itself included, when it can't otherwise reach the budget.
   if (st.prune) index = S.simplifyPrune(index, positions, 3, PRUNE_SIZE);
+  // Surface nothing can see goes before anything else; its corners left on the border count as the lowest Less level.
+  if (labels && labels.includes(LABEL.CULL)) {
+    index = dropCulled(index, v => labels[v]);
+    labels = labels.map(l => (l === LABEL.CULL ? LABEL.LESS3 : l === LABEL.PLAIN ? 0 : l));
+  }
   const present = new Set();
   if (labels) for (let i = 0; i < V; i++) if (labels[i]) present.add(labels[i]);
   const regionTris = {};
@@ -3233,7 +3634,7 @@ function reduce(S, mesh, packed, labels, st) {
   if (labels) {
     for (let i = 0; i < V; i++) {
       if (labels[i] === LABEL.KEEP) { lock[i] = 1; keepCount++; }
-      else if (labels[i] > 0 && labels[i] < LABEL.KEEP) lock[i] = PRIORITY_FLAG;
+      else if (labels[i] > 0 && labels[i] < LABEL.KEEP && labels[i] !== LABEL.PLAIN) lock[i] = PRIORITY_FLAG;
     }
   }
   for (const lvl of [1, 2, 3]) {
@@ -4012,7 +4413,7 @@ function stripUVs(mesh, hardAngle = 30) {
 
 // ---------- new UVs ----------
 // Linear texel density per painted label, so More ×2/×4/×8 areas also get 2/4/8× the texels.
-const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2 };
+const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2, 50: 1, '-100': 0.5 * Math.SQRT1_2 };
 
 function faceDensity(mesh, labels) {
   if (!labels) return null;
@@ -4906,7 +5307,7 @@ function unwrapResult(mesh, plane, labels, size) {
 // ---------- quad remeshing ----------
 // Quads per area in painted regions, as a multiple of the unpainted density. Keep, which can't keep the original
 // triangles here, asks for the densest quads.
-const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8 };
+const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8, 50: 1, '-100': 0.125 };
 // Edges sharper than this (degrees) stay edge loops in Quads mode, when they run long enough to be features.
 const QUAD_SHARP = 45;
 // Every separate piece gets at least this many quads (while that takes no more than a fifth of the budget).
@@ -5000,7 +5401,8 @@ function pieceDensity(mesh, density, quads) {
 // along the shorter diagonal, with the input's normals, colours and nearest welded vertex where each vertex sits.
 // A vertex whose faces lie on different materials gets one copy per material.
 // plane: the mirror plane, whose vertices must not make up a whole triangle (mirroring would drop it).
-function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null) {
+// labels (per welded vertex): faces whose corners all lie on culled surface (LABEL.CULL) are left out.
+function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, labels = null) {
   const nv = rq.positions.length / 3, F = rq.faceCount, faces = rq.faces, BI = base.index, P = rq.positions;
   const hitT = rq.hit.tri, bc = rq.hit.bary;
   const near = new Int32Array(nv), nOrig = new Float32Array(nv * 3), nSmooth = new Float32Array(nv * 3);
@@ -5034,9 +5436,11 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null) {
     return d2(a, c) <= d2(b, d);
   };
   const tris = [], marks = [];
+  const culled = labels && labels.includes(LABEL.CULL) ? v => hitT[v] >= 0 && labels[welded(near[v])] === LABEL.CULL : null;
   let quads = 0;
   for (let f = 0; f < F; f++) {
     const t = rq.faceTri[f], a = faces[f * 4], b = faces[f * 4 + 1], c = faces[f * 4 + 2], d = faces[f * 4 + 3];
+    if (culled && culled(a) && culled(b) && culled(c) && (d === QUAD_NONE || culled(d))) continue;
     const m = t >= 0 ? triMat[t] : base.vMat[near[a]];
     if (d === QUAD_NONE) { tris.push(vid(a, m), vid(b, m), vid(c, m)); marks.push(0); continue; }
     if (alongAC(a, b, c, d)) tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m));
@@ -5124,7 +5528,7 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
   if (labels) {
     density = new Float32Array(V);
     let any = false;
-    for (let v = 0; v < V; v++) { const l = labels[welded(v)]; density[v] = QUAD_DENSITY[l] ?? 1; if (l) any = true; }
+    for (let v = 0; v < V; v++) { const l = labels[welded(v)]; density[v] = QUAD_DENSITY[l] ?? 1; if (l && l !== LABEL.PLAIN) any = true; }
     if (!any) density = null;
   }
   density = pieceDensity({ positions: base.positions, index, vertexCount: V }, density, quads);
@@ -5137,7 +5541,9 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     sharp: st.quadSharp ?? QUAD_SHARP,
   });
   // Triangles the prune dropped don't exist for the lookups either.
-  const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym);
+  // Culled surface is remeshed like the lowest Less level and its finished faces dropped: cutting it out first leaves
+  // jagged holes whose outlines cost quads.
+  const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym, labels);
   let result = surf.mesh, symmetry = null;
   if (sym) {
     result = mirrorMerge(result, sym);
@@ -5225,11 +5631,25 @@ function runReduction(S, ctx, labels, st, fopt, progress = null) {
 
 
 
+
 // One context per tab: the welded mesh, its packed attributes and the caches runReduction keeps.
 const ctxs = new Map();
 
 self.onmessage = async ({ data }) => {
   try {
+    // Hidden areas run in a worker of their own and report how far they got (at most every 100 ms).
+    if (data.type === 'visibility') {
+      let last = 0;
+      const progress = frac => {
+        const now = Date.now();
+        if (now - last < 100) return;
+        last = now;
+        self.postMessage({ type: 'progress', id: data.id, frac });
+      };
+      const { vis, stats } = computeVisibility(data.mesh, { progress });
+      self.postMessage({ type: 'visibility', id: data.id, vis, stats }, [vis.buffer]);
+      return;
+    }
     if (data.type === 'unwrap') {
       const out = unwrapResult(data.mesh, data.plane, data.labels, data.size), r = out.result;
       const transfer = [r.positions.buffer, r.normals.buffer, r.index.buffer, r.vPart.buffer, r.vMat.buffer, r.srcId.buffer, r.uvs.buffer];
@@ -7157,9 +7577,348 @@ const QUAD_NONE = NONE;
 
 return { remeshQuads, QUAD_NONE };
 })();
+const { computeVisibility } = (() => {
+// How visible each vertex is from all sides: the share of a surrounding sphere of view directions that sees it, with
+// head-on views weighted more, after Zhang & Turk, "Visibility-guided simplification" (IEEE Visualization 2002).
+// 1 anywhere on a convex shape, 0 where no direction can see the surface (enclosed or buried).
+// Rays are cast from every vertex (every distinct position) over a cosine-weighted hemisphere, a few per vertex on
+// dense meshes, then averaged over neighbours. Closed shapes look outward only (inside-out ones are flipped first);
+// open surfaces such as cards and cloth count whichever side is more visible.
+
+// Rays for the whole model; dense meshes get fewer per vertex and more smoothing.
+const RAY_BUDGET = 1.5e6;
+const MIN_RAYS = 1, MAX_RAYS = 64;
+// Vertices that come out as never seen are checked again with this many rays before anything counts as hidden for good.
+const CONFIRM_RAYS = 32;
+// Visibility histogram bins, a hundredth wide; the last one also holds everything above.
+const HIST_BINS = 50;
+
+// Open-addressing table of distinct positions (bit-identical floats, which the weld guarantees for copies).
+function positionGroups(P, V) {
+  const bits = new Int32Array(P.buffer, P.byteOffset, V * 3);
+  let size = 1;
+  while (size < V * 2) size <<= 1;
+  const table = new Int32Array(size).fill(-1), group = new Int32Array(V), mask = size - 1;
+  let count = 0;
+  for (let v = 0; v < V; v++) {
+    const x = bits[v * 3], y = bits[v * 3 + 1], z = bits[v * 3 + 2];
+    let h = Math.imul(x, 0x9e3779b1) ^ Math.imul(y, 0x85ebca77) ^ Math.imul(z, 0xc2b2ae3d);
+    h = (h ^ (h >>> 15)) & mask;
+    for (;;) {
+      const r = table[h];
+      if (r < 0) { table[h] = v; group[v] = count++; break; }
+      if (bits[r * 3] === x && bits[r * 3 + 1] === y && bits[r * 3 + 2] === z) { group[v] = group[r]; break; }
+      h = (h + 1) & mask;
+    }
+  }
+  return { group, count };
+}
+
+// Median-split BVH for occlusion rays. Triangles are stored in leaf order as a corner and two edges.
+function buildBVH(P, I, T) {
+  const cen = new Float32Array(T * 3);
+  for (let t = 0; t < T; t++) {
+    const a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, c = I[t * 3 + 2] * 3;
+    cen[t * 3] = P[a] + P[b] + P[c]; cen[t * 3 + 1] = P[a + 1] + P[b + 1] + P[c + 1]; cen[t * 3 + 2] = P[a + 2] + P[b + 2] + P[c + 2];
+  }
+  const order = new Uint32Array(T);
+  for (let t = 0; t < T; t++) order[t] = t;
+  const maxNodes = 2 * Math.ceil(T / 2) + 1;
+  const box = new Float32Array(maxNodes * 6), right = new Int32Array(maxNodes), first = new Uint32Array(maxNodes);
+  const count = new Uint8Array(maxNodes), axisOf = new Uint8Array(maxNodes);
+  let nodes = 0;
+  const select = (lo, hi, k, ax) => {
+    while (hi > lo) {
+      const pivot = cen[order[(lo + hi) >> 1] * 3 + ax];
+      let i = lo, j = hi;
+      while (i <= j) {
+        while (cen[order[i] * 3 + ax] < pivot) i++;
+        while (cen[order[j] * 3 + ax] > pivot) j--;
+        if (i <= j) { const s = order[i]; order[i] = order[j]; order[j] = s; i++; j--; }
+      }
+      if (k <= j) hi = j; else if (k >= i) lo = i; else return;
+    }
+  };
+  // Iterative build in depth-first order, so a left child always follows its parent; a right child's id is known once
+  // it is popped. Pending entries: start, end, parent (-1 for the root).
+  const todo = [[0, T, -1]];
+  while (todo.length) {
+    const [s, e, parent] = todo.pop();
+    const node = nodes++;
+    if (parent >= 0) right[parent] = node;
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    let cx0 = Infinity, cy0 = Infinity, cz0 = Infinity, cx1 = -Infinity, cy1 = -Infinity, cz1 = -Infinity;
+    for (let i = s; i < e; i++) {
+      const t = order[i];
+      for (let k = 0; k < 3; k++) {
+        const v = I[t * 3 + k] * 3, x = P[v], y = P[v + 1], z = P[v + 2];
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (z < z0) z0 = z; if (z > z1) z1 = z;
+      }
+      const cx = cen[t * 3], cy = cen[t * 3 + 1], cz = cen[t * 3 + 2];
+      if (cx < cx0) cx0 = cx; if (cx > cx1) cx1 = cx;
+      if (cy < cy0) cy0 = cy; if (cy > cy1) cy1 = cy;
+      if (cz < cz0) cz0 = cz; if (cz > cz1) cz1 = cz;
+    }
+    const o = node * 6;
+    box[o] = x0; box[o + 1] = y0; box[o + 2] = z0; box[o + 3] = x1; box[o + 4] = y1; box[o + 5] = z1;
+    if (e - s <= 4) { right[node] = -1; first[node] = s; count[node] = e - s; continue; }
+    const dx = cx1 - cx0, dy = cy1 - cy0, dz = cz1 - cz0;
+    const ax = dx >= dy && dx >= dz ? 0 : dy >= dz ? 1 : 2;
+    const mid = (s + e) >> 1;
+    select(s, e - 1, mid, ax);
+    axisOf[node] = ax;
+    right[node] = 0;
+    // The left range is pushed last so it is built next and gets id node + 1.
+    todo.push([mid, e, node]);
+    todo.push([s, mid, -2 - node]);
+  }
+  // Leaf-ordered triangle data.
+  const tri = new Float32Array(T * 9);
+  for (let i = 0; i < T; i++) {
+    const t = order[i], a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, c = I[t * 3 + 2] * 3, o = i * 9;
+    tri[o] = P[a]; tri[o + 1] = P[a + 1]; tri[o + 2] = P[a + 2];
+    tri[o + 3] = P[b] - P[a]; tri[o + 4] = P[b + 1] - P[a + 1]; tri[o + 5] = P[b + 2] - P[a + 2];
+    tri[o + 6] = P[c] - P[a]; tri[o + 7] = P[c + 1] - P[a + 1]; tri[o + 8] = P[c + 2] - P[a + 2];
+  }
+  return { box, right, first, count, axisOf, tri };
+}
+
+// True when the ray (origin o, unit direction d) hits any triangle at a distance in (tmin, infinity).
+const STACK = new Int32Array(128);
+function occluded(bvh, ox, oy, oz, dx, dy, dz, tmin) {
+  const { box, right, first, count, axisOf, tri } = bvh;
+  const ix = 1 / dx, iy = 1 / dy, iz = 1 / dz;
+  let sp = 0;
+  STACK[sp++] = 0;
+  while (sp > 0) {
+    const node = STACK[--sp], b = node * 6;
+    let t0 = (box[b] - ox) * ix, t1 = (box[b + 3] - ox) * ix;
+    if (t0 > t1) { const s = t0; t0 = t1; t1 = s; }
+    let u0 = (box[b + 1] - oy) * iy, u1 = (box[b + 4] - oy) * iy;
+    if (u0 > u1) { const s = u0; u0 = u1; u1 = s; }
+    if (u0 > t0) t0 = u0;
+    if (u1 < t1) t1 = u1;
+    let w0 = (box[b + 2] - oz) * iz, w1 = (box[b + 5] - oz) * iz;
+    if (w0 > w1) { const s = w0; w0 = w1; w1 = s; }
+    if (w0 > t0) t0 = w0;
+    if (w1 < t1) t1 = w1;
+    if (t0 > t1 || t1 < tmin) continue;
+    const r = right[node];
+    if (r >= 0) {
+      // Near child on top, so occluders close to the origin are found first.
+      const ax = axisOf[node];
+      if (ax === 0 ? dx < 0 : ax === 1 ? dy < 0 : dz < 0) { STACK[sp++] = node + 1; STACK[sp++] = r; } else { STACK[sp++] = r; STACK[sp++] = node + 1; }
+      continue;
+    }
+    for (let i = first[node], e = i + count[node]; i < e; i++) {
+      const o = i * 9;
+      const e1x = tri[o + 3], e1y = tri[o + 4], e1z = tri[o + 5], e2x = tri[o + 6], e2y = tri[o + 7], e2z = tri[o + 8];
+      const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (det > -1e-20 && det < 1e-20) continue;
+      const inv = 1 / det, sx = ox - tri[o], sy = oy - tri[o + 1], sz = oz - tri[o + 2];
+      const u = (sx * px + sy * py + sz * pz) * inv;
+      if (u < 0 || u > 1) continue;
+      const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+      const v = (dx * qx + dy * qy + dz * qz) * inv;
+      if (v < 0 || u + v > 1) continue;
+      if ((e2x * qx + e2y * qy + e2z * qz) * inv > tmin) return true;
+    }
+  }
+  return false;
+}
+
+// Components of the position-welded surface: whether each is closed (no open edge) and, if closed, inside-out.
+function components(I, T, group, G, P) {
+  const root = new Int32Array(G);
+  for (let g = 0; g < G; g++) root[g] = g;
+  const find = x => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+  const keys = new Float64Array(T * 3);
+  let n = 0;
+  for (let t = 0; t < T; t++) {
+    const a = group[I[t * 3]], b = group[I[t * 3 + 1]], c = group[I[t * 3 + 2]];
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) root[ra] = rb;
+    const rc = find(c), rb2 = find(b);
+    if (rc !== rb2) root[rc] = rb2;
+    if (a !== b) keys[n++] = a < b ? a * G + b : b * G + a;
+    if (b !== c) keys[n++] = b < c ? b * G + c : c * G + b;
+    if (c !== a) keys[n++] = c < a ? c * G + a : a * G + c;
+  }
+  const edges = keys.subarray(0, n).sort();
+  const open = new Uint8Array(G);
+  for (let i = 0; i < n;) {
+    let j = i + 1;
+    while (j < n && edges[j] === edges[i]) j++;
+    if (j - i === 1) { const a = Math.floor(edges[i] / G); open[find(a)] = 1; }
+    i = j;
+  }
+  // Signed volume per component; a closed one with negative volume faces inward.
+  const vol = new Float64Array(G);
+  for (let t = 0; t < T; t++) {
+    const a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, c = I[t * 3 + 2] * 3;
+    const cx = P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1], cy = P[b + 2] * P[c] - P[b] * P[c + 2], cz = P[b] * P[c + 1] - P[b + 1] * P[c];
+    vol[find(group[I[t * 3]])] += P[a] * cx + P[a + 1] * cy + P[a + 2] * cz;
+  }
+  const twoSided = new Uint8Array(G), flip = new Uint8Array(G);
+  for (let g = 0; g < G; g++) {
+    const r = find(g);
+    if (open[r]) twoSided[g] = 1;
+    else if (vol[r] < 0) flip[g] = 1;
+  }
+  return { twoSided, flip };
+}
+
+// Fraction of R cosine-weighted rays around normal n that escape. rot and jit decorrelate neighbouring vertices.
+function escaping(bvh, px, py, pz, nx, ny, nz, R, rot, jit, eps, tmin) {
+  // Orthonormal frame around n (Duff et al. 2017).
+  const s = nz >= 0 ? 1 : -1, a = -1 / (s + nz), b = nx * ny * a;
+  const tx = 1 + s * nx * nx * a, ty = s * b, tz = -s * nx;
+  const bx = b, by = s + ny * ny * a, bz = -ny;
+  const ox = px + nx * eps, oy = py + ny * eps, oz = pz + nz * eps;
+  let free = 0;
+  for (let i = 0; i < R; i++) {
+    // Fibonacci disk lifted onto the hemisphere: cosine-weighted and evenly spread.
+    const r = Math.sqrt((i + jit) / R), phi = 6.283185307179586 * (i * 0.6180339887498949 + rot);
+    const u = r * Math.cos(phi), v = r * Math.sin(phi), w = Math.sqrt(Math.max(0, 1 - r * r));
+    const dx = tx * u + bx * v + nx * w, dy = ty * u + by * v + ny * w, dz = tz * u + bz * v + nz * w;
+    if (!occluded(bvh, ox, oy, oz, dx, dy, dz, tmin)) free++;
+  }
+  return free / R;
+}
+
+// mesh: { positions, index, vertexCount }. Returns { vis: Float32Array per vertex in [0, 1], stats }.
+// opt.rays overrides the ray budget; opt.progress(frac) reports how far it got.
+function computeVisibility(mesh, opt = {}) {
+  const t0 = Date.now();
+  const P = mesh.positions, I = mesh.index, V = mesh.vertexCount, T = I.length / 3;
+  const { group, count: G } = positionGroups(P, V);
+  // Area-weighted normals from the winding, and area per position.
+  const N = new Float64Array(G * 3), area = new Float64Array(G);
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let v = 0; v < V; v++) {
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const diag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) || 1;
+  for (let t = 0; t < T; t++) {
+    const a = I[t * 3], b = I[t * 3 + 1], c = I[t * 3 + 2];
+    const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2];
+    const wx = P[c * 3] - P[a * 3], wy = P[c * 3 + 1] - P[a * 3 + 1], wz = P[c * 3 + 2] - P[a * 3 + 2];
+    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx, A = Math.hypot(nx, ny, nz) / 6;
+    for (let k = 0; k < 3; k++) {
+      const g = group[I[t * 3 + k]];
+      N[g * 3] += nx; N[g * 3 + 1] += ny; N[g * 3 + 2] += nz;
+      area[g] += A;
+    }
+  }
+  const { twoSided, flip } = components(I, T, group, G, P);
+  const bvh = buildBVH(P, I, T);
+
+  let sides = 0;
+  for (let g = 0; g < G; g++) sides += twoSided[g] ? 2 : 1;
+  const R = Math.max(MIN_RAYS, Math.min(MAX_RAYS, Math.floor((opt.rays || RAY_BUDGET) / Math.max(1, sides))));
+  const eps = 2e-5 * diag, tmin = 1e-6 * diag;
+  // Positions: the first vertex of each group.
+  const first = new Int32Array(G).fill(-1);
+  for (let v = 0; v < V; v++) if (first[group[v]] < 0) first[group[v]] = v;
+  const vg = new Float32Array(G);
+  let rays = 0;
+  for (let g = 0; g < G; g++) {
+    let nx = N[g * 3], ny = N[g * 3 + 1], nz = N[g * 3 + 2];
+    const l = Math.hypot(nx, ny, nz);
+    if (!(l > 0)) { vg[g] = 1; continue; }
+    const k = flip[g] ? -1 / l : 1 / l;
+    nx *= k; ny *= k; nz *= k;
+    const v = first[g], px = P[v * 3], py = P[v * 3 + 1], pz = P[v * 3 + 2];
+    // Low-discrepancy per-vertex offsets (R2 sequence).
+    const rot = (g * 0.7548776662466927) % 1, jit = (g * 0.5698402909980532 + 0.5) % 1;
+    let f = escaping(bvh, px, py, pz, nx, ny, nz, R, rot, jit, eps, tmin);
+    rays += R;
+    if (twoSided[g] && f < 1) {
+      f = Math.max(f, escaping(bvh, px, py, pz, -nx, -ny, -nz, R, rot, jit, eps, tmin));
+      rays += R;
+    }
+    vg[g] = f;
+    if (opt.progress && (g & 16383) === 0) opt.progress(0.85 * (g / G));
+  }
+  // Average over neighbours to calm the noise of few rays: each pass takes the mean over the vertex's triangle fan.
+  const passes = R >= 48 ? 0 : R >= 24 ? 1 : R >= 12 ? 2 : R >= 6 ? 3 : R >= 4 ? 4 : R >= 2 ? 6 : 8;
+  const acc = new Float32Array(G), cnt = new Float32Array(G);
+  for (let pass = 0; pass < passes; pass++) {
+    acc.fill(0); cnt.fill(0);
+    for (let t = 0; t < T; t++) {
+      const a = group[I[t * 3]], b = group[I[t * 3 + 1]], c = group[I[t * 3 + 2]];
+      const s = vg[a] + vg[b] + vg[c];
+      acc[a] += s; acc[b] += s; acc[c] += s;
+      cnt[a] += 3; cnt[b] += 3; cnt[c] += 3;
+    }
+    for (let g = 0; g < G; g++) if (cnt[g] > 0) vg[g] = acc[g] / cnt[g];
+  }
+  // Few rays can miss a narrow opening, so a vertex only stays at zero if many more rays confirm it.
+  let confirmed = 0, reopened = 0;
+  for (let g = 0; g < G; g++) {
+    if (vg[g] > 1e-6) continue;
+    let nx = N[g * 3], ny = N[g * 3 + 1], nz = N[g * 3 + 2];
+    const l = Math.hypot(nx, ny, nz);
+    if (!(l > 0)) continue;
+    const k = flip[g] ? -1 / l : 1 / l;
+    nx *= k; ny *= k; nz *= k;
+    const v = first[g], px = P[v * 3], py = P[v * 3 + 1], pz = P[v * 3 + 2];
+    const rot = (g * 0.7548776662466927 + 0.37) % 1, jit = (g * 0.5698402909980532 + 0.13) % 1;
+    let f = escaping(bvh, px, py, pz, nx, ny, nz, CONFIRM_RAYS, rot, jit, eps, tmin);
+    rays += CONFIRM_RAYS;
+    if (twoSided[g] && f === 0) { f = escaping(bvh, px, py, pz, -nx, -ny, -nz, CONFIRM_RAYS, rot, jit, eps, tmin); rays += CONFIRM_RAYS; }
+    if (f > 0) { vg[g] = f; reopened++; } else confirmed++;
+    if (opt.progress && (g & 16383) === 0) opt.progress(0.85 + 0.15 * (g / G));
+  }
+  // A barely visible vertex whose neighbours are nearly all hidden sits inside a hidden region (the odd ray that slipped
+  // through); it counts as hidden too, or deleting the region would leave it behind as a floating scrap.
+  // seenNear / allNear: fan neighbours that are visible at all, and all of them (counted once per triangle).
+  const seenNear = new Uint32Array(G), allNear = new Uint32Array(G);
+  for (let pass = 0; pass < 3; pass++) {
+    seenNear.fill(0); allNear.fill(0);
+    for (let t = 0; t < T; t++) {
+      const a = group[I[t * 3]], b = group[I[t * 3 + 1]], c = group[I[t * 3 + 2]];
+      const sa = vg[a] > 0 ? 1 : 0, sb = vg[b] > 0 ? 1 : 0, sc = vg[c] > 0 ? 1 : 0;
+      seenNear[a] += sb + sc; seenNear[b] += sa + sc; seenNear[c] += sa + sb;
+      allNear[a] += 2; allNear[b] += 2; allNear[c] += 2;
+    }
+    let changed = 0;
+    for (let g = 0; g < G; g++) if (vg[g] > 0 && vg[g] < 0.05 && seenNear[g] * 5 <= allNear[g]) { vg[g] = 0; changed++; }
+    if (!changed) break;
+  }
+  const vis = new Float32Array(V);
+  for (let v = 0; v < V; v++) vis[v] = vg[group[v]];
+  // Share of the surface by visibility: hist[0] is never seen, hist[i] up to i/100 (the last bin takes the rest); and the
+  // mean, Zhang & Turk's visibility of the whole mesh.
+  let total = 0, mean = 0;
+  const hist = new Array(HIST_BINS + 1).fill(0);
+  for (let g = 0; g < G; g++) {
+    const A = area[g], x = vg[g];
+    total += A; mean += A * x;
+    hist[x <= 1e-6 ? 0 : Math.min(HIST_BINS, Math.ceil(x * 100))] += A;
+  }
+  for (let i = 0; i <= HIST_BINS; i++) hist[i] = total > 0 ? hist[i] / total : 0;
+  let open = 0;
+  for (let g = 0; g < G; g++) if (twoSided[g]) open++;
+  return {
+    vis,
+    stats: { ms: Date.now() - t0, rays, raysPerVertex: R, passes, positions: G, confirmed, reopened, openShare: open / Math.max(1, G), mean: total > 0 ? mean / total : 1, hist },
+  };
+}
+
+return { computeVisibility };
+})();
 
 
-const LABEL = { NONE: 0, MORE1: 1, MORE2: 2, MORE3: 3, LESS1: -1, LESS2: -2, LESS3: -3, KEEP: 100 };
+// PLAIN is painted normal detail: it only blocks the automatic hidden-area levels and reaches the reducer as NONE.
+// CULL marks surface that no direction can see, for Delete faces nothing can see.
+const LABEL = { NONE: 0, MORE1: 1, MORE2: 2, MORE3: 3, LESS1: -1, LESS2: -2, LESS3: -3, KEEP: 100, PLAIN: 50, CULL: -100 };
 const MORE_MULT = { 1: 2, 2: 4, 3: 8 };
 const LESS_MULT = { '-1': 0.5, '-2': 0.25, '-3': 0.125 };
 const PRIORITY_FLAG = 4;
@@ -7453,7 +8212,7 @@ function packAttributes(mesh) {
 function categorize(index, labels) {
   const out = { keep: 0, more: 0, less: 0, rest: 0 };
   if (!labels) { out.rest = index.length / 3; return out; }
-  const kind = l => (l === LABEL.KEEP ? 'keep' : l > 0 ? 'more' : l < 0 ? 'less' : 'rest');
+  const kind = l => (l === LABEL.KEEP ? 'keep' : l === LABEL.PLAIN ? 'rest' : l > 0 ? 'more' : l < 0 ? 'less' : 'rest');
   for (let t = 0; t < index.length; t += 3) {
     const a = kind(labels[index[t]]), b = kind(labels[index[t + 1]]), c = kind(labels[index[t + 2]]);
     out[a === b || a === c ? a : b === c ? b : a]++;
@@ -7480,6 +8239,39 @@ function concatIndex(a, b) {
 // Remove tiny floating parts: pieces smaller than this share of the model's size.
 const PRUNE_SIZE = 0.01;
 
+// Visibility bands for the automatic hidden-area levels, from most to least hidden: [visibility below, Less level].
+const HIDDEN_LEVELS = {
+  gentle: [[0.03, LABEL.LESS2], [0.12, LABEL.LESS1]],
+  medium: [[0.03, LABEL.LESS3], [0.12, LABEL.LESS2], [0.25, LABEL.LESS1]],
+  strong: [[0.08, LABEL.LESS3], [0.2, LABEL.LESS2], [0.35, LABEL.LESS1]],
+};
+
+// Less levels per vertex from its visibility (0 never seen … 1 fully open); with cull, vertices nothing sees get CULL.
+function hiddenLabels(vis, level = 'medium', cull = false) {
+  const bands = HIDDEN_LEVELS[level] || HIDDEN_LEVELS.medium, out = new Int8Array(vis.length);
+  for (let v = 0; v < vis.length; v++) {
+    const x = vis[v];
+    if (cull && x <= 1e-6) { out[v] = LABEL.CULL; continue; }
+    for (const [below, l] of bands) if (x < below) { out[v] = l; break; }
+  }
+  return out;
+}
+
+// Drops the triangles whose three corners are all culled (labelOf(v) === CULL). Returns index itself when none are.
+function dropCulled(index, labelOf) {
+  const keep = new Uint8Array(index.length / 3);
+  let n = 0;
+  for (let t = 0; t < keep.length; t++) {
+    if (labelOf(index[t * 3]) === LABEL.CULL && labelOf(index[t * 3 + 1]) === LABEL.CULL && labelOf(index[t * 3 + 2]) === LABEL.CULL) continue;
+    keep[t] = 1;
+    n++;
+  }
+  if (n === keep.length) return index;
+  const out = new Uint32Array(n * 3);
+  for (let t = 0, o = 0; t < keep.length; t++) if (keep[t]) { out[o++] = index[t * 3]; out[o++] = index[t * 3 + 1]; out[o++] = index[t * 3 + 2]; }
+  return out;
+}
+
 // Region-aware reduction. labels: Int8Array per vertex (LABEL values).
 // st.seam (under symmetry): vertices on the mirror plane. They are the cut half's border but not a real one, so they stay
 // free to simplify along the plane; LockBorder then becomes explicit locks on the real open borders in st.border.
@@ -7503,6 +8295,11 @@ function reduce(S, mesh, packed, labels, st) {
   // Tiny floating parts go first, by their size alone. The simplifier's own Prune option cuts at the error limit, and
   // with no limit it removes whole pieces, the model itself included, when it can't otherwise reach the budget.
   if (st.prune) index = S.simplifyPrune(index, positions, 3, PRUNE_SIZE);
+  // Surface nothing can see goes before anything else; its corners left on the border count as the lowest Less level.
+  if (labels && labels.includes(LABEL.CULL)) {
+    index = dropCulled(index, v => labels[v]);
+    labels = labels.map(l => (l === LABEL.CULL ? LABEL.LESS3 : l === LABEL.PLAIN ? 0 : l));
+  }
   const present = new Set();
   if (labels) for (let i = 0; i < V; i++) if (labels[i]) present.add(labels[i]);
   const regionTris = {};
@@ -7543,7 +8340,7 @@ function reduce(S, mesh, packed, labels, st) {
   if (labels) {
     for (let i = 0; i < V; i++) {
       if (labels[i] === LABEL.KEEP) { lock[i] = 1; keepCount++; }
-      else if (labels[i] > 0 && labels[i] < LABEL.KEEP) lock[i] = PRIORITY_FLAG;
+      else if (labels[i] > 0 && labels[i] < LABEL.KEEP && labels[i] !== LABEL.PLAIN) lock[i] = PRIORITY_FLAG;
     }
   }
   for (const lvl of [1, 2, 3]) {
@@ -8322,7 +9119,7 @@ function stripUVs(mesh, hardAngle = 30) {
 
 // ---------- new UVs ----------
 // Linear texel density per painted label, so More ×2/×4/×8 areas also get 2/4/8× the texels.
-const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2 };
+const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2, 50: 1, '-100': 0.5 * Math.SQRT1_2 };
 
 function faceDensity(mesh, labels) {
   if (!labels) return null;
@@ -9216,7 +10013,7 @@ function unwrapResult(mesh, plane, labels, size) {
 // ---------- quad remeshing ----------
 // Quads per area in painted regions, as a multiple of the unpainted density. Keep, which can't keep the original
 // triangles here, asks for the densest quads.
-const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8 };
+const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8, 50: 1, '-100': 0.125 };
 // Edges sharper than this (degrees) stay edge loops in Quads mode, when they run long enough to be features.
 const QUAD_SHARP = 45;
 // Every separate piece gets at least this many quads (while that takes no more than a fifth of the budget).
@@ -9310,7 +10107,8 @@ function pieceDensity(mesh, density, quads) {
 // along the shorter diagonal, with the input's normals, colours and nearest welded vertex where each vertex sits.
 // A vertex whose faces lie on different materials gets one copy per material.
 // plane: the mirror plane, whose vertices must not make up a whole triangle (mirroring would drop it).
-function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null) {
+// labels (per welded vertex): faces whose corners all lie on culled surface (LABEL.CULL) are left out.
+function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, labels = null) {
   const nv = rq.positions.length / 3, F = rq.faceCount, faces = rq.faces, BI = base.index, P = rq.positions;
   const hitT = rq.hit.tri, bc = rq.hit.bary;
   const near = new Int32Array(nv), nOrig = new Float32Array(nv * 3), nSmooth = new Float32Array(nv * 3);
@@ -9344,9 +10142,11 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null) {
     return d2(a, c) <= d2(b, d);
   };
   const tris = [], marks = [];
+  const culled = labels && labels.includes(LABEL.CULL) ? v => hitT[v] >= 0 && labels[welded(near[v])] === LABEL.CULL : null;
   let quads = 0;
   for (let f = 0; f < F; f++) {
     const t = rq.faceTri[f], a = faces[f * 4], b = faces[f * 4 + 1], c = faces[f * 4 + 2], d = faces[f * 4 + 3];
+    if (culled && culled(a) && culled(b) && culled(c) && (d === QUAD_NONE || culled(d))) continue;
     const m = t >= 0 ? triMat[t] : base.vMat[near[a]];
     if (d === QUAD_NONE) { tris.push(vid(a, m), vid(b, m), vid(c, m)); marks.push(0); continue; }
     if (alongAC(a, b, c, d)) tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m));
@@ -9434,7 +10234,7 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
   if (labels) {
     density = new Float32Array(V);
     let any = false;
-    for (let v = 0; v < V; v++) { const l = labels[welded(v)]; density[v] = QUAD_DENSITY[l] ?? 1; if (l) any = true; }
+    for (let v = 0; v < V; v++) { const l = labels[welded(v)]; density[v] = QUAD_DENSITY[l] ?? 1; if (l && l !== LABEL.PLAIN) any = true; }
     if (!any) density = null;
   }
   density = pieceDensity({ positions: base.positions, index, vertexCount: V }, density, quads);
@@ -9447,7 +10247,9 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     sharp: st.quadSharp ?? QUAD_SHARP,
   });
   // Triangles the prune dropped don't exist for the lookups either.
-  const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym);
+  // Culled surface is remeshed like the lowest Less level and its finished faces dropped: cutting it out first leaves
+  // jagged holes whose outlines cost quads.
+  const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym, labels);
   let result = surf.mesh, symmetry = null;
   if (sym) {
     result = mirrorMerge(result, sym);
@@ -9624,6 +10426,7 @@ const FBX_TEMPLATE = {"FBXHeaderExtension":["FBXHeaderExtension",[],[["FBXHeader
 
 
 
+
 const $ = id => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat('en-US');
 const fmt = n => numberFormat.format(Math.round(n));
@@ -9642,7 +10445,7 @@ const DEFAULTS = {
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
-  symmetry: false, symSide: '+', tintMirror: true, showPlane: true, sections: {},
+  symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
 };
 const settings = { ...DEFAULTS };
@@ -9661,7 +10464,7 @@ function saveSettings() {
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
 const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
-  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'symmetry', 'symSide'];
+  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
 const newDocId = () => `t${Date.now().toString(36)}${(docSeq++).toString(36)}`;
@@ -9674,6 +10477,7 @@ function newDoc(saved = null) {
       meta: null, collected: null, welded: null, labels: null, result: null, info: null, engineMesh: null,
       orig: { bvh: null, index: null }, left: null, diag: 1, size: 1, undo: [], redo: [], strokeSnapshot: null, strokeChanged: false,
       painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
+      vis: null, visStats: null, visJob: null, visFrac: 0, auto: null,
     },
     symPlane: { axis: 0, offset: 0, fit: null, ready: false },
     session: { model: null, files: new Map(), ready: false },
@@ -9749,7 +10553,7 @@ sceneL.add(planeL);
 sceneR.add(planeR);
 
 const display = { L: null, R: null };
-const paintRGB = { more: [0, 0, 0], less: [0, 0, 0], keep: [0, 0, 0] };
+const paintRGB = { more: [0, 0, 0], less: [0, 0, 0], keep: [0, 0, 0], plain: [0, 0, 0], hidden: [0, 0, 0] };
 const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 function applyTheme() {
@@ -9762,7 +10566,7 @@ function applyTheme() {
   planeMat.color.set(cssVar('--accent'));
   tintMat.color.set(cssVar('--accent'));
   planeEdgeMat.color.set(cssVar('--accent'));
-  for (const k of ['more', 'less', 'keep']) {
+  for (const k of Object.keys(paintRGB)) {
     const c = new THREE.Color(cssVar(`--${k}`));
     paintRGB[k] = [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)];
   }
@@ -9971,6 +10775,142 @@ const texEngine = {
   },
 };
 
+// ---------- hidden areas ----------
+// How visible each vertex is from all sides is worked out once per weld, in a third worker, so reductions and texture
+// jobs never wait behind it. One job at a time: starting one ends the one still running (its promise rejects with
+// 'cancelled'); that tab starts again when it is shown.
+const visEngine = {
+  worker: null, seq: 0, job: null, failed: false,
+  cancel() {
+    if (!this.job) return;
+    this.job.reject(new Error('cancelled'));
+    this.job = null;
+    if (this.worker) this.worker.terminate();
+    this.worker = null;
+  },
+  run(msg, onProgress) {
+    this.cancel();
+    if (!this.failed && !this.worker) {
+      try {
+        this.worker = new Worker(workerSource(), { type: 'module' });
+        this.worker.onmessage = ({ data }) => {
+          const job = this.job;
+          if (!job || data.id !== job.id) return;
+          if (data.type === 'progress') { job.onProgress(data.frac); return; }
+          this.job = null;
+          if (data.type === 'error') job.reject(new Error(data.message)); else job.resolve(data);
+        };
+        this.worker.onerror = e => {
+          e.preventDefault();
+          this.failed = true;
+          const job = this.job;
+          this.job = null;
+          this.worker.terminate();
+          this.worker = null;
+          if (job) this.runLocal(job.msg, job.onProgress).then(job.resolve, job.reject);
+        };
+      } catch { this.failed = true; }
+    }
+    if (this.failed) return this.runLocal(msg, onProgress);
+    return new Promise((resolve, reject) => {
+      this.job = { id: ++this.seq, resolve, reject, msg, onProgress };
+      this.worker.postMessage({ ...msg, id: this.job.id });
+    });
+  },
+  async runLocal(msg, onProgress) {
+    await nextFrame();
+    return computeVisibility(msg.mesh, { progress: onProgress });
+  },
+};
+
+// Models up to this many triangles wait for their hidden areas before the first reduction.
+const QUICK_VISIBILITY = 300000;
+// Starts the visibility pass for tab d unless it has one or is running it; the result updates the tab when it lands.
+async function startVisibility(d = doc) {
+  const s = d.state;
+  if (!s || !s.welded || s.vis || s.visJob) return;
+  const w = s.welded;
+  const job = visEngine.run({ type: 'visibility', mesh: { positions: w.positions, index: w.index, vertexCount: w.vertexCount } }, frac => {
+    s.visFrac = frac;
+    if (d === doc) updateHiddenUI();
+  });
+  s.visJob = job;
+  s.visFrac = 0;
+  if (d === doc) updateHiddenUI();
+  let out = null;
+  try { out = await job; } catch (err) {
+    if (err.message !== 'cancelled') { console.error(err); if (d === doc) showError(`Couldn't work out the hidden areas: ${err.message || err}`); }
+  }
+  if (s.visJob !== job) return;
+  s.visJob = null;
+  if (out && s.welded === w) { s.vis = out.vis; s.visStats = out.stats; }
+  if (d !== doc) { if (s.vis) d.dirty = true; return; }
+  if (s.vis) { applyHidden(); saveSessionSoon(); } else { updateHiddenUI(); scheduleReduce(0); }
+}
+// The hidden-area levels for the active tab's settings, or none.
+function updateAuto() {
+  state.auto = settings.hidden && state.vis ? hiddenLabels(state.vis, settings.hiddenLevel, settings.hiddenCull) : null;
+}
+function applyHidden(reduce = true) {
+  updateAuto();
+  recolorAll();
+  updateLegend();
+  syncControls();
+  if (reduce) scheduleReduce(0);
+}
+// Share of the surface seen less than x (x <= 0.5), from the visibility histogram.
+function hiddenShare(stats, x) {
+  let sum = stats.hist[0];
+  for (let i = 1; i <= Math.min(stats.hist.length - 1, Math.round(x * 100)); i++) sum += stats.hist[i];
+  return sum;
+}
+const HIDDEN_REACH = { gentle: 0.12, medium: 0.25, strong: 0.35 };
+function updateHiddenUI() {
+  const on = settings.hidden;
+  $('hiddenOn').checked = on;
+  $('hiddenBody').hidden = !on;
+  pressSeg('hiddenLevelSeg', 'level', settings.hiddenLevel);
+  $('hiddenCull').checked = settings.hiddenCull;
+  const line = $('hiddenStatus');
+  if (!on || !state.welded) { line.hidden = true; return; }
+  line.hidden = false;
+  if (state.visJob) {
+    line.className = 'status-line busy';
+    $('hiddenHead').textContent = `Looking for hidden areas… ${Math.round(100 * (state.visFrac || 0))}%`;
+    $('hiddenNote').textContent = 'The result updates when this is done.';
+    return;
+  }
+  if (!state.vis) {
+    line.className = 'status-line';
+    $('hiddenHead').textContent = 'Not worked out yet';
+    $('hiddenNote').textContent = '';
+    return;
+  }
+  const st = state.visStats, pc = x => `${x < 0.1 ? (100 * x).toFixed(1) : Math.round(100 * x)}%`;
+  const share = hiddenShare(st, HIDDEN_REACH[settings.hiddenLevel] || 0.25);
+  line.className = 'status-line ok';
+  $('hiddenHead').textContent = share < 0.0005 ? 'Nothing here is hard to see' : `${pc(share)} of the surface gets less detail`;
+  $('hiddenNote').textContent = st.hist[0] > 0.0005
+    ? `${pc(st.hist[0])} can't be seen from any side${settings.hiddenCull ? ' and is deleted' : ''}.`
+    : 'Nothing is hidden from every side.';
+}
+// Visibility depends only on the surface, so a new weld of the same positions keeps it; null when any vertex moved.
+function transferVis(old, oldVis, welded) {
+  const key = (P, i) => `${P[i * 3]},${P[i * 3 + 1]},${P[i * 3 + 2]}`;
+  const map = new Map();
+  for (let i = 0; i < old.vertexCount; i++) map.set(key(old.positions, i), oldVis[i]);
+  const out = new Float32Array(welded.vertexCount);
+  for (let i = 0; i < welded.vertexCount; i++) {
+    const v = map.get(key(welded.positions, i));
+    if (v === undefined) return null;
+    out[i] = v;
+  }
+  return out;
+}
+// Visibility kept in the session as a byte per vertex; 0 stays exactly never seen.
+const packVis = vis => Uint8Array.from(vis, x => (x <= 1e-6 ? 0 : 1 + Math.round(Math.min(1, x) * 254)));
+const unpackVis = q => Float32Array.from(q, b => (b ? Math.max(0.5, b - 1) / 254 : 0));
+
 // ---------- last session ----------
 // Open tabs are kept in this browser (IndexedDB) and reopen on the next visit: per tab, the model and the files that
 // came with it, texture assignments, paint, mirror plane, camera and model settings. Keys: 'tabs' (order and active
@@ -10052,6 +10992,7 @@ async function saveSession() {
   const record = {
     version: 2, id, title: doc.title, model: session.model, files: [...session.files.keys()], textures, settings: docSettings(),
     labels: state.labels, weld: { hardAngle: settings.hardAngle, weldTol: settings.weldTol },
+    vis: state.vis ? packVis(state.vis) : null, visStats: state.vis ? state.visStats : null,
     symPlane: symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset } : null,
     camera: { position: camera.position.toArray(), target: controls.target.toArray() },
   };
@@ -10327,6 +11268,13 @@ async function rebuildWeld(resetLabels) {
   const savedLabels = saved && saved.labels && saved.labels.length === welded.vertexCount && saved.weld
     && saved.weld.hardAngle === settings.hardAngle && saved.weld.weldTol === settings.weldTol ? saved.labels : null;
   state.labels = savedLabels ? Int8Array.from(savedLabels) : resetLabels || !old ? new Int8Array(welded.vertexCount) : transferLabels(old, oldLabels, welded);
+  const oldVis = state.vis;
+  visEngine.cancel();
+  state.visJob = null;
+  state.vis = savedLabels && saved.vis && saved.vis.length === welded.vertexCount ? unpackVis(saved.vis) : !resetLabels && old && oldVis ? transferVis(old, oldVis, welded) : null;
+  state.visStats = state.vis ? (savedLabels ? saved.visStats : state.visStats) || null : null;
+  if (state.vis && !state.visStats) state.vis = null;
+  updateAuto();
   resetHistory();
   state.engineMesh = {
     positions: welded.positions, normals: welded.normals, uvs: welded.uvs, colors: welded.colors,
@@ -10354,13 +11302,17 @@ async function rebuildWeld(resetLabels) {
   if (state.meta.sample && resetLabels) paintSample();
   await engine.load(doc.id, state.engineMesh);
   setStatus('');
+  if (settings.hidden && !state.vis) startVisibility();
   if (symActive()) refreshMirrorView();
   updateModelPanel();
   updateLegend();
+  updateHiddenUI();
   updateTargetUI();
   updateResultUI();
   updateUVPanel();
-  scheduleReduce(0);
+  // A smaller model's hidden areas take a second or so, so its first reduction waits for them instead of running
+  // twice; the pass schedules it when it lands.
+  if (!(state.visJob && welded.triCount <= QUICK_VISIBILITY)) scheduleReduce(0);
 }
 
 function transferLabels(old, oldLabels, welded) {
@@ -11108,12 +12060,17 @@ function applyDisplaySettings() {
   requestRender();
 }
 
-function writeLabelColor(label, out, o) {
-  if (!label) { out[o + 3] = 0; return; }
-  const c = label === LABEL.KEEP ? paintRGB.keep : label > 0 ? paintRGB.more : paintRGB.less;
+// auto: the hidden-area level where nothing is painted, shown fainter than paint, and strongest where faces get deleted.
+function writeLabelColor(label, out, o, auto = 0) {
+  if (!label && !auto) { out[o + 3] = 0; return; }
+  let c, alpha;
+  if (label === LABEL.PLAIN) { c = paintRGB.plain; alpha = 120; }
+  else if (label) { c = label === LABEL.KEEP ? paintRGB.keep : label > 0 ? paintRGB.more : paintRGB.less; alpha = label === LABEL.KEEP ? 150 : [0, 105, 145, 185][Math.abs(label)]; }
+  else { c = paintRGB.hidden; alpha = auto === LABEL.CULL ? 205 : [0, 70, 105, 140][-auto]; }
   out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2];
-  out[o + 3] = label === LABEL.KEEP ? 150 : [0, 105, 145, 185][Math.abs(label)];
+  out[o + 3] = alpha;
 }
+const autoAt = id => (state.auto ? state.auto[id] : 0);
 
 function labelOf(v) {
   const map = state.left && state.left.srcId;
@@ -11127,7 +12084,8 @@ function recolorLeft(verts) {
   const twin = L.twin, half = L.halfCount;
   let loA = Infinity, hiA = -1, loB = Infinity, hiB = -1;
   const touch = v => {
-    writeLabelColor(state.labels[labelOf(v)], d.colors, v * 4);
+    const id = labelOf(v);
+    writeLabelColor(state.labels[id], d.colors, v * 4, autoAt(id));
     if (v < half) { if (v < loA) loA = v; if (v > hiA) hiA = v; }
     else { if (v < loB) loB = v; if (v > hiB) hiB = v; }
   };
@@ -11146,7 +12104,7 @@ function recolorReduced() {
   const d = display.R;
   if (!d || !d.srcId) return;
   const n = d.srcId.length;
-  for (let v = 0; v < n; v++) writeLabelColor(state.labels[d.srcId[v]], d.colors, v * 4);
+  for (let v = 0; v < n; v++) writeLabelColor(state.labels[d.srcId[v]], d.colors, v * 4, autoAt(d.srcId[v]));
   const attr = d.paintGeo.attributes.color;
   attr.clearUpdateRanges();
   attr.needsUpdate = true;
@@ -11156,7 +12114,7 @@ function recolorAll() {
   const d = display.L;
   if (!d) return;
   const n = state.left.positions.length / 3;
-  for (let v = 0; v < n; v++) writeLabelColor(state.labels[labelOf(v)], d.colors, v * 4);
+  for (let v = 0; v < n; v++) { const id = labelOf(v); writeLabelColor(state.labels[id], d.colors, v * 4, autoAt(id)); }
   const attr = d.paintGeo.attributes.color;
   attr.clearUpdateRanges();
   attr.needsUpdate = true;
@@ -11228,6 +12186,7 @@ function paintValue() {
     case 'more': return settings.strength;
     case 'less': return -settings.strength;
     case 'keep': return LABEL.KEEP;
+    case 'plain': return LABEL.PLAIN;
     default: return 0;
   }
 }
@@ -11623,11 +12582,14 @@ async function runReduce() {
   reducing = true;
   setBusy(true);
   try {
-    const d = doc, labels = state.labels.slice(), st = reduceSettings();
+    // The reducer gets the paint with the hidden-area levels under it; the texture job only the paint, since levels
+    // that change across a chart split it into pieces whose padding eats the space they free.
+    const d = doc, labels = effectiveLabels(), paint = paintLabels(), st = reduceSettings(), auto = state.auto;
     const onProgress = st.topology === 'quads' ? p => { if (d === doc) showRemeshProgress(p); } : null;
     const out = await engine.call({ type: 'reduce', doc: d.id, labels, settings: st, finalize: finalizeOptions() }, onProgress);
-    if (d === doc) showResult(out.result, out.info, labels, st);
-    else keepResult(d, out.result, out.info, labels, st);
+    if (auto) out.info.cat = resultRegions(out.result, paint, auto);
+    if (d === doc) showResult(out.result, out.info, paint, st);
+    else keepResult(d, out.result, out.info, paint, st);
   } catch (err) {
     console.error(err);
     showError(`Reduction failed: ${err.message || err}`);
@@ -11635,6 +12597,28 @@ async function runReduce() {
   reducing = false;
   setBusy(false);
   if (reducePending) { reducePending = false; runReduce(); }
+}
+
+// Paint as the reducer sees it: Normal detail is unpainted, and the hidden-area levels fill in wherever nothing is painted.
+function effectiveLabels() {
+  const L = state.labels, A = state.auto, out = new Int8Array(L.length);
+  for (let i = 0; i < L.length; i++) { const m = L[i]; out[i] = m === LABEL.PLAIN ? 0 : m || (A ? A[i] : 0); }
+  return out;
+}
+function paintLabels() {
+  const out = state.labels.slice();
+  for (let i = 0; i < out.length; i++) if (out[i] === LABEL.PLAIN) out[i] = 0;
+  return out;
+}
+// Result triangles by what set their density: painted Keep, More or Less, the hidden-area levels, or nothing.
+function resultRegions(res, paint, auto) {
+  const out = { keep: 0, more: 0, less: 0, hidden: 0, rest: 0 }, idx = res.index, src = res.srcId;
+  const kind = id => { const m = paint[id]; return m === LABEL.KEEP ? 'keep' : m > 0 ? 'more' : m < 0 ? 'less' : auto[id] ? 'hidden' : 'rest'; };
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = kind(src[idx[t]]), b = kind(src[idx[t + 1]]), c = kind(src[idx[t + 2]]);
+    out[a === b || a === c ? a : b === c ? b : a]++;
+  }
+  return out;
 }
 
 function measureDeviation(res) {
@@ -11715,12 +12699,24 @@ function updateModelPanel() {
 }
 
 function updateLegend() {
-  const counts = { more: 0, less: 0, keep: 0 };
-  const L = state.labels;
-  if (L) for (let i = 0; i < L.length; i++) { const l = L[i]; if (l === LABEL.KEEP) counts.keep++; else if (l > 0) counts.more++; else if (l < 0) counts.less++; }
+  const counts = { more: 0, less: 0, keep: 0, plain: 0, hidden: 0 };
+  const L = state.labels, A = state.auto;
+  if (L) {
+    for (let i = 0; i < L.length; i++) {
+      const l = L[i];
+      if (l === LABEL.KEEP) counts.keep++;
+      else if (l === LABEL.PLAIN) counts.plain++;
+      else if (l > 0) counts.more++;
+      else if (l < 0) counts.less++;
+      else if (A && A[i]) counts.hidden++;
+    }
+  }
   const item = (cls, label, n) => el('li', {}, el('span', { className: `dot ${cls}` }), `${label} ${fmt(n)}`);
-  $('legend').replaceChildren(item('more', 'More', counts.more), item('less', 'Less', counts.less), item('keep', 'Keep', counts.keep));
-  $('legend').title = 'Painted vertices per region';
+  const items = [item('more', 'More', counts.more), item('less', 'Less', counts.less), item('keep', 'Keep', counts.keep)];
+  if (settings.hidden) items.push(item('plain', 'Normal', counts.plain));
+  if (A) items.push(item('hidden', 'Hidden', counts.hidden));
+  $('legend').replaceChildren(...items);
+  $('legend').title = A ? 'Painted vertices per region, and the unpainted ones the hidden-area levels reach' : 'Painted vertices per region';
 }
 
 function sizeBudgetInput() {
@@ -11784,7 +12780,7 @@ function updateResultUI() {
     for (const id of ['resTris', 'resVerts', 'resErr', 'resTex']) $(id).textContent = '—';
     $('resTex').className = '';
     $('resTime').textContent = '';
-    for (const id of ['bKeep', 'bMore', 'bLess', 'bRest']) $(id).style.width = '0';
+    for (const id of ['bKeep', 'bMore', 'bLess', 'bHidden', 'bRest']) $(id).style.width = '0';
     $('bMarker').hidden = true;
     $('barLegend').replaceChildren();
     $('resWhy').hidden = true;
@@ -11820,12 +12816,14 @@ function updateResultUI() {
   $('bKeep').style.width = pct(i.cat.keep);
   $('bMore').style.width = pct(i.cat.more);
   $('bLess').style.width = pct(i.cat.less);
+  $('bHidden').style.width = pct(i.cat.hidden || 0);
   $('bRest').style.width = pct(i.cat.rest);
   $('bMarker').hidden = false;
   $('bMarker').style.left = `calc(${pct(target)} - 1px)`;
-  $('bar').title = `Kept original ${fmt(i.cat.keep)} · More detail ${fmt(i.cat.more)} · Less detail ${fmt(i.cat.less)} · Unpainted ${fmt(i.cat.rest)} triangles; the line is the budget`;
-  const painted = i.cat.keep + i.cat.more + i.cat.less > 0;
-  const cats = [['keep', 'Keep', i.cat.keep], ['more', 'More', i.cat.more], ['less', 'Less', i.cat.less], ['rest', 'Unpainted', i.cat.rest]];
+  const hid = i.cat.hidden || 0;
+  $('bar').title = `Kept original ${fmt(i.cat.keep)} · More detail ${fmt(i.cat.more)} · Less detail ${fmt(i.cat.less)}${hid ? ` · Hidden ${fmt(hid)}` : ''} · Unpainted ${fmt(i.cat.rest)} triangles; the line is the budget`;
+  const painted = i.cat.keep + i.cat.more + i.cat.less + hid > 0;
+  const cats = [['keep', 'Keep', i.cat.keep], ['more', 'More', i.cat.more], ['less', 'Less', i.cat.less], ['hidden', 'Hidden', hid], ['rest', 'Unpainted', i.cat.rest]];
   $('barLegend').hidden = !painted;
   $('barLegend').replaceChildren(...(painted ? cats.filter(c => c[2] > 0).map(([k, name, n]) => el('li', {}, el('i', { className: `seg-${k}` }), `${name} ${fmt(n)}`)) : []));
   const tex = textureSummary();
@@ -12755,6 +13753,7 @@ function attachDoc() {
     return;
   }
   showEmptyState(false);
+  updateAuto();
   setLeftSurface(state.left || originalSurface());
   if (state.result) buildReducedDisplay(state.result);
   if (doc.camera) {
@@ -12772,6 +13771,7 @@ function attachDoc() {
   $('resErr').textContent = '…';
   if (state.result) setTimeout(() => measureDeviation(state.result), 30);
   if (state.result && state.result.uvLayout === 'pending' && state.geo) startTextureJob();
+  if (settings.hidden && !state.vis) startVisibility();
   if (doc.dirty || !state.result) { doc.dirty = false; scheduleReduce(0); }
   requestRender();
 }
@@ -12845,7 +13845,10 @@ function syncControls() {
   $('showPaintBtn').title = settings.showPaint ? 'Hide paint' : 'Show paint';
   $('toolPal').hidden = !state.welded;
   $('toolOpts').hidden = !state.welded || !paint;
-  const name = { more: 'More detail', less: 'Less detail', keep: quadMode() ? 'Keep · smallest quads' : 'Keep original', erase: 'Erase' }[settings.tool] || '';
+  // Normal detail only means something while hidden areas are on.
+  if (settings.tool === 'plain' && !settings.hidden) settings.tool = 'orbit';
+  $('toolPlain').hidden = !settings.hidden;
+  const name = { more: 'More detail', less: 'Less detail', keep: quadMode() ? 'Keep · smallest quads' : 'Keep original', plain: 'Normal detail', erase: 'Erase' }[settings.tool] || '';
   $('optName').textContent = name;
   $('optName').dataset.tool = settings.tool;
   $('optSize').hidden = settings.mode === 'fill';
@@ -12883,6 +13886,7 @@ function syncControls() {
   pressSeg('bakeSeg', 'bake', settings.bakeSize);
   $('keepUVOpts').hidden = q || settings.uvMode === 'new';
   syncSymmetryUI();
+  updateHiddenUI();
   applyTool();
 }
 
@@ -13003,6 +14007,14 @@ onSeg('symAxisSeg', 'axis', v => {
   scheduleReduce(0);
 });
 onSeg('symSideSeg', 'side', v => { settings.symSide = v; updateTint(); scheduleMirrorView(0); scheduleReduce(0); });
+$('hiddenOn').addEventListener('change', e => {
+  settings.hidden = e.target.checked;
+  saveSettings();
+  if (settings.hidden && state.welded && !state.vis) startVisibility();
+  applyHidden();
+});
+onSeg('hiddenLevelSeg', 'level', v => { settings.hiddenLevel = v; applyHidden(); });
+bindCheck('hiddenCull', 'hiddenCull', () => applyHidden());
 $('symDetect').addEventListener('click', async () => {
   if (!state.orig.bvh) return;
   setStatus('Finding the mirror plane…');
@@ -13151,7 +14163,7 @@ window.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if ((e.metaKey || e.ctrlKey) && k === 'y') { e.preventDefault(); redo(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const tools = { o: 'orbit', m: 'more', l: 'less', k: 'keep', e: 'erase' };
+  const tools = { o: 'orbit', m: 'more', l: 'less', k: 'keep', e: 'erase', ...(settings.hidden ? { n: 'plain' } : {}) };
   if (tools[k]) settings.tool = tools[k];
   else if (k === 'f') settings.mode = settings.mode === 'fill' ? 'brush' : 'fill';
   else if (k === 'w') { settings.wire = !settings.wire; applyDisplaySettings(); }

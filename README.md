@@ -7,7 +7,7 @@ Bring heavy 3D models down to a triangle budget in the browser, without losing t
 > [!NOTE]
 > **Written by AI, not maintained by hand.** Everything in this repository, the code, the tests and this README, is written and revised by an AI coding assistant (Claude, working in Claude Code) from its owner's requests. None of it is written or kept up to date by hand. Treat it as generated code: check what it produces before you rely on it, and read the code before you reuse it.
 
-Poly Budget is for models that are far too dense for real-time use: scans, sculpts and AI-generated meshes that arrive with a million or more triangles, split vertices and thousands of UV islands. Set a triangle budget, paint where the detail matters, and export a model whose textures still fit. Switch the budget to **Quads** and the model is rebuilt as quads whose edges follow its shape instead, ready for editing, subdivision and rigging.
+Poly Budget is for models that are far too dense for real-time use: scans, sculpts and AI-generated meshes that arrive with a million or more triangles, split vertices and thousands of UV islands. Set a triangle budget, paint where the detail matters (surface no one can see gets less on its own), and export a model whose textures still fit. Switch the budget to **Quads** and the model is rebuilt as quads whose edges follow its shape instead, ready for editing, subdivision and rigging.
 
 Everything runs in your browser. Models and textures are never uploaded.
 
@@ -55,10 +55,23 @@ Pick a tool from the palette on the left of the view; its options float above th
 | More detail | M | the detail a 2, 4 or 8 times larger budget would keep there |
 | Less detail | L | ½, ¼ or ⅛ of the triangles it would get otherwise |
 | Keep original | K | its vertices stay exactly as they are (in Quads mode: the smallest quads) |
+| Normal detail | N | the detail it would get without paint, kept out of the hidden-area levels (shown while Hidden areas is on) |
 | Erase | E | no paint |
 | Orbit | O | back to navigating |
 
 Paint with the brush or fill one connected piece at a time (F). `[` and `]` change the brush size, ⌘Z / Ctrl+Z undoes and ⇧⌘Z / Ctrl+Y redoes. Paint shows on both views and is kept with the tab.
+
+### Hidden areas
+
+On by default. Surface that is hard to see gets fewer triangles on its own, without painting: crevices, the covered side of hair and clothing, parts pushed into each other.
+
+- **How hidden:** once per model, a background pass measures how much of a sphere of views around the model reaches each vertex, weighting head-on views more (the measure of Zhang and Turk, *Visibility-Guided Simplification*, 2002). It takes a few seconds for a model of a million triangles and is kept with the tab, so it doesn't run again on the next visit.
+- **How much less:** Gentle, Medium or Strong turn the least visible surface into Less detail at ¼ or ⅛, with ½ around it; Strong reaches further out. The areas show in the view in their own colour, fainter than paint, and the result bar counts their triangles.
+- **Delete faces nothing can see** (off by default) removes surface that no direction reaches, such as the parts of pieces buried inside others, or sealed-off pockets.
+- Your paint always wins. The Normal detail brush keeps an area at its normal detail even where it is hidden.
+- It judges visibility from outside the model. Turn it off for rooms and other models seen from inside, and for parts that move into view when animated (the inside of a mouth that opens).
+
+How much it helps depends on how much is hidden. On models made of parts pushed into each other, the buried surface can take a fifth of a plain reduction's triangles, and here it gets almost none. On single-surface characters, where hidden surface is mostly thin crevices, the gain is smaller: on two AI-generated characters the error on the visible surface went down by 5 to 15% on one and by 0 to 5% on the other, depending on the budget and the mode.
 
 ### Mirror symmetry
 
@@ -103,7 +116,7 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 | Q | Triangles or quads |
 | W | Wireframe |
 | U | Texture & UVs panel |
-| O, M, L, K, E | Orbit, More detail, Less detail, Keep original, Erase |
+| O, M, L, K, N, E | Orbit, More detail, Less detail, Keep original, Normal detail, Erase |
 | F | Brush or fill a part |
 | `[` / `]` | Smaller / larger brush |
 | ⌘Z / Ctrl+Z | Undo paint |
@@ -113,15 +126,16 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 
 1. **Collect.** Every mesh in the file is flattened into one world-space triangle list with part and material ids (`src/collect.js`).
 2. **Weld.** Vertex copies at the same spot (within the merge distance) with the same UV and close enough normals are merged.
-3. **Reduce.** [meshoptimizer](https://github.com/zeux/meshoptimizer) does the collapsing, in a web worker. Less areas are simplified first to their own share with their borders held; More areas lock the vertices that a 2, 4 or 8 times larger budget keeps; Keep areas are locked outright. One last pass brings the whole mesh to the budget, weighing normals, UVs and vertex colours so shading and texture hold.
-4. **Check the UVs.** The original UV layout is rasterised once; for each result, Auto counts the texels its triangles now cover in the wrong island.
-5. **Unwrap.** New UVs are made in a second worker, so reductions never wait for them.
-6. **Bake.** For every texel of the new layout a shader finds the original surface below it (a ray cast inward from a thin cage along the normal, else the nearest point that faces the same way), reads the original UV there and samples each map. [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) answers these queries on the GPU, and the work is spread over frames so the view stays responsive.
-7. **Export.** FBX and OBJ are written directly; GLB goes through the three.js exporter.
+3. **Find hidden areas.** A third worker casts rays from every vertex over a cosine-weighted hemisphere, a couple per vertex on dense models and up to 64 on light ones, and averages them over neighbours. Closed shapes look outward only (inside-out ones are flipped first); open surfaces such as cards count whichever side is more visible. Vertices that come out as never seen are checked again with 32 rays before they count as hidden for good. The result turns into Less levels under the paint, and into deletions when asked.
+4. **Reduce.** [meshoptimizer](https://github.com/zeux/meshoptimizer) does the collapsing, in a web worker. Less areas are simplified first to their own share with their borders held; More areas lock the vertices that a 2, 4 or 8 times larger budget keeps; Keep areas are locked outright. One last pass brings the whole mesh to the budget, weighing normals, UVs and vertex colours so shading and texture hold.
+5. **Check the UVs.** The original UV layout is rasterised once; for each result, Auto counts the texels its triangles now cover in the wrong island.
+6. **Unwrap.** New UVs are made in a second worker, so reductions never wait for them.
+7. **Bake.** For every texel of the new layout a shader finds the original surface below it (a ray cast inward from a thin cage along the normal, else the nearest point that faces the same way), reads the original UV there and samples each map. [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) answers these queries on the GPU, and the work is spread over frames so the view stays responsive.
+8. **Export.** FBX and OBJ are written directly; GLB goes through the three.js exporter.
 
 ### Quad remeshing
 
-Quads mode replaces step 3 with a remesher (`src/quad.js`) that follows [Instant Meshes](https://github.com/wjakob/instant-meshes) (Jakob, Tarini, Panozzo and Sorkine-Hornung, *Instant Field-Aligned Meshes*, SIGGRAPH Asia 2015):
+Quads mode replaces step 4 with a remesher (`src/quad.js`) that follows [Instant Meshes](https://github.com/wjakob/instant-meshes) (Jakob, Tarini, Panozzo and Sorkine-Hornung, *Instant Field-Aligned Meshes*, SIGGRAPH Asia 2015):
 
 1. The welded model is merged once more by position alone, so UV seams, hard edges and material borders no longer cut the surface.
 2. A dense surface is clustered into a working surface of about two and a half vertices per quad edge, and edges still too long are split.
@@ -155,8 +169,9 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 | `src/app.js` | The UI: loading, tabs, painting, the texture and UV panel, the GPU bake, saving the session, export |
 | `src/core.js` | The mesh work, with no DOM code so it also runs in Node: welding, the reduction passes, the quad pipeline around the remesher, the UV fit check, unwrapping, UV layout edges, the FBX and OBJ writers |
 | `src/quad.js` | The quad remesher: working surface, field hierarchy, extraction, the all-quad pass, pole moves and relaxation |
+| `src/visibility.js` | How visible each vertex is from all sides, for hidden areas |
 | `src/collect.js` | Flattens a three.js scene into one mesh |
-| `src/worker.js` | Reductions and unwraps, off the main thread |
+| `src/worker.js` | Reductions, unwraps and the visibility pass, off the main thread |
 | `src/fbx_template.json` | The FBX header and definitions the writer starts from |
 
 Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with its loaders, exporter and fflate, meshoptimizer and three-mesh-bvh. The type is IBM Plex.

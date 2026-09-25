@@ -1,6 +1,8 @@
 import { remeshQuads, QUAD_NONE } from './quad.js';
 
-export const LABEL = { NONE: 0, MORE1: 1, MORE2: 2, MORE3: 3, LESS1: -1, LESS2: -2, LESS3: -3, KEEP: 100 };
+// PLAIN is painted normal detail: it only blocks the automatic hidden-area levels and reaches the reducer as NONE.
+// CULL marks surface that no direction can see, for Delete faces nothing can see.
+export const LABEL = { NONE: 0, MORE1: 1, MORE2: 2, MORE3: 3, LESS1: -1, LESS2: -2, LESS3: -3, KEEP: 100, PLAIN: 50, CULL: -100 };
 export const MORE_MULT = { 1: 2, 2: 4, 3: 8 };
 export const LESS_MULT = { '-1': 0.5, '-2': 0.25, '-3': 0.125 };
 const PRIORITY_FLAG = 4;
@@ -294,7 +296,7 @@ export function packAttributes(mesh) {
 export function categorize(index, labels) {
   const out = { keep: 0, more: 0, less: 0, rest: 0 };
   if (!labels) { out.rest = index.length / 3; return out; }
-  const kind = l => (l === LABEL.KEEP ? 'keep' : l > 0 ? 'more' : l < 0 ? 'less' : 'rest');
+  const kind = l => (l === LABEL.KEEP ? 'keep' : l === LABEL.PLAIN ? 'rest' : l > 0 ? 'more' : l < 0 ? 'less' : 'rest');
   for (let t = 0; t < index.length; t += 3) {
     const a = kind(labels[index[t]]), b = kind(labels[index[t + 1]]), c = kind(labels[index[t + 2]]);
     out[a === b || a === c ? a : b === c ? b : a]++;
@@ -321,6 +323,39 @@ function concatIndex(a, b) {
 // Remove tiny floating parts: pieces smaller than this share of the model's size.
 export const PRUNE_SIZE = 0.01;
 
+// Visibility bands for the automatic hidden-area levels, from most to least hidden: [visibility below, Less level].
+export const HIDDEN_LEVELS = {
+  gentle: [[0.03, LABEL.LESS2], [0.12, LABEL.LESS1]],
+  medium: [[0.03, LABEL.LESS3], [0.12, LABEL.LESS2], [0.25, LABEL.LESS1]],
+  strong: [[0.08, LABEL.LESS3], [0.2, LABEL.LESS2], [0.35, LABEL.LESS1]],
+};
+
+// Less levels per vertex from its visibility (0 never seen … 1 fully open); with cull, vertices nothing sees get CULL.
+export function hiddenLabels(vis, level = 'medium', cull = false) {
+  const bands = HIDDEN_LEVELS[level] || HIDDEN_LEVELS.medium, out = new Int8Array(vis.length);
+  for (let v = 0; v < vis.length; v++) {
+    const x = vis[v];
+    if (cull && x <= 1e-6) { out[v] = LABEL.CULL; continue; }
+    for (const [below, l] of bands) if (x < below) { out[v] = l; break; }
+  }
+  return out;
+}
+
+// Drops the triangles whose three corners are all culled (labelOf(v) === CULL). Returns index itself when none are.
+function dropCulled(index, labelOf) {
+  const keep = new Uint8Array(index.length / 3);
+  let n = 0;
+  for (let t = 0; t < keep.length; t++) {
+    if (labelOf(index[t * 3]) === LABEL.CULL && labelOf(index[t * 3 + 1]) === LABEL.CULL && labelOf(index[t * 3 + 2]) === LABEL.CULL) continue;
+    keep[t] = 1;
+    n++;
+  }
+  if (n === keep.length) return index;
+  const out = new Uint32Array(n * 3);
+  for (let t = 0, o = 0; t < keep.length; t++) if (keep[t]) { out[o++] = index[t * 3]; out[o++] = index[t * 3 + 1]; out[o++] = index[t * 3 + 2]; }
+  return out;
+}
+
 // Region-aware reduction. labels: Int8Array per vertex (LABEL values).
 // st.seam (under symmetry): vertices on the mirror plane. They are the cut half's border but not a real one, so they stay
 // free to simplify along the plane; LockBorder then becomes explicit locks on the real open borders in st.border.
@@ -344,6 +379,11 @@ export function reduce(S, mesh, packed, labels, st) {
   // Tiny floating parts go first, by their size alone. The simplifier's own Prune option cuts at the error limit, and
   // with no limit it removes whole pieces, the model itself included, when it can't otherwise reach the budget.
   if (st.prune) index = S.simplifyPrune(index, positions, 3, PRUNE_SIZE);
+  // Surface nothing can see goes before anything else; its corners left on the border count as the lowest Less level.
+  if (labels && labels.includes(LABEL.CULL)) {
+    index = dropCulled(index, v => labels[v]);
+    labels = labels.map(l => (l === LABEL.CULL ? LABEL.LESS3 : l === LABEL.PLAIN ? 0 : l));
+  }
   const present = new Set();
   if (labels) for (let i = 0; i < V; i++) if (labels[i]) present.add(labels[i]);
   const regionTris = {};
@@ -384,7 +424,7 @@ export function reduce(S, mesh, packed, labels, st) {
   if (labels) {
     for (let i = 0; i < V; i++) {
       if (labels[i] === LABEL.KEEP) { lock[i] = 1; keepCount++; }
-      else if (labels[i] > 0 && labels[i] < LABEL.KEEP) lock[i] = PRIORITY_FLAG;
+      else if (labels[i] > 0 && labels[i] < LABEL.KEEP && labels[i] !== LABEL.PLAIN) lock[i] = PRIORITY_FLAG;
     }
   }
   for (const lvl of [1, 2, 3]) {
@@ -1163,7 +1203,7 @@ export function stripUVs(mesh, hardAngle = 30) {
 
 // ---------- new UVs ----------
 // Linear texel density per painted label, so More ×2/×4/×8 areas also get 2/4/8× the texels.
-const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2 };
+const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2, 50: 1, '-100': 0.5 * Math.SQRT1_2 };
 
 function faceDensity(mesh, labels) {
   if (!labels) return null;
@@ -2057,7 +2097,7 @@ export function unwrapResult(mesh, plane, labels, size) {
 // ---------- quad remeshing ----------
 // Quads per area in painted regions, as a multiple of the unpainted density. Keep, which can't keep the original
 // triangles here, asks for the densest quads.
-export const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8 };
+export const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8, 50: 1, '-100': 0.125 };
 // Edges sharper than this (degrees) stay edge loops in Quads mode, when they run long enough to be features.
 export const QUAD_SHARP = 45;
 // Every separate piece gets at least this many quads (while that takes no more than a fifth of the budget).
@@ -2151,7 +2191,8 @@ function pieceDensity(mesh, density, quads) {
 // along the shorter diagonal, with the input's normals, colours and nearest welded vertex where each vertex sits.
 // A vertex whose faces lie on different materials gets one copy per material.
 // plane: the mirror plane, whose vertices must not make up a whole triangle (mirroring would drop it).
-function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null) {
+// labels (per welded vertex): faces whose corners all lie on culled surface (LABEL.CULL) are left out.
+function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, labels = null) {
   const nv = rq.positions.length / 3, F = rq.faceCount, faces = rq.faces, BI = base.index, P = rq.positions;
   const hitT = rq.hit.tri, bc = rq.hit.bary;
   const near = new Int32Array(nv), nOrig = new Float32Array(nv * 3), nSmooth = new Float32Array(nv * 3);
@@ -2185,9 +2226,11 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null) {
     return d2(a, c) <= d2(b, d);
   };
   const tris = [], marks = [];
+  const culled = labels && labels.includes(LABEL.CULL) ? v => hitT[v] >= 0 && labels[welded(near[v])] === LABEL.CULL : null;
   let quads = 0;
   for (let f = 0; f < F; f++) {
     const t = rq.faceTri[f], a = faces[f * 4], b = faces[f * 4 + 1], c = faces[f * 4 + 2], d = faces[f * 4 + 3];
+    if (culled && culled(a) && culled(b) && culled(c) && (d === QUAD_NONE || culled(d))) continue;
     const m = t >= 0 ? triMat[t] : base.vMat[near[a]];
     if (d === QUAD_NONE) { tris.push(vid(a, m), vid(b, m), vid(c, m)); marks.push(0); continue; }
     if (alongAC(a, b, c, d)) tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m));
@@ -2275,7 +2318,7 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
   if (labels) {
     density = new Float32Array(V);
     let any = false;
-    for (let v = 0; v < V; v++) { const l = labels[welded(v)]; density[v] = QUAD_DENSITY[l] ?? 1; if (l) any = true; }
+    for (let v = 0; v < V; v++) { const l = labels[welded(v)]; density[v] = QUAD_DENSITY[l] ?? 1; if (l && l !== LABEL.PLAIN) any = true; }
     if (!any) density = null;
   }
   density = pieceDensity({ positions: base.positions, index, vertexCount: V }, density, quads);
@@ -2288,7 +2331,9 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     sharp: st.quadSharp ?? QUAD_SHARP,
   });
   // Triangles the prune dropped don't exist for the lookups either.
-  const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym);
+  // Culled surface is remeshed like the lowest Less level and its finished faces dropped: cutting it out first leaves
+  // jagged holes whose outlines cost quads.
+  const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym, labels);
   let result = surf.mesh, symmetry = null;
   if (sym) {
     result = mirrorMerge(result, sym);

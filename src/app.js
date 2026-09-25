@@ -12,8 +12,9 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
-import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
+import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
+import { computeVisibility } from './visibility.js';
 
 const $ = id => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat('en-US');
@@ -33,7 +34,7 @@ const DEFAULTS = {
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
-  symmetry: false, symSide: '+', tintMirror: true, showPlane: true, sections: {},
+  symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
 };
 const settings = { ...DEFAULTS };
@@ -52,7 +53,7 @@ function saveSettings() {
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
 const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
-  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'symmetry', 'symSide'];
+  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
 const newDocId = () => `t${Date.now().toString(36)}${(docSeq++).toString(36)}`;
@@ -65,6 +66,7 @@ function newDoc(saved = null) {
       meta: null, collected: null, welded: null, labels: null, result: null, info: null, engineMesh: null,
       orig: { bvh: null, index: null }, left: null, diag: 1, size: 1, undo: [], redo: [], strokeSnapshot: null, strokeChanged: false,
       painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
+      vis: null, visStats: null, visJob: null, visFrac: 0, auto: null,
     },
     symPlane: { axis: 0, offset: 0, fit: null, ready: false },
     session: { model: null, files: new Map(), ready: false },
@@ -140,7 +142,7 @@ sceneL.add(planeL);
 sceneR.add(planeR);
 
 const display = { L: null, R: null };
-const paintRGB = { more: [0, 0, 0], less: [0, 0, 0], keep: [0, 0, 0] };
+const paintRGB = { more: [0, 0, 0], less: [0, 0, 0], keep: [0, 0, 0], plain: [0, 0, 0], hidden: [0, 0, 0] };
 const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 function applyTheme() {
@@ -153,7 +155,7 @@ function applyTheme() {
   planeMat.color.set(cssVar('--accent'));
   tintMat.color.set(cssVar('--accent'));
   planeEdgeMat.color.set(cssVar('--accent'));
-  for (const k of ['more', 'less', 'keep']) {
+  for (const k of Object.keys(paintRGB)) {
     const c = new THREE.Color(cssVar(`--${k}`));
     paintRGB[k] = [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)];
   }
@@ -362,6 +364,142 @@ const texEngine = {
   },
 };
 
+// ---------- hidden areas ----------
+// How visible each vertex is from all sides is worked out once per weld, in a third worker, so reductions and texture
+// jobs never wait behind it. One job at a time: starting one ends the one still running (its promise rejects with
+// 'cancelled'); that tab starts again when it is shown.
+const visEngine = {
+  worker: null, seq: 0, job: null, failed: false,
+  cancel() {
+    if (!this.job) return;
+    this.job.reject(new Error('cancelled'));
+    this.job = null;
+    if (this.worker) this.worker.terminate();
+    this.worker = null;
+  },
+  run(msg, onProgress) {
+    this.cancel();
+    if (!this.failed && !this.worker) {
+      try {
+        this.worker = new Worker(workerSource(), { type: 'module' });
+        this.worker.onmessage = ({ data }) => {
+          const job = this.job;
+          if (!job || data.id !== job.id) return;
+          if (data.type === 'progress') { job.onProgress(data.frac); return; }
+          this.job = null;
+          if (data.type === 'error') job.reject(new Error(data.message)); else job.resolve(data);
+        };
+        this.worker.onerror = e => {
+          e.preventDefault();
+          this.failed = true;
+          const job = this.job;
+          this.job = null;
+          this.worker.terminate();
+          this.worker = null;
+          if (job) this.runLocal(job.msg, job.onProgress).then(job.resolve, job.reject);
+        };
+      } catch { this.failed = true; }
+    }
+    if (this.failed) return this.runLocal(msg, onProgress);
+    return new Promise((resolve, reject) => {
+      this.job = { id: ++this.seq, resolve, reject, msg, onProgress };
+      this.worker.postMessage({ ...msg, id: this.job.id });
+    });
+  },
+  async runLocal(msg, onProgress) {
+    await nextFrame();
+    return computeVisibility(msg.mesh, { progress: onProgress });
+  },
+};
+
+// Models up to this many triangles wait for their hidden areas before the first reduction.
+const QUICK_VISIBILITY = 300000;
+// Starts the visibility pass for tab d unless it has one or is running it; the result updates the tab when it lands.
+async function startVisibility(d = doc) {
+  const s = d.state;
+  if (!s || !s.welded || s.vis || s.visJob) return;
+  const w = s.welded;
+  const job = visEngine.run({ type: 'visibility', mesh: { positions: w.positions, index: w.index, vertexCount: w.vertexCount } }, frac => {
+    s.visFrac = frac;
+    if (d === doc) updateHiddenUI();
+  });
+  s.visJob = job;
+  s.visFrac = 0;
+  if (d === doc) updateHiddenUI();
+  let out = null;
+  try { out = await job; } catch (err) {
+    if (err.message !== 'cancelled') { console.error(err); if (d === doc) showError(`Couldn't work out the hidden areas: ${err.message || err}`); }
+  }
+  if (s.visJob !== job) return;
+  s.visJob = null;
+  if (out && s.welded === w) { s.vis = out.vis; s.visStats = out.stats; }
+  if (d !== doc) { if (s.vis) d.dirty = true; return; }
+  if (s.vis) { applyHidden(); saveSessionSoon(); } else { updateHiddenUI(); scheduleReduce(0); }
+}
+// The hidden-area levels for the active tab's settings, or none.
+function updateAuto() {
+  state.auto = settings.hidden && state.vis ? hiddenLabels(state.vis, settings.hiddenLevel, settings.hiddenCull) : null;
+}
+function applyHidden(reduce = true) {
+  updateAuto();
+  recolorAll();
+  updateLegend();
+  syncControls();
+  if (reduce) scheduleReduce(0);
+}
+// Share of the surface seen less than x (x <= 0.5), from the visibility histogram.
+function hiddenShare(stats, x) {
+  let sum = stats.hist[0];
+  for (let i = 1; i <= Math.min(stats.hist.length - 1, Math.round(x * 100)); i++) sum += stats.hist[i];
+  return sum;
+}
+const HIDDEN_REACH = { gentle: 0.12, medium: 0.25, strong: 0.35 };
+function updateHiddenUI() {
+  const on = settings.hidden;
+  $('hiddenOn').checked = on;
+  $('hiddenBody').hidden = !on;
+  pressSeg('hiddenLevelSeg', 'level', settings.hiddenLevel);
+  $('hiddenCull').checked = settings.hiddenCull;
+  const line = $('hiddenStatus');
+  if (!on || !state.welded) { line.hidden = true; return; }
+  line.hidden = false;
+  if (state.visJob) {
+    line.className = 'status-line busy';
+    $('hiddenHead').textContent = `Looking for hidden areas… ${Math.round(100 * (state.visFrac || 0))}%`;
+    $('hiddenNote').textContent = 'The result updates when this is done.';
+    return;
+  }
+  if (!state.vis) {
+    line.className = 'status-line';
+    $('hiddenHead').textContent = 'Not worked out yet';
+    $('hiddenNote').textContent = '';
+    return;
+  }
+  const st = state.visStats, pc = x => `${x < 0.1 ? (100 * x).toFixed(1) : Math.round(100 * x)}%`;
+  const share = hiddenShare(st, HIDDEN_REACH[settings.hiddenLevel] || 0.25);
+  line.className = 'status-line ok';
+  $('hiddenHead').textContent = share < 0.0005 ? 'Nothing here is hard to see' : `${pc(share)} of the surface gets less detail`;
+  $('hiddenNote').textContent = st.hist[0] > 0.0005
+    ? `${pc(st.hist[0])} can't be seen from any side${settings.hiddenCull ? ' and is deleted' : ''}.`
+    : 'Nothing is hidden from every side.';
+}
+// Visibility depends only on the surface, so a new weld of the same positions keeps it; null when any vertex moved.
+function transferVis(old, oldVis, welded) {
+  const key = (P, i) => `${P[i * 3]},${P[i * 3 + 1]},${P[i * 3 + 2]}`;
+  const map = new Map();
+  for (let i = 0; i < old.vertexCount; i++) map.set(key(old.positions, i), oldVis[i]);
+  const out = new Float32Array(welded.vertexCount);
+  for (let i = 0; i < welded.vertexCount; i++) {
+    const v = map.get(key(welded.positions, i));
+    if (v === undefined) return null;
+    out[i] = v;
+  }
+  return out;
+}
+// Visibility kept in the session as a byte per vertex; 0 stays exactly never seen.
+const packVis = vis => Uint8Array.from(vis, x => (x <= 1e-6 ? 0 : 1 + Math.round(Math.min(1, x) * 254)));
+const unpackVis = q => Float32Array.from(q, b => (b ? Math.max(0.5, b - 1) / 254 : 0));
+
 // ---------- last session ----------
 // Open tabs are kept in this browser (IndexedDB) and reopen on the next visit: per tab, the model and the files that
 // came with it, texture assignments, paint, mirror plane, camera and model settings. Keys: 'tabs' (order and active
@@ -443,6 +581,7 @@ async function saveSession() {
   const record = {
     version: 2, id, title: doc.title, model: session.model, files: [...session.files.keys()], textures, settings: docSettings(),
     labels: state.labels, weld: { hardAngle: settings.hardAngle, weldTol: settings.weldTol },
+    vis: state.vis ? packVis(state.vis) : null, visStats: state.vis ? state.visStats : null,
     symPlane: symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset } : null,
     camera: { position: camera.position.toArray(), target: controls.target.toArray() },
   };
@@ -718,6 +857,13 @@ async function rebuildWeld(resetLabels) {
   const savedLabels = saved && saved.labels && saved.labels.length === welded.vertexCount && saved.weld
     && saved.weld.hardAngle === settings.hardAngle && saved.weld.weldTol === settings.weldTol ? saved.labels : null;
   state.labels = savedLabels ? Int8Array.from(savedLabels) : resetLabels || !old ? new Int8Array(welded.vertexCount) : transferLabels(old, oldLabels, welded);
+  const oldVis = state.vis;
+  visEngine.cancel();
+  state.visJob = null;
+  state.vis = savedLabels && saved.vis && saved.vis.length === welded.vertexCount ? unpackVis(saved.vis) : !resetLabels && old && oldVis ? transferVis(old, oldVis, welded) : null;
+  state.visStats = state.vis ? (savedLabels ? saved.visStats : state.visStats) || null : null;
+  if (state.vis && !state.visStats) state.vis = null;
+  updateAuto();
   resetHistory();
   state.engineMesh = {
     positions: welded.positions, normals: welded.normals, uvs: welded.uvs, colors: welded.colors,
@@ -745,13 +891,17 @@ async function rebuildWeld(resetLabels) {
   if (state.meta.sample && resetLabels) paintSample();
   await engine.load(doc.id, state.engineMesh);
   setStatus('');
+  if (settings.hidden && !state.vis) startVisibility();
   if (symActive()) refreshMirrorView();
   updateModelPanel();
   updateLegend();
+  updateHiddenUI();
   updateTargetUI();
   updateResultUI();
   updateUVPanel();
-  scheduleReduce(0);
+  // A smaller model's hidden areas take a second or so, so its first reduction waits for them instead of running
+  // twice; the pass schedules it when it lands.
+  if (!(state.visJob && welded.triCount <= QUICK_VISIBILITY)) scheduleReduce(0);
 }
 
 function transferLabels(old, oldLabels, welded) {
@@ -1499,12 +1649,17 @@ function applyDisplaySettings() {
   requestRender();
 }
 
-function writeLabelColor(label, out, o) {
-  if (!label) { out[o + 3] = 0; return; }
-  const c = label === LABEL.KEEP ? paintRGB.keep : label > 0 ? paintRGB.more : paintRGB.less;
+// auto: the hidden-area level where nothing is painted, shown fainter than paint, and strongest where faces get deleted.
+function writeLabelColor(label, out, o, auto = 0) {
+  if (!label && !auto) { out[o + 3] = 0; return; }
+  let c, alpha;
+  if (label === LABEL.PLAIN) { c = paintRGB.plain; alpha = 120; }
+  else if (label) { c = label === LABEL.KEEP ? paintRGB.keep : label > 0 ? paintRGB.more : paintRGB.less; alpha = label === LABEL.KEEP ? 150 : [0, 105, 145, 185][Math.abs(label)]; }
+  else { c = paintRGB.hidden; alpha = auto === LABEL.CULL ? 205 : [0, 70, 105, 140][-auto]; }
   out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2];
-  out[o + 3] = label === LABEL.KEEP ? 150 : [0, 105, 145, 185][Math.abs(label)];
+  out[o + 3] = alpha;
 }
+const autoAt = id => (state.auto ? state.auto[id] : 0);
 
 function labelOf(v) {
   const map = state.left && state.left.srcId;
@@ -1518,7 +1673,8 @@ function recolorLeft(verts) {
   const twin = L.twin, half = L.halfCount;
   let loA = Infinity, hiA = -1, loB = Infinity, hiB = -1;
   const touch = v => {
-    writeLabelColor(state.labels[labelOf(v)], d.colors, v * 4);
+    const id = labelOf(v);
+    writeLabelColor(state.labels[id], d.colors, v * 4, autoAt(id));
     if (v < half) { if (v < loA) loA = v; if (v > hiA) hiA = v; }
     else { if (v < loB) loB = v; if (v > hiB) hiB = v; }
   };
@@ -1537,7 +1693,7 @@ function recolorReduced() {
   const d = display.R;
   if (!d || !d.srcId) return;
   const n = d.srcId.length;
-  for (let v = 0; v < n; v++) writeLabelColor(state.labels[d.srcId[v]], d.colors, v * 4);
+  for (let v = 0; v < n; v++) writeLabelColor(state.labels[d.srcId[v]], d.colors, v * 4, autoAt(d.srcId[v]));
   const attr = d.paintGeo.attributes.color;
   attr.clearUpdateRanges();
   attr.needsUpdate = true;
@@ -1547,7 +1703,7 @@ function recolorAll() {
   const d = display.L;
   if (!d) return;
   const n = state.left.positions.length / 3;
-  for (let v = 0; v < n; v++) writeLabelColor(state.labels[labelOf(v)], d.colors, v * 4);
+  for (let v = 0; v < n; v++) { const id = labelOf(v); writeLabelColor(state.labels[id], d.colors, v * 4, autoAt(id)); }
   const attr = d.paintGeo.attributes.color;
   attr.clearUpdateRanges();
   attr.needsUpdate = true;
@@ -1619,6 +1775,7 @@ function paintValue() {
     case 'more': return settings.strength;
     case 'less': return -settings.strength;
     case 'keep': return LABEL.KEEP;
+    case 'plain': return LABEL.PLAIN;
     default: return 0;
   }
 }
@@ -2014,11 +2171,14 @@ async function runReduce() {
   reducing = true;
   setBusy(true);
   try {
-    const d = doc, labels = state.labels.slice(), st = reduceSettings();
+    // The reducer gets the paint with the hidden-area levels under it; the texture job only the paint, since levels
+    // that change across a chart split it into pieces whose padding eats the space they free.
+    const d = doc, labels = effectiveLabels(), paint = paintLabels(), st = reduceSettings(), auto = state.auto;
     const onProgress = st.topology === 'quads' ? p => { if (d === doc) showRemeshProgress(p); } : null;
     const out = await engine.call({ type: 'reduce', doc: d.id, labels, settings: st, finalize: finalizeOptions() }, onProgress);
-    if (d === doc) showResult(out.result, out.info, labels, st);
-    else keepResult(d, out.result, out.info, labels, st);
+    if (auto) out.info.cat = resultRegions(out.result, paint, auto);
+    if (d === doc) showResult(out.result, out.info, paint, st);
+    else keepResult(d, out.result, out.info, paint, st);
   } catch (err) {
     console.error(err);
     showError(`Reduction failed: ${err.message || err}`);
@@ -2026,6 +2186,28 @@ async function runReduce() {
   reducing = false;
   setBusy(false);
   if (reducePending) { reducePending = false; runReduce(); }
+}
+
+// Paint as the reducer sees it: Normal detail is unpainted, and the hidden-area levels fill in wherever nothing is painted.
+function effectiveLabels() {
+  const L = state.labels, A = state.auto, out = new Int8Array(L.length);
+  for (let i = 0; i < L.length; i++) { const m = L[i]; out[i] = m === LABEL.PLAIN ? 0 : m || (A ? A[i] : 0); }
+  return out;
+}
+function paintLabels() {
+  const out = state.labels.slice();
+  for (let i = 0; i < out.length; i++) if (out[i] === LABEL.PLAIN) out[i] = 0;
+  return out;
+}
+// Result triangles by what set their density: painted Keep, More or Less, the hidden-area levels, or nothing.
+function resultRegions(res, paint, auto) {
+  const out = { keep: 0, more: 0, less: 0, hidden: 0, rest: 0 }, idx = res.index, src = res.srcId;
+  const kind = id => { const m = paint[id]; return m === LABEL.KEEP ? 'keep' : m > 0 ? 'more' : m < 0 ? 'less' : auto[id] ? 'hidden' : 'rest'; };
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = kind(src[idx[t]]), b = kind(src[idx[t + 1]]), c = kind(src[idx[t + 2]]);
+    out[a === b || a === c ? a : b === c ? b : a]++;
+  }
+  return out;
 }
 
 function measureDeviation(res) {
@@ -2106,12 +2288,24 @@ function updateModelPanel() {
 }
 
 function updateLegend() {
-  const counts = { more: 0, less: 0, keep: 0 };
-  const L = state.labels;
-  if (L) for (let i = 0; i < L.length; i++) { const l = L[i]; if (l === LABEL.KEEP) counts.keep++; else if (l > 0) counts.more++; else if (l < 0) counts.less++; }
+  const counts = { more: 0, less: 0, keep: 0, plain: 0, hidden: 0 };
+  const L = state.labels, A = state.auto;
+  if (L) {
+    for (let i = 0; i < L.length; i++) {
+      const l = L[i];
+      if (l === LABEL.KEEP) counts.keep++;
+      else if (l === LABEL.PLAIN) counts.plain++;
+      else if (l > 0) counts.more++;
+      else if (l < 0) counts.less++;
+      else if (A && A[i]) counts.hidden++;
+    }
+  }
   const item = (cls, label, n) => el('li', {}, el('span', { className: `dot ${cls}` }), `${label} ${fmt(n)}`);
-  $('legend').replaceChildren(item('more', 'More', counts.more), item('less', 'Less', counts.less), item('keep', 'Keep', counts.keep));
-  $('legend').title = 'Painted vertices per region';
+  const items = [item('more', 'More', counts.more), item('less', 'Less', counts.less), item('keep', 'Keep', counts.keep)];
+  if (settings.hidden) items.push(item('plain', 'Normal', counts.plain));
+  if (A) items.push(item('hidden', 'Hidden', counts.hidden));
+  $('legend').replaceChildren(...items);
+  $('legend').title = A ? 'Painted vertices per region, and the unpainted ones the hidden-area levels reach' : 'Painted vertices per region';
 }
 
 function sizeBudgetInput() {
@@ -2175,7 +2369,7 @@ function updateResultUI() {
     for (const id of ['resTris', 'resVerts', 'resErr', 'resTex']) $(id).textContent = '—';
     $('resTex').className = '';
     $('resTime').textContent = '';
-    for (const id of ['bKeep', 'bMore', 'bLess', 'bRest']) $(id).style.width = '0';
+    for (const id of ['bKeep', 'bMore', 'bLess', 'bHidden', 'bRest']) $(id).style.width = '0';
     $('bMarker').hidden = true;
     $('barLegend').replaceChildren();
     $('resWhy').hidden = true;
@@ -2211,12 +2405,14 @@ function updateResultUI() {
   $('bKeep').style.width = pct(i.cat.keep);
   $('bMore').style.width = pct(i.cat.more);
   $('bLess').style.width = pct(i.cat.less);
+  $('bHidden').style.width = pct(i.cat.hidden || 0);
   $('bRest').style.width = pct(i.cat.rest);
   $('bMarker').hidden = false;
   $('bMarker').style.left = `calc(${pct(target)} - 1px)`;
-  $('bar').title = `Kept original ${fmt(i.cat.keep)} · More detail ${fmt(i.cat.more)} · Less detail ${fmt(i.cat.less)} · Unpainted ${fmt(i.cat.rest)} triangles; the line is the budget`;
-  const painted = i.cat.keep + i.cat.more + i.cat.less > 0;
-  const cats = [['keep', 'Keep', i.cat.keep], ['more', 'More', i.cat.more], ['less', 'Less', i.cat.less], ['rest', 'Unpainted', i.cat.rest]];
+  const hid = i.cat.hidden || 0;
+  $('bar').title = `Kept original ${fmt(i.cat.keep)} · More detail ${fmt(i.cat.more)} · Less detail ${fmt(i.cat.less)}${hid ? ` · Hidden ${fmt(hid)}` : ''} · Unpainted ${fmt(i.cat.rest)} triangles; the line is the budget`;
+  const painted = i.cat.keep + i.cat.more + i.cat.less + hid > 0;
+  const cats = [['keep', 'Keep', i.cat.keep], ['more', 'More', i.cat.more], ['less', 'Less', i.cat.less], ['hidden', 'Hidden', hid], ['rest', 'Unpainted', i.cat.rest]];
   $('barLegend').hidden = !painted;
   $('barLegend').replaceChildren(...(painted ? cats.filter(c => c[2] > 0).map(([k, name, n]) => el('li', {}, el('i', { className: `seg-${k}` }), `${name} ${fmt(n)}`)) : []));
   const tex = textureSummary();
@@ -3146,6 +3342,7 @@ function attachDoc() {
     return;
   }
   showEmptyState(false);
+  updateAuto();
   setLeftSurface(state.left || originalSurface());
   if (state.result) buildReducedDisplay(state.result);
   if (doc.camera) {
@@ -3163,6 +3360,7 @@ function attachDoc() {
   $('resErr').textContent = '…';
   if (state.result) setTimeout(() => measureDeviation(state.result), 30);
   if (state.result && state.result.uvLayout === 'pending' && state.geo) startTextureJob();
+  if (settings.hidden && !state.vis) startVisibility();
   if (doc.dirty || !state.result) { doc.dirty = false; scheduleReduce(0); }
   requestRender();
 }
@@ -3236,7 +3434,10 @@ function syncControls() {
   $('showPaintBtn').title = settings.showPaint ? 'Hide paint' : 'Show paint';
   $('toolPal').hidden = !state.welded;
   $('toolOpts').hidden = !state.welded || !paint;
-  const name = { more: 'More detail', less: 'Less detail', keep: quadMode() ? 'Keep · smallest quads' : 'Keep original', erase: 'Erase' }[settings.tool] || '';
+  // Normal detail only means something while hidden areas are on.
+  if (settings.tool === 'plain' && !settings.hidden) settings.tool = 'orbit';
+  $('toolPlain').hidden = !settings.hidden;
+  const name = { more: 'More detail', less: 'Less detail', keep: quadMode() ? 'Keep · smallest quads' : 'Keep original', plain: 'Normal detail', erase: 'Erase' }[settings.tool] || '';
   $('optName').textContent = name;
   $('optName').dataset.tool = settings.tool;
   $('optSize').hidden = settings.mode === 'fill';
@@ -3274,6 +3475,7 @@ function syncControls() {
   pressSeg('bakeSeg', 'bake', settings.bakeSize);
   $('keepUVOpts').hidden = q || settings.uvMode === 'new';
   syncSymmetryUI();
+  updateHiddenUI();
   applyTool();
 }
 
@@ -3394,6 +3596,14 @@ onSeg('symAxisSeg', 'axis', v => {
   scheduleReduce(0);
 });
 onSeg('symSideSeg', 'side', v => { settings.symSide = v; updateTint(); scheduleMirrorView(0); scheduleReduce(0); });
+$('hiddenOn').addEventListener('change', e => {
+  settings.hidden = e.target.checked;
+  saveSettings();
+  if (settings.hidden && state.welded && !state.vis) startVisibility();
+  applyHidden();
+});
+onSeg('hiddenLevelSeg', 'level', v => { settings.hiddenLevel = v; applyHidden(); });
+bindCheck('hiddenCull', 'hiddenCull', () => applyHidden());
 $('symDetect').addEventListener('click', async () => {
   if (!state.orig.bvh) return;
   setStatus('Finding the mirror plane…');
@@ -3542,7 +3752,7 @@ window.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if ((e.metaKey || e.ctrlKey) && k === 'y') { e.preventDefault(); redo(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const tools = { o: 'orbit', m: 'more', l: 'less', k: 'keep', e: 'erase' };
+  const tools = { o: 'orbit', m: 'more', l: 'less', k: 'keep', e: 'erase', ...(settings.hidden ? { n: 'plain' } : {}) };
   if (tools[k]) settings.tool = tools[k];
   else if (k === 'f') settings.mode = settings.mode === 'fill' ? 'brush' : 'fill';
   else if (k === 'w') { settings.wire = !settings.wire; applyDisplaySettings(); }

@@ -19,6 +19,8 @@
   --more: #3dd39a;
   --less: #f2719e;
   --keep: #6fa8ff;
+  --hidden: #a98bff;
+  --plain: #9fb4c7;
   --warn: #ff9d57;
   --crit: #ff6b6b;
   --ok: #3dd39a;
@@ -51,6 +53,8 @@
     --more: #0f9a68;
     --less: #cc3d77;
     --keep: #2c67d4;
+    --hidden: #6d4fd1;
+    --plain: #4f6b85;
     --warn: #b5530c;
     --crit: #bf332e;
     --ok: #0f9a68;
@@ -78,6 +82,8 @@
   --more: #0f9a68;
   --less: #cc3d77;
   --keep: #2c67d4;
+  --hidden: #6d4fd1;
+  --plain: #4f6b85;
   --warn: #b5530c;
   --crit: #bf332e;
   --ok: #0f9a68;
@@ -411,6 +417,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 .seg-keep { background: var(--keep); }
 .seg-more { background: var(--more); }
 .seg-less { background: var(--less); }
+.seg-hidden { background: var(--hidden); }
 .seg-rest { background: var(--clay); }
 .bar .marker { position: absolute; top: -4px; bottom: -4px; width: 2px; border-radius: 1px; background: var(--text); }
 .bar-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 3px 12px; color: var(--muted); font: 11px/1.4 var(--font-num); }
@@ -432,8 +439,8 @@ details.more[open] > summary { margin-bottom: 8px; }
 .status-line.warn b { color: var(--warn); }
 .status-line span { grid-column: 2; color: var(--muted); font-size: 11.5px; }
 
-/* symmetry */
-.symbody { display: flex; flex-direction: column; gap: 11px; }
+/* symmetry, hidden areas */
+.symbody, .hiddenbody { display: flex; flex-direction: column; gap: 11px; }
 .num-input { width: 96px; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--raise); font-family: var(--font-num); font-size: 12px; }
 .pair { font-size: 12px; color: var(--muted); }
 .pair b { font-weight: 500; color: var(--ok); }
@@ -625,6 +632,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 .swatch.more { background: var(--more); }
 .swatch.less { background: var(--less); }
 .swatch.keep { background: var(--keep); }
+.swatch.plain { background: var(--plain); }
 .toolopts {
   top: 10px;
   left: 50%;
@@ -643,6 +651,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 .opt-name[data-tool="more"]::before { background: var(--more); }
 .opt-name[data-tool="less"]::before { background: var(--less); }
 .opt-name[data-tool="keep"]::before { background: var(--keep); }
+.opt-name[data-tool="plain"]::before { background: var(--plain); }
 .opt-size { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .opt-size input { width: 200px; }
 .opt-size output { min-width: 3.5em; font: 12px/1 var(--font-num); font-variant-numeric: tabular-nums; color: var(--text); }
@@ -663,6 +672,8 @@ details.more[open] > summary { margin-bottom: 8px; }
 .dot.more { background: var(--more); }
 .dot.less { background: var(--less); }
 .dot.keep { background: var(--keep); }
+.dot.plain { background: var(--plain); }
+.dot.hidden { background: var(--hidden); }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; }
 .empty-card {
   max-width: 440px;
@@ -782,7 +793,7 @@ details.more[open] > summary { margin-bottom: 8px; }
           <dt>Texture</dt><dd id="resTex">—</dd>
         </dl>
         <div class="bar" id="bar" role="img" aria-label="Result triangles by painted region">
-          <i class="seg-keep" id="bKeep"></i><i class="seg-more" id="bMore"></i><i class="seg-less" id="bLess"></i><i class="seg-rest" id="bRest"></i><b class="marker" id="bMarker"></b>
+          <i class="seg-keep" id="bKeep"></i><i class="seg-more" id="bMore"></i><i class="seg-less" id="bLess"></i><i class="seg-hidden" id="bHidden"></i><i class="seg-rest" id="bRest"></i><b class="marker" id="bMarker"></b>
         </div>
         <ul class="bar-legend" id="barLegend"></ul>
         <p class="result-why" id="resWhy" hidden></p>
@@ -834,6 +845,18 @@ details.more[open] > summary { margin-bottom: 8px; }
         <p class="pair" id="resSym" hidden>Pairs · <b id="resSymText"></b></p>
         <label class="check"><input type="checkbox" id="showPlane"><span>Show the mirror plane</span></label>
         <label class="check"><input type="checkbox" id="tintMirror"><span>Tint the mirrored half<small>Paint on either half applies to both</small></span></label>
+      </div>
+    </section>
+
+    <section class="sec" id="secHidden" aria-labelledby="hHidden" data-needs-model>
+      <div class="sec-head"><h2 id="hHidden">Hidden areas</h2><label class="switch" title="Spend less on surface that is hard to see"><input type="checkbox" id="hiddenOn" role="switch" aria-label="Spend less on hidden areas"><span></span></label></div>
+      <p class="note">Crevices and covered surface get fewer triangles, judged by how much of the view from all sides reaches them. Painted areas keep their paint; the Normal detail brush keeps an area out. Turn it off for rooms and other models seen from inside.</p>
+      <div class="hiddenbody" id="hiddenBody">
+        <div class="seg fill" role="group" aria-label="How much less" id="hiddenLevelSeg">
+          <button type="button" data-level="gentle" title="Only the most hidden surface: a quarter of the detail where almost nothing sees it, half where little does">Gentle</button><button type="button" data-level="medium" title="An eighth of the detail where almost nothing sees it, a quarter where little does, half where it's mostly covered">Medium</button><button type="button" data-level="strong" title="Like Medium, reaching further out from the crevices">Strong</button>
+        </div>
+        <label class="check"><input type="checkbox" id="hiddenCull"><span>Delete faces nothing can see<small>Removes surface that no direction reaches, such as parts buried inside others or sealed-off pockets</small></span></label>
+        <div class="status-line" id="hiddenStatus"><b id="hiddenHead"></b><span id="hiddenNote"></span></div>
       </div>
     </section>
 
@@ -906,6 +929,7 @@ details.more[open] > summary { margin-bottom: 8px; }
         <button type="button" class="tool" data-tool="more" id="toolMore" title="More detail (M)" aria-label="More detail"><span class="swatch more" aria-hidden="true">+</span></button>
         <button type="button" class="tool" data-tool="less" id="toolLess" title="Less detail (L)" aria-label="Less detail"><span class="swatch less" aria-hidden="true">−</span></button>
         <button type="button" class="tool" data-tool="keep" id="toolKeep" title="Keep original (K)" aria-label="Keep original"><span class="swatch keep" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="6" y="11" width="12" height="9" rx="1.5"/><path d="M9 11V8a3 3 0 0 1 6 0v3"/></svg></span></button>
+        <button type="button" class="tool" data-tool="plain" id="toolPlain" title="Normal detail (N): keeps an area out of the hidden-area reduction" aria-label="Normal detail"><span class="swatch plain" aria-hidden="true">=</span></button>
         <button type="button" class="tool" data-tool="erase" id="toolErase" title="Erase paint (E)" aria-label="Erase paint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 20H9l-4.4-4.4a2 2 0 0 1 0-2.8l8-8a2 2 0 0 1 2.8 0l4 4a2 2 0 0 1 0 2.8L12 19"/><path d="m9.5 8.5 6 6"/></svg></button>
         <span class="pal-sep" aria-hidden="true"></span>
         <button type="button" class="palbtn" id="undoBtn" aria-label="Undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H12"/></svg></button>

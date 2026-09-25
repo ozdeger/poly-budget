@@ -1,11 +1,25 @@
 import { MeshoptSimplifier } from 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_simplifier.js';
 import { packAttributes, runReduction, mirrorOriginal, unwrapResult } from './core.js';
+import { computeVisibility } from './visibility.js';
 
 // One context per tab: the welded mesh, its packed attributes and the caches runReduction keeps.
 const ctxs = new Map();
 
 self.onmessage = async ({ data }) => {
   try {
+    // Hidden areas run in a worker of their own and report how far they got (at most every 100 ms).
+    if (data.type === 'visibility') {
+      let last = 0;
+      const progress = frac => {
+        const now = Date.now();
+        if (now - last < 100) return;
+        last = now;
+        self.postMessage({ type: 'progress', id: data.id, frac });
+      };
+      const { vis, stats } = computeVisibility(data.mesh, { progress });
+      self.postMessage({ type: 'visibility', id: data.id, vis, stats }, [vis.buffer]);
+      return;
+    }
     if (data.type === 'unwrap') {
       const out = unwrapResult(data.mesh, data.plane, data.labels, data.size), r = out.result;
       const transfer = [r.positions.buffer, r.normals.buffer, r.index.buffer, r.vPart.buffer, r.vMat.buffer, r.srcId.buffer, r.uvs.buffer];
