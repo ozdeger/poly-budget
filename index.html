@@ -32,10 +32,14 @@
   --viewport: #0f0e0d;
   --clay: #cabda9;
   --wire: #f0b23c;
+  --check-a: #2a2724;
+  --check-b: #211f1c;
+  --shadow: 0 16px 44px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
   --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-label: "IBM Plex Sans Condensed", "IBM Plex Sans", "Arial Narrow", system-ui, sans-serif;
   --font-num: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --radius: 6px;
+  --side: 340px;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
@@ -60,6 +64,9 @@
     --viewport: #d8d2c8;
     --clay: #b4a58e;
     --wire: #8a5409;
+    --check-a: #ebe6de;
+    --check-b: #f8f5f0;
+    --shadow: 0 16px 44px rgba(64, 44, 12, 0.18), 0 2px 8px rgba(64, 44, 12, 0.1);
   }
 }
 :root[data-theme="light"] {
@@ -84,6 +91,9 @@
   --viewport: #d8d2c8;
   --clay: #b4a58e;
   --wire: #8a5409;
+  --check-a: #ebe6de;
+  --check-b: #f8f5f0;
+  --shadow: 0 16px 44px rgba(64, 44, 12, 0.18), 0 2px 8px rgba(64, 44, 12, 0.1);
 }
 :root[data-theme="dark"] { color-scheme: dark; }
 
@@ -106,76 +116,72 @@ kbd {
   margin-left: auto;
 }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 .app {
   height: 100%;
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr);
-  grid-template-areas: "top top" "tabs tabs" "side stage";
+  grid-template-columns: var(--side) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "top top" "side stage";
 }
 
-.tabbar { grid-area: tabs; display: flex; align-items: flex-end; gap: 6px; padding: 6px 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); min-width: 0; }
-.tabs { display: flex; gap: 2px; overflow-x: auto; min-width: 0; scrollbar-width: none; }
+/* ---------- top bar: brand, tabs, file actions ---------- */
+.top {
+  grid-area: top;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 50px;
+  padding: 0 12px 0 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 26px;
+  padding-right: 14px;
+  border-right: 1px solid var(--line);
+  font: 600 15px/1 var(--font-label);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.brand .mark { width: 16px; height: 14px; background: var(--accent); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.tabbar { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tabs { display: flex; gap: 3px; overflow-x: auto; min-width: 0; scrollbar-width: none; padding-block: 2px; }
 .tabs::-webkit-scrollbar { display: none; }
 .tab {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
-  max-width: 240px;
+  gap: 2px;
+  max-width: 230px;
   height: 32px;
-  padding: 0 4px 0 12px;
-  border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: 7px 7px 0 0;
+  padding: 0 3px 0 12px;
+  border-radius: 8px;
   color: var(--muted);
   cursor: pointer;
   user-select: none;
 }
-.tab:hover { background: color-mix(in srgb, var(--panel) 55%, transparent); color: var(--text); }
-.tab[aria-selected="true"] { background: var(--panel); border-color: var(--line); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); height: 33px; margin-bottom: -1px; }
-.tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.tab:hover { background: var(--panel); color: var(--text); }
+.tab[aria-selected="true"] { background: var(--raise); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong), inset 0 -2px 0 var(--accent); }
+.tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .tab.busy .tab-title::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--accent); vertical-align: middle; animation: pulse 0.9s ease-in-out infinite; }
-.tab-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent; color: var(--faint); cursor: pointer; font: 15px/1 var(--font-ui); }
-.tab-close:hover { background: var(--raise); color: var(--text); }
-.tab-new { flex: none; width: 28px; height: 28px; margin-bottom: 3px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font: 17px/1 var(--font-ui); }
-.tab-new:hover { color: var(--text); border-color: var(--line-strong); }
-
-.top {
-  grid-area: top;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  min-width: 0;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font: 600 15px/1 var(--font-label);
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-.brand .mark {
-  width: 16px;
-  height: 14px;
-  background: var(--accent);
-  clip-path: polygon(50% 0, 100% 100%, 0 100%);
-}
-.file { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
-.file-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.file-meta { font: 11px/1.3 var(--font-num); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.top-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.tab-close { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 5px; background: transparent; color: var(--faint); cursor: pointer; font: 15px/1 var(--font-ui); }
+.tab-close:hover { background: var(--line); color: var(--text); }
+.tab-new { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border: 1px dashed var(--line-strong); border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; font: 17px/1 var(--font-ui); }
+.tab-new:hover { color: var(--text); border-style: solid; }
+.top-actions { flex: none; display: flex; gap: 8px; align-items: center; }
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 7px;
   min-height: 30px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
@@ -190,19 +196,55 @@ kbd {
 .btn.primary:hover { filter: brightness(1.06); }
 .btn.ghost { background: transparent; }
 .btn.wide { width: 100%; min-height: 36px; }
-.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.small { min-height: 24px; padding: 0 8px; font-size: 12px; gap: 5px; }
+.btn:disabled { opacity: 0.45; cursor: default; filter: none; }
 .btn:disabled:hover { border-color: var(--line-strong); }
+.btn.primary:disabled:hover { border-color: var(--accent); }
 .btn kbd { margin-left: 2px; }
+.btn .chev { width: 14px; height: 14px; margin-right: -3px; }
 
+/* ---------- export popover ---------- */
+.pop {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: 320px;
+  max-height: calc(100vh - 70px);
+  overflow-y: auto;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  flex-direction: column;
+  gap: 14px;
+}
+.pop[popover] { display: none; }
+.pop.open { display: flex; }
+.pop:popover-open { display: flex; }
+.pop-head { display: flex; align-items: baseline; gap: 10px; }
+.pop-head h2 { margin: 0; font: 600 15px/1.2 var(--font-label); letter-spacing: 0.02em; }
+.pop-meta { margin-left: auto; font: 11.5px/1.3 var(--font-num); color: var(--muted); }
+.files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raise); }
+.files li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 1px 8px; padding: 7px 10px; border-top: 1px solid var(--line); }
+.files li:first-child { border-top: 0; }
+.files li svg { grid-row: span 2; margin-top: 1px; color: var(--faint); }
+.files .fname { font: 12px/1.35 var(--font-num); overflow-wrap: anywhere; }
+.files .fnote { grid-column: 2; font-size: 11.5px; color: var(--muted); }
+.files li.pending .fnote { color: var(--accent); }
+.files li.none { grid-template-columns: 1fr; color: var(--muted); }
+
+/* ---------- sidebar ---------- */
 .side {
   grid-area: side;
   overflow-y: auto;
   border-right: 1px solid var(--line);
   background: var(--panel);
-  padding-block: 4px 24px;
+  padding-bottom: 28px;
+  scrollbar-width: thin;
 }
-.sec { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
-.sec:last-child { border-bottom: 0; }
+.sec { padding: 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 11px; }
 .sec h2 {
   margin: 0;
   font: 600 11px/1.2 var(--font-label);
@@ -210,20 +252,34 @@ kbd {
   text-transform: uppercase;
   color: var(--muted);
 }
+.sec-head { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.sec-head > :last-child:not(:first-child) { margin-left: auto; }
+.sec-meta { font: 11px/1.2 var(--font-num); color: var(--faint); white-space: nowrap; }
+.sec[inert] { opacity: 0.45; }
+.sub-head { display: flex; align-items: center; gap: 8px; }
+.sub-head h3 { margin: 0; font: 500 12px/1.2 var(--font-ui); color: var(--muted); }
+.sub-head > :last-child { margin-left: auto; }
 details.sec > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; }
-details.sec > summary::-webkit-details-marker { display: none; }
+details.sec > summary::-webkit-details-marker, details.sub > summary::-webkit-details-marker { display: none; }
 details.sec > summary::after { content: "+"; margin-left: auto; color: var(--faint); font: 500 14px/1 var(--font-num); }
 details.sec[open] > summary::after { content: "−"; }
 details.sec:not([open]) { gap: 0; }
+details.sec > summary .sum-meta { font: 11px/1.2 var(--font-num); color: var(--faint); text-transform: none; letter-spacing: 0; }
+details.sub { display: flex; flex-direction: column; }
+details.sub > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; width: fit-content; }
+details.sub > summary::before { content: ""; width: 0; height: 0; border-left: 5px solid currentColor; border-block: 4px solid transparent; transition: transform 0.12s; }
+details.sub[open] > summary::before { transform: rotate(90deg); }
+details.sub > summary:hover { color: var(--text); }
+details.sub[open] > summary { margin-bottom: 10px; }
+.subbody { display: flex; flex-direction: column; gap: 10px; padding-left: 11px; border-left: 1px solid var(--line); }
 
-.readout { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.big { font: 500 24px/1.1 var(--font-num); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-.of { color: var(--muted); font: 12px/1.3 var(--font-num); }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap input[type="range"] { flex: 1; min-width: 0; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { color: var(--muted); font-size: 12px; display: flex; gap: 8px; }
 .field output { margin-left: auto; color: var(--text); font: 12px/1.3 var(--font-num); font-variant-numeric: tabular-nums; }
-.field input[type="number"], .field input[type="text"], .field select {
+.field select, .input {
   height: 30px;
   padding: 0 8px;
   border: 1px solid var(--line-strong);
@@ -231,13 +287,10 @@ details.sec:not([open]) { gap: 0; }
   background: var(--raise);
   min-width: 0;
 }
-.field input[type="number"] { width: 110px; font-family: var(--font-num); }
-.row .field { flex: 0 0 auto; }
 input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; line-height: 1.35; }
 .check input { margin: 2px 0 0; accent-color: var(--accent); flex: none; }
 .check small { display: block; color: var(--faint); font-size: 11px; }
-.check.disabled { opacity: 0.45; cursor: default; }
 .note { margin: 0; color: var(--muted); font-size: 12px; max-width: 60ch; }
 
 .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; background: var(--raise); flex-wrap: wrap; }
@@ -249,12 +302,242 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   white-space: nowrap;
 }
 .seg button:last-child { border-right: 0; }
+.seg button:hover { color: var(--text); background: color-mix(in srgb, var(--line) 50%, transparent); }
 .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .seg button kbd { margin-left: 2px; }
+.seg.fill { display: flex; flex-wrap: nowrap; }
+.seg.fill button { flex: 1 1 0; min-width: 0; padding-inline: 6px; }
+
+.switch { position: relative; flex: none; width: 34px; height: 20px; }
+.switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--line-strong); pointer-events: none; transition: background 0.15s; }
+.switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); transition: transform 0.15s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(14px); background: var(--accent-ink); }
+.switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* model */
+.model-name { font-weight: 600; font-size: 14px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--line); overflow: hidden; }
+.kpis > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 7px 9px 8px; background: var(--raise); }
+.kpis dt { font: 600 10px/1.2 var(--font-label); letter-spacing: 0.07em; text-transform: uppercase; color: var(--faint); white-space: nowrap; }
+.kpis dd { margin: 0; font: 500 13px/1.2 var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.size-line { margin: -3px 0 0; font: 11.5px/1.3 var(--font-num); color: var(--muted); }
+.size-line b { font: 500 11px/1 var(--font-label); letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); margin-right: 6px; }
+.mats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.mats li { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mat-name { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tiles { display: flex; flex-wrap: wrap; gap: 8px; }
+.tile { display: flex; flex-direction: column; gap: 4px; width: 60px; padding: 0; border: 0; background: none; cursor: pointer; text-align: left; }
+.thumb {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: repeating-conic-gradient(var(--check-a) 0 25%, var(--check-b) 0 50%) 0 0 / 12px 12px;
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile:hover .thumb { border-color: var(--muted); }
+.tile:focus-visible { outline: none; }
+.tile:focus-visible .thumb { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tile .slot { font: 600 10px/1.2 var(--font-label); letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile.missing .thumb { border: 1px dashed var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--raise)); color: var(--warn); font: 600 18px/1 var(--font-num); }
+.tile.missing .slot { color: var(--warn); }
+.tile.add .thumb { border: 1px dashed var(--line-strong); background: transparent; color: var(--faint); font: 400 22px/1 var(--font-ui); }
+.tile.add:hover .thumb { color: var(--text); }
+.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.checks li { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 1px 9px; font-size: 12px; line-height: 1.4; }
+.checks li::before { content: ""; grid-row: span 2; width: 8px; height: 8px; margin-top: 5px; border-radius: 2px; background: var(--faint); }
+.checks li.ok::before { background: var(--ok); }
+.checks li.warn::before { background: var(--warn); }
+.checks li.crit::before { background: var(--crit); }
+.checks b { font-weight: 500; }
+.checks li.warn b { color: var(--warn); }
+.checks span { grid-column: 2; color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+details.more > summary { list-style: none; cursor: pointer; color: var(--muted); font-size: 12px; width: fit-content; display: flex; align-items: center; gap: 6px; }
+details.more > summary::-webkit-details-marker { display: none; }
+details.more > summary::before { content: ""; width: 0; height: 0; border-left: 5px solid currentColor; border-block: 4px solid transparent; transition: transform 0.12s; }
+details.more[open] > summary::before { transform: rotate(90deg); }
+details.more > summary:hover { color: var(--text); }
+details.more[open] > summary { margin-bottom: 8px; }
+.stats { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-size: 12px; }
+.stats dt { color: var(--muted); }
+.stats dd { margin: 0; text-align: right; font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+
+/* budget */
+.readout { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.big {
+  width: 8ch;
+  min-width: 4ch;
+  max-width: 100%;
+  margin: -2px 0 -2px -5px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font: 500 28px/1.15 var(--font-num);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  cursor: text;
+}
+.big:hover { border-color: var(--line-strong); }
+.big:focus { border-color: var(--accent); background: var(--raise); outline: none; }
+.of { color: var(--muted); font: 12px/1.3 var(--font-num); }
+.result { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raise); }
+.result-head { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.result-head h3 { margin: 0; font: 600 11px/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
+.pill { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 8px; border-radius: 999px; font: 500 11.5px/1.5 var(--font-ui); white-space: nowrap; color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.pill:empty { display: none; }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 15%, transparent); }
+.pill.busy::before { animation: pulse 0.9s ease-in-out infinite; }
+.result-nums { display: flex; align-items: baseline; gap: 4px 14px; flex-wrap: wrap; font: 12px/1.3 var(--font-num); color: var(--muted); }
+.result-nums b { font: 500 17px/1.2 var(--font-num); font-variant-numeric: tabular-nums; color: var(--text); }
+.result-time { margin-left: auto; color: var(--faint); font-size: 11px; }
+.result-rows { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; margin: 0; font: 12px/1.35 var(--font-num); }
+.result-rows dt { color: var(--muted); }
+.result-rows dd { margin: 0; font-weight: 500; }
+.result-rows dd.warn { color: var(--warn); }
+.result-rows dd.busy { color: var(--accent); }
+.bar { position: relative; height: 10px; margin-top: 2px; border-radius: 3px; background: var(--panel); border: 1px solid var(--line); display: flex; overflow: visible; }
+.bar i { display: block; height: 100%; }
+.bar i:first-child { border-radius: 2px 0 0 2px; }
+.seg-keep { background: var(--keep); }
+.seg-more { background: var(--more); }
+.seg-less { background: var(--less); }
+.seg-rest { background: var(--clay); }
+.bar .marker { position: absolute; top: -4px; bottom: -4px; width: 2px; border-radius: 1px; background: var(--text); }
+.bar-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 3px 12px; color: var(--muted); font: 11px/1.4 var(--font-num); }
+.bar-legend li { display: flex; align-items: center; gap: 5px; }
+.bar-legend i { width: 8px; height: 8px; border-radius: 2px; }
+.result .result-nums, .result .result-rows, .result .bar { transition: opacity 0.2s; }
+.result.stale .result-nums, .result.stale .result-rows, .result.stale .bar { opacity: 0.5; }
+.result-why { margin: 0; display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.result-why.warn { color: var(--warn); }
+.result-why .btn { color: var(--text); }
+
+/* texture */
+.status-line { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 2px 9px; font-size: 12px; line-height: 1.4; }
+.status-line::before { content: ""; grid-row: span 2; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--faint); }
+.status-line.ok::before { background: var(--ok); }
+.status-line.warn::before { background: var(--warn); }
+.status-line.busy::before { background: var(--accent); animation: pulse 0.9s ease-in-out infinite; }
+.status-line b { font-weight: 500; }
+.status-line.warn b { color: var(--warn); }
+.status-line span { grid-column: 2; color: var(--muted); font-size: 11.5px; }
+
+/* symmetry */
+.symbody { display: flex; flex-direction: column; gap: 11px; }
+.num-input { width: 96px; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--raise); font-family: var(--font-num); font-size: 12px; }
+.pair { font-size: 12px; color: var(--muted); }
+.pair b { font-weight: 500; color: var(--ok); }
+.pair.bad b { color: var(--crit); }
+
+/* ---------- stage ---------- */
+.stage { grid-area: stage; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+.stagebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.stagebar .spacer { flex: 1; }
+.stagebar[inert] > * { opacity: 0.45; }
+.tbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--raise);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tbtn:hover { border-color: var(--muted); }
+.tbtn[aria-pressed="true"], .tbtn[aria-expanded="true"] { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); }
+.tbtn kbd { margin-left: 1px; }
+.viewport { position: relative; min-height: 0; background: var(--viewport); overflow: hidden; }
+.viewport canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.vlabel {
+  position: absolute;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+  border: 1px solid var(--line);
+  font: 11px/1.4 var(--font-num);
+  color: var(--muted);
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vlabel b { font: 600 11px/1 var(--font-label); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); margin-right: 6px; }
+.vlabel .warn { color: var(--warn); }
+.vlabel .busy-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 6px; animation: pulse 0.9s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+.divider { position: absolute; background: var(--line-strong); pointer-events: none; }
+.hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transition: opacity 0.5s;
+}
+.hint.show { opacity: 1; transition-duration: 0.15s; }
+.status {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  max-width: min(420px, calc(100% - 24px));
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  pointer-events: none;
+}
+.status:empty { display: none; }
+.status.error { border-color: var(--crit); color: var(--text); pointer-events: auto; }
+.drop {
+  position: absolute;
+  inset: 12px;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--viewport) 70%, transparent);
+  font: 600 15px/1.3 var(--font-label);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
 
 .toolpal, .toolopts {
   position: absolute;
@@ -323,185 +606,62 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .opt-size output { min-width: 3.5em; font: 12px/1 var(--font-num); font-variant-numeric: tabular-nums; color: var(--text); }
 .toolopts > * { flex: none; }
 .toolopts .seg, .toolopts .legend { flex-wrap: nowrap; }
+.legend { list-style: none; margin: 0; padding: 0; display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font: 11px/1.3 var(--font-num); }
+.legend li { display: flex; align-items: center; gap: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.dot.more { background: var(--more); }
+.dot.less { background: var(--less); }
+.dot.keep { background: var(--keep); }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; }
 .empty-card {
-  max-width: 420px;
-  padding: 22px 24px;
+  max-width: 440px;
+  padding: 24px 26px;
   border: 1px dashed var(--line-strong);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
   text-align: center;
 }
-.empty-card h3 { margin: 0; font: 600 16px/1.2 var(--font-label); letter-spacing: 0.02em; }
+.empty-card h3 { margin: 0; font: 600 17px/1.2 var(--font-label); letter-spacing: 0.02em; }
 .empty-card p { margin: 0; color: var(--muted); }
+.empty-card .fine { font-size: 11.5px; color: var(--faint); }
 .empty-card .busy-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 0.9s ease-in-out infinite; }
-.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-.dot.orbit { border: 2px solid var(--muted); }
-.dot.more { background: var(--more); }
-.dot.less { background: var(--less); }
-.dot.keep { background: var(--keep); }
-.dot.erase { background: repeating-linear-gradient(45deg, var(--faint) 0 2px, transparent 2px 4px); border: 1px solid var(--faint); }
 
-.symbody { display: flex; flex-direction: column; gap: 10px; }
-.row.nowrap { flex-wrap: nowrap; }
-.row.nowrap input[type="range"] { flex: 1; min-width: 0; }
-#symOffNum { width: 96px; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--raise); font-family: var(--font-num); font-size: 12px; }
-#symFit.warn, #uvNote.warn { color: var(--warn); }
-.uvopts { display: flex; flex-direction: column; gap: 10px; }
-.sym-ok b { color: var(--ok); }
-.sym-ok.bad b { color: var(--crit); }
-.btn.small { min-height: 24px; padding: 0 8px; font-size: 12px; }
-.texpanel { display: flex; flex-direction: column; gap: 6px; }
-.texhead { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
-.texlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.texlist li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; font-size: 12px; }
-.texmat { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.texinfo { grid-column: 1; display: flex; flex-direction: column; color: var(--muted); font: 11px/1.4 var(--font-num); overflow-wrap: anywhere; }
-.texlist li .btn { grid-column: 2; grid-row: 1 / span 2; }
-.texmissing { color: var(--warn); }
-.texnone { color: var(--faint); }
-.legend { list-style: none; margin: 0; padding: 0; display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font: 11px/1.3 var(--font-num); }
-.legend li { display: flex; align-items: center; gap: 6px; }
-
-.stats { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-size: 12px; }
-.stats dt { color: var(--muted); }
-.stats dd { margin: 0; text-align: right; font-family: var(--font-num); font-variant-numeric: tabular-nums; }
-.chips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.chips li {
-  display: grid;
-  grid-template-columns: 8px 1fr;
-  gap: 8px;
-  align-items: baseline;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--text);
+@media (max-width: 1180px) {
+  .stagebar kbd { display: none; }
 }
-.chips li::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--faint); transform: translateY(1px); }
-.chips li.ok::before { background: var(--ok); }
-.chips li.warn::before { background: var(--warn); }
-.chips li.crit::before { background: var(--crit); }
-
-.stage { grid-area: stage; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
-.stagebar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-.stagebar .spacer { flex: 1; }
-.viewport { position: relative; min-height: 0; background: var(--viewport); overflow: hidden; }
-.viewport canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-.vlabel {
-  position: absolute;
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
-  border: 1px solid var(--line);
-  font: 11px/1.4 var(--font-num);
-  color: var(--muted);
-  pointer-events: none;
-  white-space: nowrap;
-  max-width: calc(100% - 24px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.vlabel b { font: 600 11px/1 var(--font-label); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); margin-right: 6px; }
-.vlabel .busy-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 6px; animation: pulse 0.9s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: 0.25; } }
-.divider { position: absolute; background: var(--line-strong); pointer-events: none; }
-.hint {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  padding: 5px 10px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 86%, transparent);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
-  pointer-events: none;
-  white-space: nowrap;
-  max-width: calc(100% - 24px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.status {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  max-width: min(420px, calc(100% - 24px));
-  padding: 6px 10px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  border: 1px solid var(--line);
-  font-size: 12px;
-  pointer-events: none;
-}
-.status:empty { display: none; }
-.status.error { border-color: var(--crit); color: var(--text); pointer-events: auto; }
-.drop {
-  position: absolute;
-  inset: 12px;
-  border: 2px dashed var(--accent);
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  background: color-mix(in srgb, var(--viewport) 70%, transparent);
-  font: 600 15px/1.3 var(--font-label);
-  letter-spacing: 0.02em;
-  pointer-events: none;
-}
-
-.budget {
-  display: grid;
-  grid-template-columns: auto minmax(120px, 1fr) auto;
-  gap: 16px;
-  align-items: center;
-  padding: 10px 16px;
-  border-top: 1px solid var(--line);
-  background: var(--panel);
-  font: 12px/1.3 var(--font-num);
-  font-variant-numeric: tabular-nums;
-}
-.bstats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); }
-.bstats b { color: var(--text); font-weight: 500; }
-.bar { position: relative; height: 10px; border-radius: 3px; background: var(--raise); border: 1px solid var(--line); display: flex; overflow: visible; }
-.bar i { display: block; height: 100%; }
-.bar i:first-child { border-radius: 2px 0 0 2px; }
-.seg-keep { background: var(--keep); }
-.seg-more { background: var(--more); }
-.seg-less { background: var(--less); }
-.seg-rest { background: var(--clay); }
-.bar .marker { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--text); }
-.bnote { color: var(--muted); text-align: right; font-family: var(--font-ui); max-width: 44ch; }
-.bnote.warn { color: var(--warn); }
-
 @media (max-width: 860px) {
   body { overflow: auto; }
   .app {
     height: auto;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto;
-    grid-template-areas: "top" "tabs" "stage" "side";
+    grid-template-rows: auto auto auto;
+    grid-template-areas: "top" "stage" "side";
   }
+  .top { flex-wrap: wrap; row-gap: 8px; padding: 8px 12px; }
+  .brand { border-right: 0; padding-right: 0; }
+  .top-actions { margin-left: auto; }
+  .tabbar { order: 3; flex-basis: 100%; }
+  .stagebar { padding-inline: 12px; }
   .toolopts { left: 60px; right: 10px; transform: none; max-width: none; }
   .viewport { height: 58vh; min-height: 320px; }
   .side { border-right: 0; overflow: visible; }
-  .budget { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .bnote { text-align: left; }
-  .top { flex-wrap: wrap; }
-  .file { order: 3; flex-basis: 100%; }
+}
+@media (max-width: 600px) {
+  .stagebar { gap: 8px; }
+  .stagebar .t-label, .stagebar kbd { display: none; }
+  .tbtn { padding: 0 8px; }
+}
+@media (max-width: 520px) {
+  .brand-name { display: none; }
+  .open-label { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot { animation: none; }
+  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .pill.busy::before, .status-line.busy::before { animation: none; }
+  .hint { transition: none; }
 }
 </style>
 <style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
@@ -511,45 +671,119 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 
 <div class="app" id="app">
   <header class="top">
-    <div class="brand"><span class="mark" aria-hidden="true"></span><span>Poly Budget</span></div>
-    <div class="file">
-      <span class="file-name" id="fileName">Sample pawn</span>
-      <span class="file-meta" id="fileMeta">Procedural example — open your own model to replace it</span>
-    </div>
+    <div class="brand"><span class="mark" aria-hidden="true"></span><span class="brand-name">Poly Budget</span></div>
+    <nav class="tabbar" aria-label="Open models">
+      <div class="tabs" id="tabs" role="tablist"></div>
+      <button type="button" class="tab-new" id="tabNew" title="New tab" aria-label="New tab">+</button>
+    </nav>
     <div class="top-actions">
-      <label class="btn primary" for="fileInput">Open model…</label>
+      <label class="btn" for="fileInput" title="Open a model with its textures"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5v10a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-6l-2-2.5h-5a2 2 0 0 0-2 2z"/></svg><span class="open-label">Open model…</span></label>
       <input type="file" id="fileInput" multiple hidden accept=".fbx,.obj,.mtl,.glb,.gltf,.bin,.stl,.ply,.png,.jpg,.jpeg,.webp,.tga,.bmp">
+      <button type="button" class="btn primary" id="exportOpen" popovertarget="exportPop" aria-haspopup="dialog" aria-controls="exportPop" aria-expanded="false" disabled>Export<svg class="i chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
     </div>
   </header>
 
-  <nav class="tabbar" aria-label="Open models">
-    <div class="tabs" id="tabs" role="tablist"></div>
-    <button type="button" class="tab-new" id="tabNew" title="New tab" aria-label="New tab">+</button>
-  </nav>
-
-  <aside class="side" aria-label="Settings">
-    <section class="sec" aria-labelledby="hModel">
-      <h2 id="hModel">Model</h2>
-      <dl class="stats" id="modelStats"></dl>
-      <div class="texpanel">
-        <div class="texhead"><span>Textures</span><button type="button" class="btn small" id="addTexBtn">Add textures…</button></div>
-        <ul class="texlist" id="texList"></ul>
-        <input type="file" id="texInput" multiple hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
-        <input type="file" id="texOneInput" hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
+  <div class="pop" id="exportPop" popover role="dialog" aria-labelledby="hExport">
+    <div class="pop-head"><h2 id="hExport">Export</h2><span class="pop-meta" id="exportMeta"></span></div>
+    <div class="field"><span>Format</span>
+      <div class="seg fill" role="group" aria-label="Format" id="formatSeg">
+        <button type="button" data-format="fbx">FBX</button><button type="button" data-format="glb">GLB</button><button type="button" data-format="obj">OBJ</button>
       </div>
-      <ul class="chips" id="diag"></ul>
+    </div>
+    <label class="field"><span>Units</span>
+      <select id="units">
+        <option value="auto">Same as source file</option>
+        <option value="m">Metres</option>
+        <option value="cm">Centimetres</option>
+      </select>
+    </label>
+    <div class="field"><span>In the zip</span><ul class="files" id="exportFiles"></ul></div>
+    <button type="button" class="btn primary wide" id="exportBtn">Download .zip</button>
+    <p class="note" id="exportNote"></p>
+  </div>
+
+  <aside class="side" id="side" aria-label="Model and settings">
+    <section class="sec" aria-labelledby="hModel">
+      <div class="sec-head"><h2 id="hModel">Model</h2><span class="sec-meta" id="modelKind"></span></div>
+      <div class="model-name" id="modelName">No model</div>
+      <dl class="kpis" id="modelKpis"></dl>
+      <p class="size-line" id="modelSize"></p>
+      <ul class="checks" id="diag"></ul>
+      <details class="more" id="meshDetails" data-sec="meshinfo"><summary>Mesh details</summary><dl class="stats" id="modelStats"></dl></details>
     </section>
 
-    <section class="sec" aria-labelledby="hBudget">
+    <section class="sec" aria-labelledby="hBudget" data-needs-model>
       <h2 id="hBudget">Triangle budget</h2>
-      <div class="readout"><output class="big" id="targetOut">—</output><span class="of" id="targetOf"></span></div>
-      <input type="range" id="targetSlider" min="0" max="1000" step="1" aria-label="Triangle budget">
-      <div class="row">
-        <label class="field"><span>Triangles</span><input type="number" id="targetNum" min="1" step="1"></label>
-        <div class="seg" role="group" aria-label="Quick budget" id="quickSeg">
-          <button type="button" data-pct="50">50%</button><button type="button" data-pct="25">25%</button><button type="button" data-pct="10">10%</button><button type="button" data-pct="5">5%</button>
+      <div class="readout"><input class="big" id="targetNum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Triangle budget" title="Type a triangle count, a percentage (5%) or a short count (20k)"><span class="of" id="targetOf"></span></div>
+      <input type="range" id="targetSlider" min="0" max="1000" step="1" aria-label="Triangle budget slider">
+      <div class="seg fill" role="group" aria-label="Quick budget" id="quickSeg">
+        <button type="button" data-pct="50">50%</button><button type="button" data-pct="25">25%</button><button type="button" data-pct="10">10%</button><button type="button" data-pct="5">5%</button><button type="button" data-pct="1">1%</button>
+      </div>
+      <div class="result" id="result">
+        <div class="result-head"><h3>Result</h3><span class="pill" id="bNote" role="status"></span></div>
+        <div class="result-nums"><span><b id="resTris">—</b> tris</span><span><b id="resVerts">—</b> verts</span><span class="result-time" id="resTime" title="Time the last reduction took"></span></div>
+        <dl class="result-rows">
+          <dt title="Distance from the reduced surface to the original, sampled at 4,000 points, as a share of the model's largest dimension">Deviation</dt><dd id="resErr">—</dd>
+          <dt>Texture</dt><dd id="resTex">—</dd>
+        </dl>
+        <div class="bar" id="bar" role="img" aria-label="Result triangles by painted region">
+          <i class="seg-keep" id="bKeep"></i><i class="seg-more" id="bMore"></i><i class="seg-less" id="bLess"></i><i class="seg-rest" id="bRest"></i><b class="marker" id="bMarker"></b>
+        </div>
+        <ul class="bar-legend" id="barLegend"></ul>
+        <p class="result-why" id="resWhy" hidden></p>
+      </div>
+    </section>
+
+    <section class="sec" id="secTex" aria-labelledby="hUV" data-needs-model>
+      <div class="sec-head"><h2 id="hUV">Texture</h2><button type="button" class="btn small" id="addTexBtn" title="Add texture files; they are matched to materials by name">Add textures…</button></div>
+      <ul class="mats" id="texList"></ul>
+      <input type="file" id="texInput" multiple hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
+      <input type="file" id="texOneInput" hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
+      <div class="field"><span>UV mapping</span>
+        <div class="seg fill" role="group" aria-label="UV mapping" id="uvModeSeg">
+          <button type="button" data-uvmode="auto" title="Keep the original UVs while they still fit the texture, otherwise make new ones">Auto</button><button type="button" data-uvmode="keep" title="Always keep the original UVs">Original UVs</button><button type="button" data-uvmode="new" title="Always make new UVs and bake the texture onto them">New UVs</button>
         </div>
       </div>
+      <div class="status-line" id="uvStatus"><b id="uvHead"></b><span id="uvNote"></span></div>
+      <div class="field"><span>Baked texture size</span>
+        <div class="seg fill" role="group" aria-label="Baked texture size" id="bakeSeg">
+          <button type="button" data-bake="512">512 px</button><button type="button" data-bake="1024">1024 px</button><button type="button" data-bake="2048">2048 px</button>
+        </div>
+      </div>
+      <details class="sub" id="keepUVOpts" data-sec="uvopts"><summary>Original UV options</summary>
+        <div class="subbody">
+          <label class="check"><input type="checkbox" id="permissive"><span>Allow collapsing across seams<small>Reaches lower counts with the original UVs, but the texture can smear at seams</small></span></label>
+          <label class="field"><span>Protect texture <output id="uvwOut"></output></span><input type="range" id="uvWeight" min="0" max="3" step="0.05"></label>
+        </div>
+      </details>
+    </section>
+
+    <section class="sec" aria-labelledby="hSym" data-needs-model>
+      <div class="sec-head"><h2 id="hSym">Symmetry</h2><label class="switch" title="Mirror across a plane"><input type="checkbox" id="symOn" role="switch" aria-label="Mirror across a plane"><span></span></label></div>
+      <p class="note" id="symIntro">Reduce one half and mirror it, so every vertex has an exact partner on the other side.</p>
+      <div class="symbody" id="symBody">
+        <div class="row">
+          <div class="seg" role="group" aria-label="Mirror plane axis" id="symAxisSeg">
+            <button type="button" data-axis="0">X</button><button type="button" data-axis="1">Y</button><button type="button" data-axis="2">Z</button>
+          </div>
+          <div class="seg" role="group" aria-label="Half to keep" id="symSideSeg">
+            <button type="button" data-side="-">Keep −X</button><button type="button" data-side="+">Keep +X</button>
+          </div>
+          <button type="button" class="btn" id="symDetect" title="Find the plane the model is most symmetric about">Detect</button>
+        </div>
+        <div class="field">
+          <span>Plane position</span>
+          <div class="row nowrap"><input type="range" id="symOffset" min="0" max="1000" step="1" aria-label="Plane position"><input type="number" class="num-input" id="symOffNum" step="any" aria-label="Plane position value"></div>
+        </div>
+        <div class="status-line" id="symFitRow"><b id="symFit"></b><span id="symWhat"></span></div>
+        <p class="pair" id="resSym" hidden>Pairs · <b id="resSymText"></b></p>
+        <label class="check"><input type="checkbox" id="showPlane"><span>Show the mirror plane</span></label>
+        <label class="check"><input type="checkbox" id="tintMirror"><span>Tint the mirrored half<small>Paint on either half applies to both</small></span></label>
+      </div>
+    </section>
+
+    <details class="sec" id="secReduce" data-sec="reduce" data-needs-model>
+      <summary><h2>Reduction options</h2></summary>
       <label class="field"><span>Stop early at error</span>
         <select id="maxErr">
           <option value="0">No limit — always reach the budget</option>
@@ -560,106 +794,44 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
           <option value="0.02">2% of model size</option>
         </select>
       </label>
-    </section>
-
-    <section class="sec" aria-labelledby="hSym">
-      <h2 id="hSym">Symmetry</h2>
-      <label class="check"><input type="checkbox" id="symOn"><span>Mirror across a plane<small>Reduces one half and mirrors it, so every vertex has an exact partner on the other side</small></span></label>
-      <div class="symbody" id="symBody">
-        <div class="row">
-          <div class="seg" role="group" aria-label="Mirror plane axis" id="symAxisSeg">
-            <button type="button" data-axis="0">X</button><button type="button" data-axis="1">Y</button><button type="button" data-axis="2">Z</button>
-          </div>
-          <div class="seg" role="group" aria-label="Half to keep" id="symSideSeg">
-            <button type="button" data-side="-">Keep −X</button><button type="button" data-side="+">Keep +X</button>
-          </div>
-          <button type="button" class="btn" id="symDetect">Detect plane</button>
-        </div>
-        <div class="field">
-          <span>Plane position</span>
-          <div class="row nowrap"><input type="range" id="symOffset" min="0" max="1000" step="1" aria-label="Plane position"><input type="number" id="symOffNum" step="any" aria-label="Plane position value"></div>
-        </div>
-        <p class="note" id="symFit"></p>
-        <label class="check"><input type="checkbox" id="showPlane"><span>Show the mirror plane<small>The see-through plane in both views. Mirroring works the same when it's hidden.</small></span></label>
-        <label class="check"><input type="checkbox" id="tintMirror"><span>Tint the mirrored half<small>Both views show the mirrored model; the tint marks the generated copy. Paint on either half applies to both.</small></span></label>
-      </div>
-    </section>
-
-    <section class="sec" aria-labelledby="hUV">
-      <h2 id="hUV">Texture mapping</h2>
-      <div class="seg" role="group" aria-label="Texture mapping" id="uvModeSeg">
-        <button type="button" data-uvmode="auto">Auto</button><button type="button" data-uvmode="keep">Original UVs</button><button type="button" data-uvmode="new">New UVs</button>
-      </div>
-      <p class="note" id="uvNote"></p>
-      <label class="field"><span>Baked texture size</span>
-        <select id="bakeSize">
-          <option value="512">512 px</option>
-          <option value="1024">1024 px</option>
-          <option value="2048">2048 px</option>
-        </select>
-      </label>
-      <div class="uvopts" id="keepUVOpts">
-        <label class="check"><input type="checkbox" id="permissive"><span>Allow collapsing across seams<small>With the original UVs: reaches lower counts, but the texture can smear at seams</small></span></label>
-        <label class="field"><span>Protect texture <output id="uvwOut"></output></span><input type="range" id="uvWeight" min="0" max="3" step="0.05"></label>
-      </div>
-    </section>
-
-    <details class="sec" id="secShape" open>
-      <summary><h2>Shape &amp; shading</h2></summary>
-      <div class="field"><span>Normals</span>
-        <div class="seg" role="group" aria-label="Normals" id="normalsSeg">
-          <button type="button" data-normals="original">Original</button><button type="button" data-normals="smooth">Smooth</button><button type="button" data-normals="crease">Creased</button>
-        </div>
-      </div>
-      <label class="field" id="creaseField"><span>Crease angle <output id="creaseOut"></output></span><input type="range" id="creaseAngle" min="10" max="90" step="1"></label>
       <label class="check"><input type="checkbox" id="optPos"><span>Optimize vertex positions<small>Moves kept vertices to hold the shape; less shrinking and melting</small></span></label>
-      <label class="check"><input type="checkbox" id="lockBorder"><span>Lock open borders</span></label>
-      <label class="check"><input type="checkbox" id="prune"><span>Remove tiny floating parts</span></label>
       <div class="field"><span>Triangle shape</span>
-        <div class="seg" role="group" aria-label="Triangle shape" id="regSeg">
+        <div class="seg fill" role="group" aria-label="Triangle shape" id="regSeg">
           <button type="button" data-reg="0">Any</button><button type="button" data-reg="1">Even</button><button type="button" data-reg="2">Very even</button>
         </div>
       </div>
       <label class="field"><span>Protect shading <output id="nwOut"></output></span><input type="range" id="normalWeight" min="0" max="2" step="0.05"></label>
+      <label class="check"><input type="checkbox" id="lockBorder"><span>Lock open borders<small>Holes and open edges keep their outline</small></span></label>
+      <label class="check"><input type="checkbox" id="prune"><span>Remove tiny floating parts</span></label>
     </details>
 
-    <details class="sec" id="secWeld">
+    <details class="sec" id="secNormals" data-sec="normals" data-needs-model>
+      <summary><h2>Normals</h2><span class="sum-meta" id="normalsMeta"></span></summary>
+      <div class="seg fill" role="group" aria-label="Normals" id="normalsSeg">
+        <button type="button" data-normals="original">Original</button><button type="button" data-normals="smooth">Smooth</button><button type="button" data-normals="crease">Creased</button>
+      </div>
+      <label class="field" id="creaseField"><span>Crease angle <output id="creaseOut"></output></span><input type="range" id="creaseAngle" min="10" max="90" step="1"></label>
+    </details>
+
+    <details class="sec" id="secWeld" data-sec="weld" data-needs-model>
       <summary><h2>Welding</h2></summary>
       <p class="note">Files often store a separate copy of each vertex per triangle corner. Decimators can't collapse those, so they're merged first. Normals further apart than the hard edge angle stay split.</p>
       <label class="field"><span>Hard edge angle <output id="hardOut"></output></span><input type="range" id="hardAngle" min="0" max="90" step="1"></label>
       <label class="field"><span>Merge distance <output id="tolOut"></output></span><input type="range" id="weldTol" min="0" max="100" step="1"></label>
     </details>
-
-    <section class="sec" aria-labelledby="hExport">
-      <h2 id="hExport">Export</h2>
-      <div class="field"><span>Format</span>
-        <div class="seg" role="group" aria-label="Format" id="formatSeg">
-          <button type="button" data-format="fbx">FBX</button><button type="button" data-format="glb">GLB</button><button type="button" data-format="obj">OBJ</button>
-        </div>
-      </div>
-      <label class="field"><span>Units</span>
-        <select id="units">
-          <option value="auto">Same as source file</option>
-          <option value="m">Metres</option>
-          <option value="cm">Centimetres</option>
-        </select>
-      </label>
-      <button type="button" class="btn primary wide" id="exportBtn">Export .zip</button>
-      <p class="note" id="exportNote">The zip holds the model and the textures it uses.</p>
-    </section>
   </aside>
 
-  <main class="stage">
-    <div class="stagebar">
+  <main class="stage" id="stage">
+    <div class="stagebar" id="stagebar">
       <div class="seg" role="group" aria-label="View" id="viewSeg">
         <button type="button" data-view="split">Side by side<kbd>1</kbd></button><button type="button" data-view="original">Original<kbd>2</kbd></button><button type="button" data-view="reduced">Reduced<kbd>3</kbd></button>
       </div>
       <div class="seg" role="group" aria-label="Shading" id="shadeSeg">
         <button type="button" data-shade="textured">Textured</button><button type="button" data-shade="clay">Clay</button><button type="button" data-shade="facets">Facets</button>
       </div>
-      <label class="check"><input type="checkbox" id="wire"><span>Wireframe</span></label>
+      <button type="button" class="tbtn" id="wireBtn" aria-pressed="false" title="Show the triangle edges (W)" aria-label="Wireframe"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12h16M12 4v16M4 12l8-8M12 20l8-8"/></svg><span class="t-label">Wireframe</span><kbd>W</kbd></button>
       <span class="spacer"></span>
-      <button type="button" class="btn ghost" id="frameBtn">Frame model</button>
+      <button type="button" class="tbtn" id="frameBtn" title="Fit the model in the view" aria-label="Frame the model"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span class="t-label">Frame</span></button>
     </div>
     <div class="viewport" id="viewport">
       <canvas id="gl" tabindex="0" aria-label="Model preview"></canvas>
@@ -695,20 +867,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
           <h3>Open a model</h3>
           <p>Drop an FBX, GLB, OBJ, STL or PLY here with its textures, or choose one.</p>
           <div class="row"><label class="btn primary" for="fileInput">Open model…</label><button type="button" class="btn" id="sampleBtn">Try the sample pawn</button></div>
+          <p class="fine">Everything runs in this browser; nothing is uploaded.</p>
         </div>
-        <div class="empty-card" id="emptyBusy" hidden><span class="busy-dot" aria-hidden="true"></span><p>Loading the model…</p></div>
+        <div class="empty-card" id="emptyBusy" hidden><span class="busy-dot" aria-hidden="true"></span><p id="emptyBusyText">Loading the model…</p></div>
       </div>
       <div class="hint" id="hint"></div>
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <div class="drop" id="drop" hidden><div>Drop a model with its textures, or textures for the open model</div></div>
     </div>
-    <footer class="budget">
-      <div class="bstats"><span><b id="resTris">—</b> tris</span><span><b id="resVerts">—</b> verts</span><span>deviation <b id="resErr">—</b></span><span class="sym-ok" id="resSym" hidden>mirror <b id="resSymText"></b></span><span><b id="resTime">—</b></span></div>
-      <div class="bar" id="bar" role="img" aria-label="Triangle budget by painted region">
-        <i class="seg-keep" id="bKeep"></i><i class="seg-more" id="bMore"></i><i class="seg-less" id="bLess"></i><i class="seg-rest" id="bRest"></i><b class="marker" id="bMarker"></b>
-      </div>
-      <div class="bnote" id="bNote"></div>
-    </footer>
   </main>
 </div>
 
@@ -4712,7 +4878,7 @@ const DEFAULTS = {
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
-  symmetry: false, symSide: '+', tintMirror: true, showPlane: true,
+  symmetry: false, symSide: '+', tintMirror: true, showPlane: true, sections: {},
 };
 const settings = { ...DEFAULTS };
 // Only settings the tool still has are read back, so options removed since they were saved drop out.
@@ -4745,7 +4911,7 @@ function newDoc(saved = null) {
       painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
     },
     symPlane: { axis: 0, offset: 0, fit: null, ready: false },
-    session: { model: null, files: new Map(), ready: false, restored: false },
+    session: { model: null, files: new Map(), ready: false },
     settings: saved && saved.settings ? { ...docSettings(), ...saved.settings } : docSettings(),
     camera: null, dirty: false, saved,
   };
@@ -5170,7 +5336,7 @@ async function loadSavedDoc(d) {
   if (d === doc) attachDoc();
   return false;
 }
-// Puts back the texture each material slot had, for slots that loading alone doesn't reproduce (Set…, added files).
+// Puts back the texture each material slot had, for slots that loading alone doesn't reproduce (picked on a tile, added files).
 async function applyTextureState(list) {
   for (const t of list || []) {
     const m = state.displayMats[t.mat], file = state.meta.files.get(t.file);
@@ -5285,7 +5451,6 @@ async function openFiles(fileList, restore = null) {
     modelReady = true;
     if (texturesDone || !requested.size) settle();
     session.model = main.name;
-    session.restored = !!restore;
     if (restore) {
       session.files = new Map(files.map(f => [f.name, f]));
       await Promise.race([texturesSettled, new Promise(r => setTimeout(r, 20000))]);
@@ -5294,6 +5459,7 @@ async function openFiles(fileList, restore = null) {
       updateModelPanel();
       applyDisplaySettings();
       refreshBake();
+      setStatus(`Reopened ${main.name} as you left it. It is kept in this browser only.`, 'info', 5000);
     } else {
       rememberFiles(doc, files, true);
     }
@@ -5339,6 +5505,7 @@ async function prepareModel(root, meta) {
   updateHeader();
   await rebuildWeld(true);
   frameCamera();
+  flashHint(6000);
   const cam = meta.restore && meta.restore.camera;
   if (cam) {
     camera.position.fromArray(cam.position);
@@ -5397,6 +5564,8 @@ async function rebuildWeld(resetLabels) {
   updateModelPanel();
   updateLegend();
   updateTargetUI();
+  updateResultUI();
+  updateUVPanel();
   scheduleReduce(0);
 }
 
@@ -5504,44 +5673,82 @@ async function addTextures(files) {
   updateTexturePanel();
   updateModelPanel();
   if (added.length) setStatus(`Added ${added.join(', ')}${ignored.length ? ` · not used: ${ignored.join(', ')}` : ''}`, 'info', 6000);
-  else showError(`None of these matched a texture slot: ${ignored.join(', ')}. Use Set… next to a material to pick its base colour.`);
+  else showError(`None of these matched a texture slot: ${ignored.join(', ')}. Click a material's tile under Texture to pick its file.`);
 }
 
-let textureTarget = -1;
-async function setMaterialTexture(index, file) {
+let textureTarget = null;
+// Puts a file into one map slot of one material (its base colour unless another slot is given).
+async function setMaterialTexture(index, file, slot = 'map') {
   const m = state.displayMats[index];
-  if (!m) return;
+  if (!m || !(slot in m)) return;
   if (!state.collected.uvs) { showError("This model has no UVs, so a texture can't show on it."); return; }
-  const tex = await textureFromFile(file, 'map');
-  m.map = tex;
+  const tex = await textureFromFile(file, slot);
+  const old = m[slot];
+  m[slot] = tex;
   m.needsUpdate = true;
-  state.pendingMaps = state.pendingMaps.filter(p => !(p.material === m && p.slot === 'map'));
+  if (old && !state.displayMats.some(o => MAP_SLOTS.some(k => o[k] === old))) old.dispose();
+  state.pendingMaps = state.pendingMaps.filter(p => !(p.material === m && p.slot === slot));
   rememberFiles(doc, [file], false).then(() => saveSessionSoon(0));
   if (settings.shading !== 'textured') { settings.shading = 'textured'; syncControls(); saveSettings(); }
   refreshBake();
   applyDisplaySettings();
   updateTexturePanel();
   updateModelPanel();
-  setStatus(`${file.name} is now the base colour of ${m.name || `material ${index + 1}`}`, 'info', 5000);
+  setStatus(`${file.name} is now the ${SLOT_NAMES[slot]} map of ${m.name || `material ${index + 1}`}`, 'info', 5000);
 }
 
+const SLOT_SHORT = { map: 'Colour', normalMap: 'Normal', roughnessMap: 'Rough', metalnessMap: 'Metal', aoMap: 'AO', emissiveMap: 'Emissive', specularMap: 'Specular', bumpMap: 'Bump', alphaMap: 'Alpha' };
+// A small preview of a texture image, made once per image; null until the image has loaded.
+const thumbs = new WeakMap();
+function thumbnail(image) {
+  if (!image) return null;
+  if (thumbs.has(image)) return thumbs.get(image);
+  if (image.complete === false || image.naturalWidth === 0) return null;
+  const [w, h] = imageSize(image), size = 120;
+  let url = null;
+  try {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    if (image.data) {
+      if (!(image.data instanceof Uint8Array || image.data instanceof Uint8ClampedArray) || image.data.length < w * h * 4) return null;
+      const src = document.createElement('canvas');
+      src.width = w;
+      src.height = h;
+      src.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(image.data.buffer, image.data.byteOffset, w * h * 4), w, h), 0, 0);
+      g.drawImage(src, 0, 0, size, size);
+    } else {
+      g.drawImage(image, 0, 0, size, size);
+    }
+    url = c.toDataURL('image/png');
+  } catch { url = null; }
+  thumbs.set(image, url);
+  return url;
+}
+function tile(i, slot, className, title, content) {
+  const b = el('button', { type: 'button', className: `tile ${className}`, title }, content, el('span', { className: 'slot', textContent: SLOT_SHORT[slot] }));
+  b.dataset.mat = String(i);
+  b.dataset.slot = slot;
+  return b;
+}
 function updateTexturePanel() {
   const list = $('texList');
-  if (!state.collected) { list.replaceChildren(); return; }
+  // A model without UVs can't show a texture, so the whole section goes away.
+  const hasUVs = !!(state.collected && state.collected.uvs);
+  $('secTex').hidden = !hasUVs && !!state.collected;
+  list.hidden = !hasUVs;
+  if (!hasUVs) { list.replaceChildren(); return; }
   const rows = state.displayMats.map((m, i) => {
-    const name = el('span', { className: 'texmat', textContent: m.name || `Material ${i + 1}`, title: m.name || '' });
-    const maps = MAP_SLOTS.filter(slot => m[slot]).map(slot => {
-      const file = m[slot].userData && m[slot].userData.pbFile;
-      return `${SLOT_NAMES[slot]}: ${file || 'built in'}`;
+    const tiles = MAP_SLOTS.filter(slot => m[slot]).map(slot => {
+      const t = m[slot], file = t.userData && t.userData.pbFile, [w, h] = t.image ? imageSize(t.image) : [0, 0];
+      const url = thumbnail(t.image);
+      const title = `${SLOT_NAMES[slot]}: ${file || 'built into the model'}${w > 1 ? ` · ${w} × ${h}` : ''}\nClick to replace it`;
+      return tile(i, slot, '', title, el('span', { className: 'thumb' }, ...(url ? [el('img', { src: url, alt: '' })] : [])));
     });
-    const waiting = state.pendingMaps.filter(p => p.material === m).map(p => `${SLOT_NAMES[p.slot]}: ${p.file}`);
-    const info = el('span', { className: 'texinfo' });
-    if (maps.length) info.append(el('span', { textContent: maps.join(' · ') }));
-    if (waiting.length) info.append(el('span', { className: 'texmissing', textContent: `missing ${waiting.join(' · ')}` }));
-    if (!maps.length && !waiting.length) info.append(el('span', { className: 'texnone', textContent: 'no texture' }));
-    const set = el('button', { type: 'button', className: 'btn small', textContent: 'Set…', title: 'Pick the base colour texture for this material' });
-    set.dataset.mat = String(i);
-    return el('li', {}, name, info, set);
+    const waiting = state.pendingMaps.filter(p => p.material === m);
+    for (const p of waiting) tiles.push(tile(i, p.slot, 'missing', `${SLOT_NAMES[p.slot]}: ${p.file} is missing\nClick to pick the file, or drop it on the view`, el('span', { className: 'thumb', textContent: '!' })));
+    if ('map' in m && !m.map && !waiting.some(p => p.slot === 'map')) tiles.push(tile(i, 'map', 'add', 'Add a base colour texture', el('span', { className: 'thumb', textContent: '+' })));
+    return el('li', {}, el('span', { className: 'mat-name', textContent: m.name || `Material ${i + 1}`, title: m.name || '' }), el('div', { className: 'tiles' }, ...tiles));
   });
   list.replaceChildren(...rows);
 }
@@ -6458,6 +6665,7 @@ function updatePlaneHelper() {
 function syncSymmetryUI() {
   $('symOn').checked = settings.symmetry;
   $('symBody').hidden = !settings.symmetry;
+  $('symIntro').hidden = settings.symmetry;
   $('tintMirror').checked = settings.tintMirror;
   $('showPlane').checked = settings.showPlane;
   pressSeg('symAxisSeg', 'axis', symPlane.axis);
@@ -6466,17 +6674,21 @@ function syncSymmetryUI() {
   const [neg, pos] = $('symSideSeg').querySelectorAll('button');
   neg.textContent = `Keep −${a}`;
   pos.textContent = `Keep +${a}`;
-  if (!state.welded || !symPlane.ready) { $('symFit').textContent = ''; return; }
+  if (!state.welded || !symPlane.ready) { $('symFitRow').hidden = true; return; }
   const b = bounds(state.welded.positions);
   const lo = b.min[symPlane.axis], hi = b.max[symPlane.axis];
   $('symOffset').value = String(Math.round((1000 * (symPlane.offset - lo)) / Math.max(1e-9, hi - lo)));
   if (document.activeElement !== $('symOffNum')) $('symOffNum').value = String(+symPlane.offset.toPrecision(6));
   $('symOffNum').step = String(+(state.size / 1000).toPrecision(2));
+  // How well the model matches its own mirror image: within 0.5% of its size counts as symmetric, past 2% it doesn't.
   const f = symPlane.fit;
   const pct = v => (v < 0.1 ? v.toFixed(3) : v < 1 ? v.toFixed(2) : v.toFixed(1));
-  const fitText = f ? `The original differs from its mirror image by ${pct(f.mean * 100)}% on average and ${pct(f.max * 100)}% at most (share of model size). ` : '';
-  $('symFit').textContent = `${fitText}The ${settings.symSide === '-' ? '−' : '+'}${a} half is reduced, then mirrored over the plane ${a} = ${+symPlane.offset.toPrecision(4)}; the tinted half is the mirror copy and reuses its UVs.`;
-  $('symFit').classList.toggle('warn', !!f && f.max > 0.02);
+  const row = $('symFitRow');
+  row.hidden = false;
+  row.className = `status-line ${!f ? '' : f.max <= 0.005 ? 'ok' : f.max <= 0.02 ? '' : 'warn'}`;
+  row.title = 'How far the original lands from its own mirror image, as a share of the model size';
+  $('symFit').textContent = !f ? 'Mirror plane' : `${f.max <= 0.005 ? 'Symmetric' : f.max <= 0.02 ? 'Nearly symmetric' : 'Not symmetric'} · ${pct(f.mean * 100)}% avg, ${pct(f.max * 100)}% max`;
+  $('symWhat').textContent = `The ${settings.symSide === '-' ? '−' : '+'}${a} half is reduced, then mirrored over ${a} = ${+symPlane.offset.toPrecision(4)}. The tinted half is the copy and shares its UVs.`;
 }
 
 let moveQueued = null;
@@ -6535,7 +6747,16 @@ function applyTool() {
     : settings.mode === 'fill'
       ? touch ? 'Tap a part to fill it · two fingers to orbit' : `Click a part to fill it · right-drag to orbit · ${UNDO_KEY} undo · ${REDO_KEY} redo`
       : touch ? 'Drag across the model to paint · two fingers to orbit' : `Drag to paint · right-drag to orbit · [ ] brush size · ${UNDO_KEY} undo · ${REDO_KEY} redo`;
-  $('hint').textContent = hint;
+  if ($('hint').textContent !== hint) {
+    $('hint').textContent = hint;
+    flashHint();
+  }
+}
+let hintTimer = 0;
+function flashHint(ms = 5000) {
+  $('hint').classList.add('show');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => $('hint').classList.remove('show'), ms);
 }
 
 // ---------- reduction ----------
@@ -6599,7 +6820,6 @@ function measureDeviation(res) {
   const mean = (100 * sum) / n / state.size, worst = (100 * max) / state.size;
   const f = v => (v < 0.1 ? v.toFixed(3) : v < 1 ? v.toFixed(2) : v.toFixed(1));
   $('resErr').textContent = `${f(mean)}% avg · ${f(worst)}% max`;
-  $('resErr').parentElement.title = 'Distance from the reduced surface to the original, sampled at 4,000 points, as a share of the model\'s largest dimension';
 }
 
 // ---------- panels ----------
@@ -6609,44 +6829,51 @@ function el(tag, props = {}, ...children) {
   for (const c of children) n.append(c);
   return n;
 }
+const kpiItems = list => list.map(([k, v]) => el('div', {}, el('dt', { textContent: k }), el('dd', { textContent: v, title: v })));
+const checkItem = ([tone, title, detail]) => el('li', { className: tone }, el('b', { textContent: title }), ...(detail ? [el('span', { textContent: detail })] : []));
 function updateModelPanel() {
-  if (!state.welded) {
-    $('modelStats').replaceChildren();
-    $('diag').replaceChildren(el('li', { className: 'info', textContent: 'No model in this tab yet.' }));
+  const w = state.welded;
+  $('modelKpis').hidden = $('modelSize').hidden = $('meshDetails').hidden = !w;
+  if (!w) {
+    $('diag').replaceChildren(checkItem(doc.saved ? ['info', 'Reopening from your last visit…', ''] : ['info', 'No model in this tab yet', 'Open one, or drop it on the view with its textures.']));
     return;
   }
-  const w = state.welded, s = w.stats, c = state.collected;
+  const s = w.stats, c = state.collected;
   const b = bounds(w.positions);
   const scale = (state.meta.unitScale || 100) / 100;
   const dims = b.size.map(x => (x * scale).toFixed(x * scale < 10 ? 3 : 1)).join(' × ');
-  const rows = [
+  $('modelKpis').replaceChildren(...kpiItems([
     ['Triangles', fmt(w.triCount)],
+    ['Vertices', fmt(s.weldedVertices)],
+    s.keptUVs ? ['UV islands', fmt(w.uvIslands)] : ['Materials', fmt(Math.max(1, c.materials.length))],
+  ]));
+  $('modelSize').replaceChildren(el('b', { textContent: 'Size' }), `${dims} m`);
+  const rows = [
     ['Vertices as stored', fmt(s.storedRenderVertices)],
     ['Vertices after welding', fmt(s.weldedVertices)],
-    ['Parts · materials', `${c.parts.length} · ${Math.max(1, c.materials.length)}`],
+    ['Parts', fmt(c.parts.length)],
+    ['Materials', fmt(Math.max(1, c.materials.length))],
+    ['Separate pieces', fmt(w.componentCount)],
     ...(s.keptUVs ? [['UV islands', fmt(w.uvIslands)]] : []),
-    ['Size (m)', dims],
+    ...(s.removedDegenerate ? [['Zero-area triangles removed', fmt(s.removedDegenerate)]] : []),
   ];
   $('modelStats').replaceChildren(...rows.flatMap(([k, v]) => [el('dt', { textContent: k }), el('dd', { textContent: v })]));
-  const chips = [];
-  const ratio = s.storedRenderVertices / Math.max(1, s.uniquePositions);
-  if (ratio >= 2.5) chips.push(['ok', `Split vertices merged: ${fmt(s.storedRenderVertices)} stored copies of ${fmt(s.uniquePositions)} points. This is why other tools could not reduce it.`]);
-  if (s.keptUVs && w.uvIslands > 300) chips.push(['info', `${fmt(w.uvIslands)} UV islands. At low budgets they can't hold the texture, so the reduced mesh gets new UVs and the texture is baked onto them (see Texture mapping).`]);
-  if (!s.hasUVs) chips.push(['info', 'No UVs, so textures cannot map onto this model.']);
-  if (s.hasColors) chips.push(['info', 'Vertex colours are kept through reduction.']);
+  const checks = [];
   if (state.pendingMaps && state.pendingMaps.length) {
     const names = [...new Set(state.pendingMaps.map(p => p.file))];
-    chips.push(['warn', `Missing ${names.length === 1 ? 'texture' : 'textures'}: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}. Drop the files on the viewport or use Add textures.`]);
+    checks.push(['warn', names.length === 1 ? 'A texture is missing' : `${names.length} textures are missing`, `${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}. Drop the files on the view, or click the dashed tile under Texture.`]);
   }
-  if (s.removedDegenerate) chips.push(['info', `${fmt(s.removedDegenerate)} zero-area triangles removed.`]);
-  if (c.parts.some(p => p.skinned)) chips.push(['warn', 'Skinned meshes are reduced in their bind pose and exported without bones.']);
-  if (w.componentCount > 1) chips.push(['info', `${fmt(w.componentCount)} separate pieces — Fill part paints one at a time.`]);
-  if (state.meta.sample) chips.unshift(['info', 'Sample model. The head and the knurled base band are painted More detail, the underside Less detail.']);
-  if (session.restored && state.meta.name === session.model) chips.unshift(['ok', 'Reopened from your last visit as you left it. It is kept in this browser only; opening another model replaces it.']);
+  if (c.parts.some(p => p.skinned)) checks.push(['warn', 'Skinned mesh', 'Reduced in its bind pose and exported without bones.']);
   if (settings.symmetry && symPlane.ready && symPlane.fit && symPlane.fit.max > 0.02) {
-    chips.push(['warn', `This model isn't symmetric about ${AXES[symPlane.axis]} = ${+symPlane.offset.toPrecision(4)}; mirroring replaces the other half's differences.`]);
+    checks.push(['warn', `Not symmetric about ${AXES[symPlane.axis]} = ${+symPlane.offset.toPrecision(4)}`, "Mirroring replaces the other half's differences."]);
   }
-  $('diag').replaceChildren(...chips.map(([tone, text]) => el('li', { className: tone, textContent: text })));
+  const ratio = s.storedRenderVertices / Math.max(1, s.uniquePositions);
+  if (ratio >= 2.5) checks.push(['ok', 'Split vertices merged', `${fmt(s.storedRenderVertices)} stored copies of ${fmt(s.uniquePositions)} points. This is why other tools could not reduce it.`]);
+  if (!s.hasUVs) checks.push(['info', 'No UVs', "Textures can't map onto this model."]);
+  if (s.hasColors) checks.push(['info', 'Vertex colours', 'Kept through reduction.']);
+  if (w.componentCount > 1) checks.push(['info', `${fmt(w.componentCount)} separate pieces`, 'Fill part paints one piece at a time.']);
+  if (state.meta.sample) checks.unshift(['info', 'Sample model', 'The head and the knurled base band are painted More detail, the underside Less detail.']);
+  $('diag').replaceChildren(...checks.map(checkItem));
 }
 
 function updateLegend() {
@@ -6658,20 +6885,25 @@ function updateLegend() {
   $('legend').title = 'Painted vertices per region';
 }
 
+function sizeBudgetInput() {
+  const input = $('targetNum');
+  input.style.width = `${Math.max(4, input.value.length) + 1}ch`;
+}
 function updateTargetUI() {
+  const input = $('targetNum'), editing = document.activeElement === input;
   if (!state.welded) {
-    $('targetOut').textContent = '—';
+    if (!editing) input.value = '—';
+    sizeBudgetInput();
     $('targetOf').textContent = '';
-    $('targetNum').value = '';
+    pressSeg('quickSeg', 'pct', null);
     return;
   }
-  const T = state.welded ? state.welded.triCount : 0;
-  const t = targetTris();
-  $('targetOut').textContent = fmt(t);
-  $('targetOf').textContent = T ? `of ${fmt(T)} · ${settings.targetPct < 1 ? settings.targetPct.toFixed(2) : settings.targetPct.toFixed(1)}%` : '';
+  const T = state.welded.triCount, t = targetTris();
+  if (!editing) input.value = fmt(t);
+  sizeBudgetInput();
+  $('targetOf').textContent = `of ${fmt(T)} · ${settings.targetPct < 1 ? settings.targetPct.toFixed(2) : settings.targetPct.toFixed(1)}%`;
   $('targetSlider').value = String(Math.round((1000 * Math.log(settings.targetPct / 0.1)) / Math.log(1000)));
-  if (document.activeElement !== $('targetNum')) $('targetNum').value = String(t);
-  $('targetNum').max = String(T);
+  pressSeg('quickSeg', 'pct', settings.targetPct);
   if (display.L && state.left) {
     const L = state.left;
     $('labelLText').textContent = L.mirrored
@@ -6680,22 +6912,48 @@ function updateTargetUI() {
   }
 }
 
+function setPill(tone, text) {
+  const p = $('bNote');
+  p.className = `pill ${tone}`;
+  p.textContent = text;
+}
+function clearErrorLimit() {
+  settings.maxError = 0;
+  syncControls();
+  saveSettings();
+  scheduleReduce(0);
+}
+function setUVMode(mode) {
+  settings.uvMode = mode;
+  syncControls();
+  saveSettings();
+  updateUVPanel();
+  scheduleReduce(0);
+}
 function updateResultUI() {
   const i = state.info;
+  $('exportOpen').disabled = !state.result;
+  $('result').hidden = !state.welded;
   if (!i) {
-    for (const id of ['resTris', 'resVerts', 'resErr', 'resTime']) $(id).textContent = '—';
+    for (const id of ['resTris', 'resVerts', 'resErr', 'resTex']) $(id).textContent = '—';
+    $('resTex').className = '';
+    $('resTime').textContent = '';
     for (const id of ['bKeep', 'bMore', 'bLess', 'bRest']) $(id).style.width = '0';
-    $('bNote').textContent = '';
+    $('bMarker').hidden = true;
+    $('barLegend').replaceChildren();
+    $('resWhy').hidden = true;
+    setPill(state.welded ? 'busy' : '', state.welded ? 'Reducing…' : '');
     $('labelRText').textContent = '';
     $('resSym').hidden = true;
     return;
   }
-  const target = targetTris();
+  const target = targetTris(), over = i.tris > target * 1.02;
   $('resTris').textContent = fmt(i.tris);
   $('resVerts').textContent = fmt(i.verts);
-  $('resTime').textContent = `${fmt(i.ms)} ms`;
+  $('resTime').textContent = i.ms >= 1000 ? `${(i.ms / 1000).toFixed(1)} s` : `${fmt(i.ms)} ms`;
   const layout = state.result && state.result.uvLayout;
-  $('labelRText').textContent = `${fmt(i.tris)} tris · ${fmt(i.verts)} verts${i.symmetry ? ' · mirrored' : ''}${layout === 'new' ? ' · new UVs' : layout === 'pending' ? ' · baking texture…' : ''}`;
+  $('labelRText').replaceChildren(`${fmt(i.tris)} tris · ${fmt(i.verts)} verts${i.symmetry ? ' · mirrored' : ''}${layout === 'new' ? ' · new UVs' : layout === 'pending' ? ' · baking texture…' : ''}`);
+  if (over) $('labelRText').append(el('span', { className: 'warn', textContent: ' · over budget' }));
   const sym = i.symmetry, symEl = $('resSym');
   symEl.hidden = !sym;
   if (sym) {
@@ -6710,61 +6968,111 @@ function updateResultUI() {
   $('bMore').style.width = pct(i.cat.more);
   $('bLess').style.width = pct(i.cat.less);
   $('bRest').style.width = pct(i.cat.rest);
+  $('bMarker').hidden = false;
   $('bMarker').style.left = `calc(${pct(target)} - 1px)`;
-  $('bar').title = `Kept original ${fmt(i.cat.keep)} · More detail ${fmt(i.cat.more)} · Less detail ${fmt(i.cat.less)} · Unpainted ${fmt(i.cat.rest)} triangles; line = budget`;
-  const note = $('bNote');
-  note.classList.remove('warn');
-  const over = i.tris > target * 1.02;
+  $('bar').title = `Kept original ${fmt(i.cat.keep)} · More detail ${fmt(i.cat.more)} · Less detail ${fmt(i.cat.less)} · Unpainted ${fmt(i.cat.rest)} triangles; the line is the budget`;
+  const painted = i.cat.keep + i.cat.more + i.cat.less > 0;
+  const cats = [['keep', 'Keep', i.cat.keep], ['more', 'More', i.cat.more], ['less', 'Less', i.cat.less], ['rest', 'Unpainted', i.cat.rest]];
+  $('barLegend').hidden = !painted;
+  $('barLegend').replaceChildren(...(painted ? cats.filter(c => c[2] > 0).map(([k, name, n]) => el('li', {}, el('i', { className: `seg-${k}` }), `${name} ${fmt(n)}`)) : []));
+  const tex = textureSummary();
+  $('resTex').textContent = tex[1];
+  $('resTex').className = tex[0];
+  // What the result says about the budget, and a one-click way out when there is one.
+  const w = state.welded, limited = Number(settings.maxError) > 0;
+  let tone = 'ok', text = 'On budget', why = '', action = null;
   if (!over) {
-    note.textContent = i.tris < target * 0.98 && Number(settings.maxError) > 0 ? 'Stopped at the error limit, under budget' : 'On budget';
+    if (i.tris < target * 0.98 && limited) { tone = 'info'; text = 'Under budget'; why = 'It stopped at the error limit before using the whole budget.'; action = ['Remove the limit', clearErrorLimit]; }
   } else {
-    note.classList.add('warn');
-    const w = state.welded;
-    if (i.cat.keep > target * 0.5) note.textContent = `Keep-original areas alone use ${fmt(i.cat.keep)} triangles`;
-    else if (Number(settings.maxError) > 0) note.textContent = 'Stopped at the error limit before reaching the budget';
-    else if (w.stats.keptUVs && w.uvIslands > 100 && !settings.permissive && state.result.uvLayout !== 'new') note.textContent = `UV seams stop it at ${fmt(i.tris)}. Set Texture mapping to Auto or New UVs.`;
-    else note.textContent = `Stopped at ${fmt(i.tris)}: locked or protected areas can't collapse further`;
+    tone = 'warn';
+    text = 'Over budget';
+    if (i.cat.keep > target * 0.5) why = `Keep-original areas alone use ${fmt(i.cat.keep)} triangles. Paint less Keep, or raise the budget.`;
+    else if (limited) { why = 'It stopped at the error limit before reaching the budget.'; action = ['Remove the limit', clearErrorLimit]; }
+    else if (w.stats.keptUVs && w.uvIslands > 100 && !settings.permissive && layout === 'original') {
+      why = `UV seams stop it at ${fmt(i.tris)} triangles.`;
+      action = settings.uvMode === 'keep' ? ['Switch to Auto', () => setUVMode('auto')] : ['Use new UVs', () => setUVMode('new')];
+    } else why = "Locked or protected areas can't collapse any further.";
+  }
+  let whyTone = tone;
+  if (!why && tex[0] === 'warn' && layout === 'original' && settings.uvMode === 'keep') {
+    why = 'Most of the texture lands in the wrong place with the original UVs at this budget.';
+    action = ['Switch to Auto', () => setUVMode('auto')];
+    whyTone = 'warn';
+  }
+  setPill(tone, text);
+  const whyEl = $('resWhy');
+  whyEl.hidden = !why;
+  whyEl.className = `result-why${whyTone === 'warn' ? ' warn' : ''}`;
+  whyEl.replaceChildren(el('span', { textContent: why }));
+  if (action) {
+    const b = el('button', { type: 'button', className: 'btn small', textContent: action[0] });
+    b.addEventListener('click', action[1]);
+    whyEl.append(b);
   }
 }
 
-function updateUVPanel() {
-  const note = $('uvNote'), r = state.result, i = state.info;
-  $('keepUVOpts').hidden = settings.uvMode === 'new';
-  $('exportNote').textContent = r && (r.uvLayout === 'new' || r.uvLayout === 'pending') ? 'The zip holds the model with its new UVs and the baked textures.' : 'The zip holds the model and the textures it uses.';
-  note.classList.remove('warn');
-  note.textContent = '';
-  if (!state.welded || !r || !i) return;
-  if (!state.welded.uvs) { note.textContent = 'This model has no UVs, so there is no texture to keep or bake.'; return; }
+// [tone, text] for the result's texture line.
+function textureSummary() {
+  const r = state.result, i = state.info;
+  if (!state.welded || !state.welded.uvs) return ['', 'none, the model has no UVs'];
+  if (!r || !i) return ['', '—'];
+  if (r.uvLayout === 'pending') return state.texturing ? ['busy', 'new UVs · baking…'] : ['warn', 'new UVs not made yet'];
+  const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
+  if (r.uvLayout === 'new') return state.bake ? ['', `new UVs · baked at ${state.bake.size} px`] : textured ? ['warn', 'new UVs · not baked'] : ['', 'new UVs'];
+  const fit = i.uvFit, bad = fit && fit.misplaced > AUTO_UV_LIMIT;
+  return bad ? ['warn', `original UVs · ${(fit.misplaced * 100).toFixed(0)}% misplaced`] : ['', 'original UVs · fits'];
+}
+// [tone, headline, detail] for the Texture section, or null without a model.
+function uvStatus() {
+  const r = state.result, i = state.info;
+  if (!state.welded) return null;
+  if (!state.welded.uvs) return ['', 'No UVs', 'This model has no UVs, so there is no texture to keep or bake.'];
+  if (!r || !i) return ['busy', 'Reducing…', ''];
   const pct = v => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`;
   const fit = i.uvFit;
-  if (r.uvLayout === 'new' || r.uvLayout === 'pending') {
-    const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
-    const why = i.uvDecision === 'rebuilt' ? `With the original UVs, ${fit.estimated ? 'over ' : ''}${pct(fit.misplaced)} of the texture would land on the wrong spot at this budget, so the reduced mesh ` : '';
-    if (r.uvLayout === 'pending') {
-      const work = textured ? 'Making them and baking the texture in the background; the mesh shows in clay until then.' : 'Making them in the background.';
-      note.textContent = state.texturing ? `${why ? `${why}gets new UVs.` : 'New UVs.'} ${work}` : `${why ? `${why}needs new UVs; ` : 'New UVs: '}not made yet for this result.`;
-      return;
-    }
+  const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
+  const why = i.uvDecision === 'rebuilt' && fit ? `The original UVs would put ${fit.estimated ? 'over ' : ''}${pct(fit.misplaced)} of the texture in the wrong place at this budget.` : '';
+  if (r.uvLayout === 'pending') {
+    if (!state.texturing) return ['warn', 'New UVs not made yet', why];
+    return ['busy', textured ? 'Making new UVs and baking the texture…' : 'Making new UVs…', [why, textured ? 'The reduced view shows clay until it is done.' : ''].filter(Boolean).join(' ')];
+  }
+  if (r.uvLayout === 'new') {
     const a = i.atlas;
-    const baked = state.bake ? `, with the texture baked onto them from the original at ${state.bake.size} px` : textured ? ', but the texture could not be baked' : '';
-    note.textContent = `${why ? `${why}has new UVs` : 'New UVs'}: ${fmt(a.charts)} charts filling ${pct(a.coverage)} of the sheet${baked}.`;
-    return;
+    const baked = state.bake ? `The texture is baked onto them from the original at ${state.bake.size} px.` : textured ? 'The texture could not be baked.' : 'There is no texture to bake.';
+    return [state.bake || !textured ? 'ok' : 'warn', `New UVs · ${fmt(a.charts)} charts · ${pct(a.coverage)} of the sheet`, [why, baked].filter(Boolean).join(' ')];
   }
-  if (!fit) return;
+  if (!fit) return ['ok', 'Original UVs', ''];
   if (settings.uvMode === 'keep') {
-    note.textContent = `Original UVs kept: ${pct(fit.misplaced)} of the texture lands on the wrong spot at this budget.${fit.misplaced > AUTO_UV_LIMIT ? ' Auto or New UVs would bake the texture to fit.' : ''}`;
-    note.classList.toggle('warn', fit.misplaced > AUTO_UV_LIMIT);
-  } else {
-    note.textContent = `The original UVs still fit (${pct(fit.misplaced)} of the texture off), so the texture is used as it is.`;
+    const bad = fit.misplaced > AUTO_UV_LIMIT;
+    return [bad ? 'warn' : 'ok', 'Original UVs', `${pct(fit.misplaced)} of the texture lands in the wrong place at this budget.${bad ? ' Auto or New UVs would bake the texture to fit.' : ''}`];
   }
+  return ['ok', 'Original UVs still fit', fit.misplaced < 0.0005 ? 'The texture lands where it should, so it is used as it is.' : `Only ${pct(fit.misplaced)} of the texture is off, so it is used as it is.`];
+}
+function updateUVPanel() {
+  $('keepUVOpts').hidden = settings.uvMode === 'new';
+  updateExportPanel();
+  const st = uvStatus(), row = $('uvStatus');
+  row.hidden = !st;
+  if (!st) return;
+  row.className = `status-line ${st[0]}`;
+  $('uvHead').textContent = st[1];
+  $('uvNote').textContent = st[2];
+  $('uvNote').hidden = !st[2];
 }
 
 let busyTimer = 0;
 function setBusy(on) {
   clearTimeout(busyTimer);
   const label = $('labelR');
-  if (on) busyTimer = setTimeout(() => { if (!label.querySelector('.busy-dot')) label.append(el('span', { className: 'busy-dot', title: 'Reducing…' })); }, 150);
-  else label.querySelector('.busy-dot')?.remove();
+  if (on) {
+    busyTimer = setTimeout(() => {
+      if (!label.querySelector('.busy-dot')) label.append(el('span', { className: 'busy-dot', title: 'Reducing…' }));
+      $('result').classList.add('stale');
+    }, 150);
+  } else {
+    label.querySelector('.busy-dot')?.remove();
+    $('result').classList.remove('stale');
+  }
 }
 let statusTimer = 0;
 function setStatus(text, tone = 'info', ttl = 0) {
@@ -6772,6 +7080,7 @@ function setStatus(text, tone = 'info', ttl = 0) {
   clearTimeout(statusTimer);
   s.textContent = text;
   s.classList.toggle('error', tone === 'error');
+  if (text) $('hint').classList.remove('show');
   if (ttl) statusTimer = setTimeout(() => { s.textContent = ''; }, ttl);
 }
 function showError(text) { setStatus(text, 'error', 12000); }
@@ -6804,15 +7113,29 @@ async function bakedPng(data, size) {
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-async function materialInfos(stem) {
-  const used = new Set(), out = [];
-  const baked = state.result && state.result.uvLayout === 'new';
-  const mats = state.displayMats.length ? state.displayMats : [null];
-  for (let i = 0; i < mats.length; i++) {
-    const m = mats[i];
+// Unique, file-safe material names, as the exporters write them.
+function materialNames() {
+  const used = new Set();
+  return (state.displayMats.length ? state.displayMats : [null]).map((m, i) => {
     let name = sanitize(m && m.name ? m.name : `Material${i + 1}`);
     while (used.has(name)) name += '_';
     used.add(name);
+    return name;
+  });
+}
+// The opened file a texture image came from, if any.
+function sourceFileOf(img) {
+  const src = img && (img.currentSrc || img.src || '');
+  const known = src && state.meta.blobToName && state.meta.blobToName.get(src);
+  return (known && state.meta.files.get(known.toLowerCase())) || null;
+}
+
+async function materialInfos(stem) {
+  const out = [], names = materialNames();
+  const baked = state.result && state.result.uvLayout === 'new';
+  const mats = state.displayMats.length ? state.displayMats : [null];
+  for (let i = 0; i < mats.length; i++) {
+    const m = mats[i], name = names[i];
     const rgb = m && m.color ? m.color.getRGB(new THREE.Color(), THREE.SRGBColorSpace) : { r: 0.8, g: 0.8, b: 0.8 };
     let texture = null, bytes = null, normal = null;
     const extra = [];
@@ -6827,9 +7150,7 @@ async function materialInfos(stem) {
       for (const slot of MAP_SLOTS) {
         const img = m[slot] && m[slot].image;
         if (!img) continue;
-        const src = img.currentSrc || img.src || '';
-        const known = state.meta.blobToName && state.meta.blobToName.get(src);
-        const file = known && state.meta.files.get(known.toLowerCase());
+        const file = sourceFileOf(img);
         let fileName, data;
         if (file) { fileName = file.name; data = new Uint8Array(await file.arrayBuffer()); }
         else if (slot === 'map') { fileName = `${name}_basecolor.png`; data = await imageToPng(img); }
@@ -6907,6 +7228,83 @@ async function saveZip(filename, bytes) {
   setStatus(`Saved ${filename}`, 'info', 4000);
 }
 
+// What an export writes, without reading any bytes: the model files and the textures, each { name, note, pending }.
+function exportPlan() {
+  const res = state.result;
+  if (!res || !state.meta) return null;
+  const base = sanitize((state.meta.name || 'model').replace(/\.[^.]+$/, ''));
+  const stem = `${base}_${res.triCount}`, ext = settings.format;
+  const files = ext === 'obj' ? [{ name: `${stem}.obj`, note: 'model' }, { name: `${stem}.mtl`, note: 'materials' }] : [{ name: `${stem}.${ext}`, note: 'model' }];
+  const names = materialNames(), seen = new Set(), textures = [];
+  const add = (name, note, pending = false) => { if (!seen.has(name)) { seen.add(name); textures.push({ name, note, pending }); } };
+  if (res.uvLayout === 'new' && state.bake) {
+    for (const x of state.bake.maps) add(`${stem}_${names[x.mi]}_${MAP_FILE[x.slot] || x.slot}.png`, `${SLOT_NAMES[x.slot]} · baked at ${state.bake.size} px`);
+  } else if (res.uvLayout === 'pending') {
+    if (texturedMaterials().length) add('Baked textures', 'still being made; the export waits for them', true);
+  } else if (res.uvLayout !== 'new') {
+    state.displayMats.forEach((m, i) => {
+      for (const slot of MAP_SLOTS) {
+        const img = m[slot] && m[slot].image;
+        if (!img) continue;
+        const file = sourceFileOf(img);
+        if (file) add(file.name, `${SLOT_NAMES[slot]} · the original file`);
+        else if (slot === 'map') add(`${names[i]}_basecolor.png`, `${SLOT_NAMES[slot]} · written from the model`);
+      }
+    });
+  }
+  return { stem, files, textures };
+}
+const ICON_FILE = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M14 3.5v5h5"/></svg>';
+const ICON_IMAGE = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.7"/><path d="m20.5 16-5-5-9 8.5"/></svg>';
+function svgIcon(markup) {
+  const t = document.createElement('template');
+  t.innerHTML = markup;
+  return t.content.firstChild;
+}
+const listText = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+let exportIsOpen = false;
+function updateExportPanel() {
+  if (!exportIsOpen) return;
+  const plan = exportPlan();
+  $('exportBtn').disabled = !plan;
+  $('exportMeta').textContent = plan ? `${fmt(state.result.triCount)} tris · ${fmt(state.result.vertexCount)} verts` : '';
+  if (!plan) {
+    $('exportFiles').replaceChildren(el('li', { className: 'none', textContent: 'Nothing to export yet.' }));
+    $('exportNote').textContent = '';
+    return;
+  }
+  const row = (icon, name, note, cls = '') => el('li', { className: cls }, svgIcon(icon), el('span', { className: 'fname', textContent: name, title: name }), el('span', { className: 'fnote', textContent: note }));
+  const rows = [];
+  if (settings.format === 'glb') {
+    const kinds = [...new Set(plan.textures.filter(t => !t.pending).map(t => t.note.split(' · ')[0]))];
+    rows.push(row(ICON_FILE, plan.files[0].name, kinds.length ? `model, with its ${listText(kinds)} ${kinds.length === 1 ? 'texture' : 'textures'} inside` : 'model'));
+    for (const t of plan.textures.filter(t => t.pending)) rows.push(row(ICON_IMAGE, t.name, t.note, 'pending'));
+  } else {
+    for (const f of plan.files) rows.push(row(ICON_FILE, f.name, f.note));
+    for (const t of plan.textures) rows.push(row(ICON_IMAGE, t.name, t.note, t.pending ? 'pending' : ''));
+  }
+  $('exportFiles').replaceChildren(...rows);
+  const units = { auto: 'in the source file\'s units', m: 'in metres', cm: 'in centimetres' }[settings.units];
+  $('exportNote').textContent = `Saved as ${plan.stem}.zip, ${units}.`;
+}
+function placeExport() {
+  const pop = $('exportPop'), r = $('exportOpen').getBoundingClientRect(), w = Math.min(340, window.innerWidth - 16);
+  pop.style.width = `${w}px`;
+  pop.style.top = `${Math.round(r.bottom + 8)}px`;
+  pop.style.left = `${Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)))}px`;
+}
+function exportToggled(open) {
+  exportIsOpen = open;
+  $('exportOpen').setAttribute('aria-expanded', String(open));
+  if (open) { placeExport(); updateExportPanel(); }
+}
+function closeExport() {
+  const pop = $('exportPop');
+  if (!exportIsOpen) return;
+  if (typeof pop.hidePopover === 'function') pop.hidePopover();
+  else { pop.classList.remove('open'); exportToggled(false); }
+}
+
 async function exportModel() {
   if (!state.result) return;
   const btn = $('exportBtn');
@@ -6914,6 +7312,7 @@ async function exportModel() {
   try {
     const { filename, zip } = await buildExport();
     await saveZip(filename, zip);
+    closeExport();
   } catch (err) {
     console.error(err);
     showError(`Export failed: ${err.message || err}`);
@@ -7036,17 +7435,21 @@ function renderTabs() {
 }
 function updateHeader() {
   const m = state.meta;
-  $('fileName').textContent = !m ? doc.title : m.sample ? 'Sample pawn' : m.name;
-  $('fileMeta').textContent = !m ? (doc.saved ? 'Reopening from your last visit…' : 'Open a model or drop one on the viewport')
-    : m.sample ? 'Procedural example with painted areas — open your own model to replace it'
-    : `${m.kind.toUpperCase()} · ${(m.size / 1048576).toFixed(1)} MB · ${fmt(state.collected.index.length / 3)} triangles`;
+  $('modelName').textContent = !m ? doc.title : m.sample ? 'Sample pawn' : m.name;
+  $('modelName').title = m && !m.sample ? m.name : '';
+  $('modelKind').textContent = !m ? '' : m.sample ? 'built-in sample' : `${m.kind.toUpperCase()} · ${(m.size / 1048576).toFixed(1)} MB`;
+  $('emptyBusyText').textContent = doc.saved ? `Reopening ${doc.saved.model} from your last visit…` : 'Loading the model…';
+  document.title = m ? `${doc.title} · Poly Budget` : 'Poly Budget';
 }
+// Without a model the view shows the open card, and the settings that need a model are dimmed and inert.
 function showEmptyState(on) {
   $('emptyState').hidden = !on;
   $('emptyBusy').hidden = !(loading === doc || doc.saved);
   $('emptyIdle').hidden = !$('emptyBusy').hidden;
   $('toolPal').hidden = on;
   $('toolOpts').hidden = on || settings.tool === 'orbit';
+  for (const sec of document.querySelectorAll('[data-needs-model]')) sec.inert = on;
+  $('stagebar').inert = on;
   requestRender();
 }
 // Near and far planes for the active model, as frameCamera sets them.
@@ -7099,6 +7502,7 @@ function attachDoc() {
   updatePlaneHelper();
   updateTint();
   panels();
+  flashHint();
   $('resErr').textContent = '…';
   if (state.result) setTimeout(() => measureDeviation(state.result), 30);
   if (state.result && state.result.uvLayout === 'pending' && state.geo) startTextureJob();
@@ -7169,7 +7573,7 @@ function syncControls() {
   const labels = less ? ['½', '¼', '⅛'] : ['×2', '×4', '×8'];
   $('strengthSeg').querySelectorAll('button').forEach((b, i) => { b.textContent = labels[i]; });
   $('strengthSeg').hidden = !(settings.tool === 'more' || settings.tool === 'less');
-  $('wire').checked = settings.wire;
+  $('wireBtn').setAttribute('aria-pressed', String(settings.wire));
   const paint = settings.tool !== 'orbit';
   $('showPaintBtn').setAttribute('aria-pressed', String(settings.showPaint));
   $('showPaintBtn').title = settings.showPaint ? 'Hide paint' : 'Show paint';
@@ -7189,6 +7593,7 @@ function syncControls() {
   $('creaseAngle').value = String(settings.creaseAngle);
   $('creaseOut').textContent = `${settings.creaseAngle}°`;
   $('creaseField').hidden = settings.normals !== 'crease';
+  $('normalsMeta').textContent = settings.normals === 'crease' ? `creased ${settings.creaseAngle}°` : settings.normals;
   $('normalWeight').value = String(settings.normalWeight);
   $('nwOut').textContent = settings.normalWeight.toFixed(2);
   $('uvWeight').value = String(settings.uvWeight);
@@ -7200,7 +7605,7 @@ function syncControls() {
   $('tolOut').textContent = `${(tol * 100).toPrecision(2)}% of size`;
   $('units').value = settings.units;
   pressSeg('uvModeSeg', 'uvmode', settings.uvMode);
-  $('bakeSize').value = String(settings.bakeSize);
+  pressSeg('bakeSeg', 'bake', settings.bakeSize);
   $('keepUVOpts').hidden = settings.uvMode === 'new';
   syncSymmetryUI();
   applyTool();
@@ -7221,7 +7626,7 @@ onSeg('modeSeg', 'mode', v => { settings.mode = v; });
 onSeg('strengthSeg', 'strength', v => { settings.strength = Number(v); });
 onSeg('normalsSeg', 'normals', v => { settings.normals = v; scheduleReduce(); });
 onSeg('regSeg', 'reg', v => { settings.regularize = Number(v); scheduleReduce(); });
-onSeg('formatSeg', 'format', v => { settings.format = v; });
+onSeg('formatSeg', 'format', v => { settings.format = v; updateExportPanel(); });
 onSeg('uvModeSeg', 'uvmode', v => { settings.uvMode = v; updateUVPanel(); scheduleReduce(0); });
 onSeg('quickSeg', 'pct', v => { settings.targetPct = Number(v); updateTargetUI(); scheduleReduce(); });
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => { settings.tool = b.dataset.tool; syncControls(); saveSettings(); }));
@@ -7232,19 +7637,38 @@ $('targetSlider').addEventListener('input', e => {
   scheduleReduce(160);
   saveSettings();
 });
-$('targetNum').addEventListener('change', e => {
-  const T = state.welded ? state.welded.triCount : 1;
-  const v = Math.max(4, Math.min(T, Number(e.target.value) || 0));
-  settings.targetPct = Math.max(0.01, (100 * v) / T);
-  updateTargetUI();
-  scheduleReduce(0);
-  saveSettings();
+// A typed budget: a triangle count ("23078", "23,078"), a short count ("20k", "1.5m") or a share of the model ("5%").
+function parseBudget(text, total) {
+  const m = String(text).trim().toLowerCase().replace(/[\s,_]/g, '').match(/^(\d*\.?\d+)(k|m|%)?$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return m[2] === '%' ? (n / 100) * total : n * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1);
+}
+$('targetNum').addEventListener('focus', e => {
+  if (!state.welded) return;
+  e.target.value = String(targetTris());
+  sizeBudgetInput();
+  e.target.select();
 });
+$('targetNum').addEventListener('input', sizeBudgetInput);
+$('targetNum').addEventListener('keydown', e => {
+  if (e.key === 'Enter') e.target.blur();
+  else if (e.key === 'Escape') { e.target.value = String(targetTris()); e.target.blur(); }
+});
+$('targetNum').addEventListener('change', e => {
+  const T = state.welded ? state.welded.triCount : 0, v = parseBudget(e.target.value, T);
+  if (T && v !== null) {
+    const pct = Math.max(0.01, (100 * Math.max(4, Math.min(T, Math.round(v)))) / T);
+    if (pct !== settings.targetPct) { settings.targetPct = pct; saveSettings(); scheduleReduce(0); }
+  }
+  updateTargetUI();
+});
+$('targetNum').addEventListener('blur', updateTargetUI);
 const bindCheck = (id, key, after) => $(id).addEventListener('change', e => { settings[key] = e.target.checked; syncControls(); saveSettings(); after(); });
 const bindRange = (id, key, after, delay) => $(id).addEventListener('input', e => { settings[key] = Number(e.target.value); syncControls(); saveSettings(); after(delay); });
 let weldTimer = 0;
 const reweld = () => { clearTimeout(weldTimer); weldTimer = setTimeout(() => rebuildWeld(false), 350); };
-bindCheck('wire', 'wire', applyDisplaySettings);
+$('wireBtn').addEventListener('click', () => { settings.wire = !settings.wire; syncControls(); saveSettings(); applyDisplaySettings(); });
 $('showPaintBtn').addEventListener('click', () => { settings.showPaint = !settings.showPaint; syncControls(); saveSettings(); applyDisplaySettings(); });
 bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
 bindCheck('permissive', 'permissive', () => scheduleReduce());
@@ -7302,8 +7726,8 @@ bindRange('uvWeight', 'uvWeight', d => scheduleReduce(d), 200);
 bindRange('hardAngle', 'hardAngle', reweld);
 bindRange('weldTol', 'weldTol', reweld);
 $('maxErr').addEventListener('change', e => { settings.maxError = Number(e.target.value); saveSettings(); scheduleReduce(0); });
-$('units').addEventListener('change', e => { settings.units = e.target.value; saveSettings(); });
-$('bakeSize').addEventListener('change', e => { settings.bakeSize = Number(e.target.value); saveSettings(); startTextureJob(); });
+$('units').addEventListener('change', e => { settings.units = e.target.value; saveSettings(); updateExportPanel(); });
+onSeg('bakeSeg', 'bake', v => { if (settings.bakeSize === Number(v)) return; settings.bakeSize = Number(v); startTextureJob(); });
 $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
 $('undoBtn').title = `Undo (${UNDO_KEY})`;
@@ -7340,14 +7764,31 @@ $('texInput').addEventListener('change', e => {
 $('texList').addEventListener('click', e => {
   const b = e.target.closest('button[data-mat]');
   if (!b) return;
-  textureTarget = Number(b.dataset.mat);
+  textureTarget = { mat: Number(b.dataset.mat), slot: b.dataset.slot || 'map' };
   $('texOneInput').click();
 });
 $('texOneInput').addEventListener('change', e => {
   const file = e.target.files[0];
   e.target.value = '';
-  if (file && textureTarget >= 0) setMaterialTexture(textureTarget, file).catch(err => { console.error(err); showError(`Couldn't use ${file.name}: ${err.message || err}`); });
+  if (file && textureTarget) setMaterialTexture(textureTarget.mat, file, textureTarget.slot).catch(err => { console.error(err); showError(`Couldn't use ${file.name}: ${err.message || err}`); });
 });
+// The export panel is a popover under its button; without the Popover API it is a plain panel with the same dismissal.
+{
+  const pop = $('exportPop'), btn = $('exportOpen');
+  if (typeof pop.showPopover === 'function') {
+    pop.addEventListener('beforetoggle', e => exportToggled(e.newState === 'open'));
+  } else {
+    btn.addEventListener('click', () => { pop.classList.toggle('open'); exportToggled(pop.classList.contains('open')); });
+    document.addEventListener('pointerdown', e => { if (exportIsOpen && !pop.contains(e.target) && !btn.contains(e.target)) { pop.classList.remove('open'); exportToggled(false); } });
+    document.addEventListener('keydown', e => { if (exportIsOpen && e.key === 'Escape') { pop.classList.remove('open'); exportToggled(false); btn.focus(); } });
+  }
+  window.addEventListener('resize', () => { if (exportIsOpen) placeExport(); });
+}
+// Foldable sidebar sections remember whether they were open.
+for (const d of document.querySelectorAll('details[data-sec]')) {
+  d.open = !!(settings.sections && settings.sections[d.dataset.sec]);
+  d.addEventListener('toggle', () => { settings.sections = { ...settings.sections, [d.dataset.sec]: d.open }; saveSettings(); });
+}
 
 let dragDepth = 0;
 window.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; $('drop').hidden = false; } });
@@ -7361,7 +7802,7 @@ window.addEventListener('drop', e => {
 });
 
 window.addEventListener('keydown', e => {
-  if (e.target.closest && e.target.closest('input, select, textarea')) return;
+  if (e.target.closest && e.target.closest('input, select, textarea, .pop')) return;
   const k = e.key.toLowerCase();
   if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if ((e.metaKey || e.ctrlKey) && k === 'y') { e.preventDefault(); redo(); return; }

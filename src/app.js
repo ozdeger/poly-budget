@@ -33,7 +33,7 @@ const DEFAULTS = {
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
-  symmetry: false, symSide: '+', tintMirror: true, showPlane: true,
+  symmetry: false, symSide: '+', tintMirror: true, showPlane: true, sections: {},
 };
 const settings = { ...DEFAULTS };
 // Only settings the tool still has are read back, so options removed since they were saved drop out.
@@ -66,7 +66,7 @@ function newDoc(saved = null) {
       painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
     },
     symPlane: { axis: 0, offset: 0, fit: null, ready: false },
-    session: { model: null, files: new Map(), ready: false, restored: false },
+    session: { model: null, files: new Map(), ready: false },
     settings: saved && saved.settings ? { ...docSettings(), ...saved.settings } : docSettings(),
     camera: null, dirty: false, saved,
   };
@@ -491,7 +491,7 @@ async function loadSavedDoc(d) {
   if (d === doc) attachDoc();
   return false;
 }
-// Puts back the texture each material slot had, for slots that loading alone doesn't reproduce (Set…, added files).
+// Puts back the texture each material slot had, for slots that loading alone doesn't reproduce (picked on a tile, added files).
 async function applyTextureState(list) {
   for (const t of list || []) {
     const m = state.displayMats[t.mat], file = state.meta.files.get(t.file);
@@ -606,7 +606,6 @@ async function openFiles(fileList, restore = null) {
     modelReady = true;
     if (texturesDone || !requested.size) settle();
     session.model = main.name;
-    session.restored = !!restore;
     if (restore) {
       session.files = new Map(files.map(f => [f.name, f]));
       await Promise.race([texturesSettled, new Promise(r => setTimeout(r, 20000))]);
@@ -615,6 +614,7 @@ async function openFiles(fileList, restore = null) {
       updateModelPanel();
       applyDisplaySettings();
       refreshBake();
+      setStatus(`Reopened ${main.name} as you left it. It is kept in this browser only.`, 'info', 5000);
     } else {
       rememberFiles(doc, files, true);
     }
@@ -660,6 +660,7 @@ async function prepareModel(root, meta) {
   updateHeader();
   await rebuildWeld(true);
   frameCamera();
+  flashHint(6000);
   const cam = meta.restore && meta.restore.camera;
   if (cam) {
     camera.position.fromArray(cam.position);
@@ -718,6 +719,8 @@ async function rebuildWeld(resetLabels) {
   updateModelPanel();
   updateLegend();
   updateTargetUI();
+  updateResultUI();
+  updateUVPanel();
   scheduleReduce(0);
 }
 
@@ -825,44 +828,82 @@ async function addTextures(files) {
   updateTexturePanel();
   updateModelPanel();
   if (added.length) setStatus(`Added ${added.join(', ')}${ignored.length ? ` · not used: ${ignored.join(', ')}` : ''}`, 'info', 6000);
-  else showError(`None of these matched a texture slot: ${ignored.join(', ')}. Use Set… next to a material to pick its base colour.`);
+  else showError(`None of these matched a texture slot: ${ignored.join(', ')}. Click a material's tile under Texture to pick its file.`);
 }
 
-let textureTarget = -1;
-async function setMaterialTexture(index, file) {
+let textureTarget = null;
+// Puts a file into one map slot of one material (its base colour unless another slot is given).
+async function setMaterialTexture(index, file, slot = 'map') {
   const m = state.displayMats[index];
-  if (!m) return;
+  if (!m || !(slot in m)) return;
   if (!state.collected.uvs) { showError("This model has no UVs, so a texture can't show on it."); return; }
-  const tex = await textureFromFile(file, 'map');
-  m.map = tex;
+  const tex = await textureFromFile(file, slot);
+  const old = m[slot];
+  m[slot] = tex;
   m.needsUpdate = true;
-  state.pendingMaps = state.pendingMaps.filter(p => !(p.material === m && p.slot === 'map'));
+  if (old && !state.displayMats.some(o => MAP_SLOTS.some(k => o[k] === old))) old.dispose();
+  state.pendingMaps = state.pendingMaps.filter(p => !(p.material === m && p.slot === slot));
   rememberFiles(doc, [file], false).then(() => saveSessionSoon(0));
   if (settings.shading !== 'textured') { settings.shading = 'textured'; syncControls(); saveSettings(); }
   refreshBake();
   applyDisplaySettings();
   updateTexturePanel();
   updateModelPanel();
-  setStatus(`${file.name} is now the base colour of ${m.name || `material ${index + 1}`}`, 'info', 5000);
+  setStatus(`${file.name} is now the ${SLOT_NAMES[slot]} map of ${m.name || `material ${index + 1}`}`, 'info', 5000);
 }
 
+const SLOT_SHORT = { map: 'Colour', normalMap: 'Normal', roughnessMap: 'Rough', metalnessMap: 'Metal', aoMap: 'AO', emissiveMap: 'Emissive', specularMap: 'Specular', bumpMap: 'Bump', alphaMap: 'Alpha' };
+// A small preview of a texture image, made once per image; null until the image has loaded.
+const thumbs = new WeakMap();
+function thumbnail(image) {
+  if (!image) return null;
+  if (thumbs.has(image)) return thumbs.get(image);
+  if (image.complete === false || image.naturalWidth === 0) return null;
+  const [w, h] = imageSize(image), size = 120;
+  let url = null;
+  try {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    if (image.data) {
+      if (!(image.data instanceof Uint8Array || image.data instanceof Uint8ClampedArray) || image.data.length < w * h * 4) return null;
+      const src = document.createElement('canvas');
+      src.width = w;
+      src.height = h;
+      src.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(image.data.buffer, image.data.byteOffset, w * h * 4), w, h), 0, 0);
+      g.drawImage(src, 0, 0, size, size);
+    } else {
+      g.drawImage(image, 0, 0, size, size);
+    }
+    url = c.toDataURL('image/png');
+  } catch { url = null; }
+  thumbs.set(image, url);
+  return url;
+}
+function tile(i, slot, className, title, content) {
+  const b = el('button', { type: 'button', className: `tile ${className}`, title }, content, el('span', { className: 'slot', textContent: SLOT_SHORT[slot] }));
+  b.dataset.mat = String(i);
+  b.dataset.slot = slot;
+  return b;
+}
 function updateTexturePanel() {
   const list = $('texList');
-  if (!state.collected) { list.replaceChildren(); return; }
+  // A model without UVs can't show a texture, so the whole section goes away.
+  const hasUVs = !!(state.collected && state.collected.uvs);
+  $('secTex').hidden = !hasUVs && !!state.collected;
+  list.hidden = !hasUVs;
+  if (!hasUVs) { list.replaceChildren(); return; }
   const rows = state.displayMats.map((m, i) => {
-    const name = el('span', { className: 'texmat', textContent: m.name || `Material ${i + 1}`, title: m.name || '' });
-    const maps = MAP_SLOTS.filter(slot => m[slot]).map(slot => {
-      const file = m[slot].userData && m[slot].userData.pbFile;
-      return `${SLOT_NAMES[slot]}: ${file || 'built in'}`;
+    const tiles = MAP_SLOTS.filter(slot => m[slot]).map(slot => {
+      const t = m[slot], file = t.userData && t.userData.pbFile, [w, h] = t.image ? imageSize(t.image) : [0, 0];
+      const url = thumbnail(t.image);
+      const title = `${SLOT_NAMES[slot]}: ${file || 'built into the model'}${w > 1 ? ` · ${w} × ${h}` : ''}\nClick to replace it`;
+      return tile(i, slot, '', title, el('span', { className: 'thumb' }, ...(url ? [el('img', { src: url, alt: '' })] : [])));
     });
-    const waiting = state.pendingMaps.filter(p => p.material === m).map(p => `${SLOT_NAMES[p.slot]}: ${p.file}`);
-    const info = el('span', { className: 'texinfo' });
-    if (maps.length) info.append(el('span', { textContent: maps.join(' · ') }));
-    if (waiting.length) info.append(el('span', { className: 'texmissing', textContent: `missing ${waiting.join(' · ')}` }));
-    if (!maps.length && !waiting.length) info.append(el('span', { className: 'texnone', textContent: 'no texture' }));
-    const set = el('button', { type: 'button', className: 'btn small', textContent: 'Set…', title: 'Pick the base colour texture for this material' });
-    set.dataset.mat = String(i);
-    return el('li', {}, name, info, set);
+    const waiting = state.pendingMaps.filter(p => p.material === m);
+    for (const p of waiting) tiles.push(tile(i, p.slot, 'missing', `${SLOT_NAMES[p.slot]}: ${p.file} is missing\nClick to pick the file, or drop it on the view`, el('span', { className: 'thumb', textContent: '!' })));
+    if ('map' in m && !m.map && !waiting.some(p => p.slot === 'map')) tiles.push(tile(i, 'map', 'add', 'Add a base colour texture', el('span', { className: 'thumb', textContent: '+' })));
+    return el('li', {}, el('span', { className: 'mat-name', textContent: m.name || `Material ${i + 1}`, title: m.name || '' }), el('div', { className: 'tiles' }, ...tiles));
   });
   list.replaceChildren(...rows);
 }
@@ -1779,6 +1820,7 @@ function updatePlaneHelper() {
 function syncSymmetryUI() {
   $('symOn').checked = settings.symmetry;
   $('symBody').hidden = !settings.symmetry;
+  $('symIntro').hidden = settings.symmetry;
   $('tintMirror').checked = settings.tintMirror;
   $('showPlane').checked = settings.showPlane;
   pressSeg('symAxisSeg', 'axis', symPlane.axis);
@@ -1787,17 +1829,21 @@ function syncSymmetryUI() {
   const [neg, pos] = $('symSideSeg').querySelectorAll('button');
   neg.textContent = `Keep −${a}`;
   pos.textContent = `Keep +${a}`;
-  if (!state.welded || !symPlane.ready) { $('symFit').textContent = ''; return; }
+  if (!state.welded || !symPlane.ready) { $('symFitRow').hidden = true; return; }
   const b = bounds(state.welded.positions);
   const lo = b.min[symPlane.axis], hi = b.max[symPlane.axis];
   $('symOffset').value = String(Math.round((1000 * (symPlane.offset - lo)) / Math.max(1e-9, hi - lo)));
   if (document.activeElement !== $('symOffNum')) $('symOffNum').value = String(+symPlane.offset.toPrecision(6));
   $('symOffNum').step = String(+(state.size / 1000).toPrecision(2));
+  // How well the model matches its own mirror image: within 0.5% of its size counts as symmetric, past 2% it doesn't.
   const f = symPlane.fit;
   const pct = v => (v < 0.1 ? v.toFixed(3) : v < 1 ? v.toFixed(2) : v.toFixed(1));
-  const fitText = f ? `The original differs from its mirror image by ${pct(f.mean * 100)}% on average and ${pct(f.max * 100)}% at most (share of model size). ` : '';
-  $('symFit').textContent = `${fitText}The ${settings.symSide === '-' ? '−' : '+'}${a} half is reduced, then mirrored over the plane ${a} = ${+symPlane.offset.toPrecision(4)}; the tinted half is the mirror copy and reuses its UVs.`;
-  $('symFit').classList.toggle('warn', !!f && f.max > 0.02);
+  const row = $('symFitRow');
+  row.hidden = false;
+  row.className = `status-line ${!f ? '' : f.max <= 0.005 ? 'ok' : f.max <= 0.02 ? '' : 'warn'}`;
+  row.title = 'How far the original lands from its own mirror image, as a share of the model size';
+  $('symFit').textContent = !f ? 'Mirror plane' : `${f.max <= 0.005 ? 'Symmetric' : f.max <= 0.02 ? 'Nearly symmetric' : 'Not symmetric'} · ${pct(f.mean * 100)}% avg, ${pct(f.max * 100)}% max`;
+  $('symWhat').textContent = `The ${settings.symSide === '-' ? '−' : '+'}${a} half is reduced, then mirrored over ${a} = ${+symPlane.offset.toPrecision(4)}. The tinted half is the copy and shares its UVs.`;
 }
 
 let moveQueued = null;
@@ -1856,7 +1902,16 @@ function applyTool() {
     : settings.mode === 'fill'
       ? touch ? 'Tap a part to fill it · two fingers to orbit' : `Click a part to fill it · right-drag to orbit · ${UNDO_KEY} undo · ${REDO_KEY} redo`
       : touch ? 'Drag across the model to paint · two fingers to orbit' : `Drag to paint · right-drag to orbit · [ ] brush size · ${UNDO_KEY} undo · ${REDO_KEY} redo`;
-  $('hint').textContent = hint;
+  if ($('hint').textContent !== hint) {
+    $('hint').textContent = hint;
+    flashHint();
+  }
+}
+let hintTimer = 0;
+function flashHint(ms = 5000) {
+  $('hint').classList.add('show');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => $('hint').classList.remove('show'), ms);
 }
 
 // ---------- reduction ----------
@@ -1920,7 +1975,6 @@ function measureDeviation(res) {
   const mean = (100 * sum) / n / state.size, worst = (100 * max) / state.size;
   const f = v => (v < 0.1 ? v.toFixed(3) : v < 1 ? v.toFixed(2) : v.toFixed(1));
   $('resErr').textContent = `${f(mean)}% avg · ${f(worst)}% max`;
-  $('resErr').parentElement.title = 'Distance from the reduced surface to the original, sampled at 4,000 points, as a share of the model\'s largest dimension';
 }
 
 // ---------- panels ----------
@@ -1930,44 +1984,51 @@ function el(tag, props = {}, ...children) {
   for (const c of children) n.append(c);
   return n;
 }
+const kpiItems = list => list.map(([k, v]) => el('div', {}, el('dt', { textContent: k }), el('dd', { textContent: v, title: v })));
+const checkItem = ([tone, title, detail]) => el('li', { className: tone }, el('b', { textContent: title }), ...(detail ? [el('span', { textContent: detail })] : []));
 function updateModelPanel() {
-  if (!state.welded) {
-    $('modelStats').replaceChildren();
-    $('diag').replaceChildren(el('li', { className: 'info', textContent: 'No model in this tab yet.' }));
+  const w = state.welded;
+  $('modelKpis').hidden = $('modelSize').hidden = $('meshDetails').hidden = !w;
+  if (!w) {
+    $('diag').replaceChildren(checkItem(doc.saved ? ['info', 'Reopening from your last visit…', ''] : ['info', 'No model in this tab yet', 'Open one, or drop it on the view with its textures.']));
     return;
   }
-  const w = state.welded, s = w.stats, c = state.collected;
+  const s = w.stats, c = state.collected;
   const b = bounds(w.positions);
   const scale = (state.meta.unitScale || 100) / 100;
   const dims = b.size.map(x => (x * scale).toFixed(x * scale < 10 ? 3 : 1)).join(' × ');
-  const rows = [
+  $('modelKpis').replaceChildren(...kpiItems([
     ['Triangles', fmt(w.triCount)],
+    ['Vertices', fmt(s.weldedVertices)],
+    s.keptUVs ? ['UV islands', fmt(w.uvIslands)] : ['Materials', fmt(Math.max(1, c.materials.length))],
+  ]));
+  $('modelSize').replaceChildren(el('b', { textContent: 'Size' }), `${dims} m`);
+  const rows = [
     ['Vertices as stored', fmt(s.storedRenderVertices)],
     ['Vertices after welding', fmt(s.weldedVertices)],
-    ['Parts · materials', `${c.parts.length} · ${Math.max(1, c.materials.length)}`],
+    ['Parts', fmt(c.parts.length)],
+    ['Materials', fmt(Math.max(1, c.materials.length))],
+    ['Separate pieces', fmt(w.componentCount)],
     ...(s.keptUVs ? [['UV islands', fmt(w.uvIslands)]] : []),
-    ['Size (m)', dims],
+    ...(s.removedDegenerate ? [['Zero-area triangles removed', fmt(s.removedDegenerate)]] : []),
   ];
   $('modelStats').replaceChildren(...rows.flatMap(([k, v]) => [el('dt', { textContent: k }), el('dd', { textContent: v })]));
-  const chips = [];
-  const ratio = s.storedRenderVertices / Math.max(1, s.uniquePositions);
-  if (ratio >= 2.5) chips.push(['ok', `Split vertices merged: ${fmt(s.storedRenderVertices)} stored copies of ${fmt(s.uniquePositions)} points. This is why other tools could not reduce it.`]);
-  if (s.keptUVs && w.uvIslands > 300) chips.push(['info', `${fmt(w.uvIslands)} UV islands. At low budgets they can't hold the texture, so the reduced mesh gets new UVs and the texture is baked onto them (see Texture mapping).`]);
-  if (!s.hasUVs) chips.push(['info', 'No UVs, so textures cannot map onto this model.']);
-  if (s.hasColors) chips.push(['info', 'Vertex colours are kept through reduction.']);
+  const checks = [];
   if (state.pendingMaps && state.pendingMaps.length) {
     const names = [...new Set(state.pendingMaps.map(p => p.file))];
-    chips.push(['warn', `Missing ${names.length === 1 ? 'texture' : 'textures'}: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}. Drop the files on the viewport or use Add textures.`]);
+    checks.push(['warn', names.length === 1 ? 'A texture is missing' : `${names.length} textures are missing`, `${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}. Drop the files on the view, or click the dashed tile under Texture.`]);
   }
-  if (s.removedDegenerate) chips.push(['info', `${fmt(s.removedDegenerate)} zero-area triangles removed.`]);
-  if (c.parts.some(p => p.skinned)) chips.push(['warn', 'Skinned meshes are reduced in their bind pose and exported without bones.']);
-  if (w.componentCount > 1) chips.push(['info', `${fmt(w.componentCount)} separate pieces — Fill part paints one at a time.`]);
-  if (state.meta.sample) chips.unshift(['info', 'Sample model. The head and the knurled base band are painted More detail, the underside Less detail.']);
-  if (session.restored && state.meta.name === session.model) chips.unshift(['ok', 'Reopened from your last visit as you left it. It is kept in this browser only; opening another model replaces it.']);
+  if (c.parts.some(p => p.skinned)) checks.push(['warn', 'Skinned mesh', 'Reduced in its bind pose and exported without bones.']);
   if (settings.symmetry && symPlane.ready && symPlane.fit && symPlane.fit.max > 0.02) {
-    chips.push(['warn', `This model isn't symmetric about ${AXES[symPlane.axis]} = ${+symPlane.offset.toPrecision(4)}; mirroring replaces the other half's differences.`]);
+    checks.push(['warn', `Not symmetric about ${AXES[symPlane.axis]} = ${+symPlane.offset.toPrecision(4)}`, "Mirroring replaces the other half's differences."]);
   }
-  $('diag').replaceChildren(...chips.map(([tone, text]) => el('li', { className: tone, textContent: text })));
+  const ratio = s.storedRenderVertices / Math.max(1, s.uniquePositions);
+  if (ratio >= 2.5) checks.push(['ok', 'Split vertices merged', `${fmt(s.storedRenderVertices)} stored copies of ${fmt(s.uniquePositions)} points. This is why other tools could not reduce it.`]);
+  if (!s.hasUVs) checks.push(['info', 'No UVs', "Textures can't map onto this model."]);
+  if (s.hasColors) checks.push(['info', 'Vertex colours', 'Kept through reduction.']);
+  if (w.componentCount > 1) checks.push(['info', `${fmt(w.componentCount)} separate pieces`, 'Fill part paints one piece at a time.']);
+  if (state.meta.sample) checks.unshift(['info', 'Sample model', 'The head and the knurled base band are painted More detail, the underside Less detail.']);
+  $('diag').replaceChildren(...checks.map(checkItem));
 }
 
 function updateLegend() {
@@ -1979,20 +2040,25 @@ function updateLegend() {
   $('legend').title = 'Painted vertices per region';
 }
 
+function sizeBudgetInput() {
+  const input = $('targetNum');
+  input.style.width = `${Math.max(4, input.value.length) + 1}ch`;
+}
 function updateTargetUI() {
+  const input = $('targetNum'), editing = document.activeElement === input;
   if (!state.welded) {
-    $('targetOut').textContent = '—';
+    if (!editing) input.value = '—';
+    sizeBudgetInput();
     $('targetOf').textContent = '';
-    $('targetNum').value = '';
+    pressSeg('quickSeg', 'pct', null);
     return;
   }
-  const T = state.welded ? state.welded.triCount : 0;
-  const t = targetTris();
-  $('targetOut').textContent = fmt(t);
-  $('targetOf').textContent = T ? `of ${fmt(T)} · ${settings.targetPct < 1 ? settings.targetPct.toFixed(2) : settings.targetPct.toFixed(1)}%` : '';
+  const T = state.welded.triCount, t = targetTris();
+  if (!editing) input.value = fmt(t);
+  sizeBudgetInput();
+  $('targetOf').textContent = `of ${fmt(T)} · ${settings.targetPct < 1 ? settings.targetPct.toFixed(2) : settings.targetPct.toFixed(1)}%`;
   $('targetSlider').value = String(Math.round((1000 * Math.log(settings.targetPct / 0.1)) / Math.log(1000)));
-  if (document.activeElement !== $('targetNum')) $('targetNum').value = String(t);
-  $('targetNum').max = String(T);
+  pressSeg('quickSeg', 'pct', settings.targetPct);
   if (display.L && state.left) {
     const L = state.left;
     $('labelLText').textContent = L.mirrored
@@ -2001,22 +2067,48 @@ function updateTargetUI() {
   }
 }
 
+function setPill(tone, text) {
+  const p = $('bNote');
+  p.className = `pill ${tone}`;
+  p.textContent = text;
+}
+function clearErrorLimit() {
+  settings.maxError = 0;
+  syncControls();
+  saveSettings();
+  scheduleReduce(0);
+}
+function setUVMode(mode) {
+  settings.uvMode = mode;
+  syncControls();
+  saveSettings();
+  updateUVPanel();
+  scheduleReduce(0);
+}
 function updateResultUI() {
   const i = state.info;
+  $('exportOpen').disabled = !state.result;
+  $('result').hidden = !state.welded;
   if (!i) {
-    for (const id of ['resTris', 'resVerts', 'resErr', 'resTime']) $(id).textContent = '—';
+    for (const id of ['resTris', 'resVerts', 'resErr', 'resTex']) $(id).textContent = '—';
+    $('resTex').className = '';
+    $('resTime').textContent = '';
     for (const id of ['bKeep', 'bMore', 'bLess', 'bRest']) $(id).style.width = '0';
-    $('bNote').textContent = '';
+    $('bMarker').hidden = true;
+    $('barLegend').replaceChildren();
+    $('resWhy').hidden = true;
+    setPill(state.welded ? 'busy' : '', state.welded ? 'Reducing…' : '');
     $('labelRText').textContent = '';
     $('resSym').hidden = true;
     return;
   }
-  const target = targetTris();
+  const target = targetTris(), over = i.tris > target * 1.02;
   $('resTris').textContent = fmt(i.tris);
   $('resVerts').textContent = fmt(i.verts);
-  $('resTime').textContent = `${fmt(i.ms)} ms`;
+  $('resTime').textContent = i.ms >= 1000 ? `${(i.ms / 1000).toFixed(1)} s` : `${fmt(i.ms)} ms`;
   const layout = state.result && state.result.uvLayout;
-  $('labelRText').textContent = `${fmt(i.tris)} tris · ${fmt(i.verts)} verts${i.symmetry ? ' · mirrored' : ''}${layout === 'new' ? ' · new UVs' : layout === 'pending' ? ' · baking texture…' : ''}`;
+  $('labelRText').replaceChildren(`${fmt(i.tris)} tris · ${fmt(i.verts)} verts${i.symmetry ? ' · mirrored' : ''}${layout === 'new' ? ' · new UVs' : layout === 'pending' ? ' · baking texture…' : ''}`);
+  if (over) $('labelRText').append(el('span', { className: 'warn', textContent: ' · over budget' }));
   const sym = i.symmetry, symEl = $('resSym');
   symEl.hidden = !sym;
   if (sym) {
@@ -2031,61 +2123,111 @@ function updateResultUI() {
   $('bMore').style.width = pct(i.cat.more);
   $('bLess').style.width = pct(i.cat.less);
   $('bRest').style.width = pct(i.cat.rest);
+  $('bMarker').hidden = false;
   $('bMarker').style.left = `calc(${pct(target)} - 1px)`;
-  $('bar').title = `Kept original ${fmt(i.cat.keep)} · More detail ${fmt(i.cat.more)} · Less detail ${fmt(i.cat.less)} · Unpainted ${fmt(i.cat.rest)} triangles; line = budget`;
-  const note = $('bNote');
-  note.classList.remove('warn');
-  const over = i.tris > target * 1.02;
+  $('bar').title = `Kept original ${fmt(i.cat.keep)} · More detail ${fmt(i.cat.more)} · Less detail ${fmt(i.cat.less)} · Unpainted ${fmt(i.cat.rest)} triangles; the line is the budget`;
+  const painted = i.cat.keep + i.cat.more + i.cat.less > 0;
+  const cats = [['keep', 'Keep', i.cat.keep], ['more', 'More', i.cat.more], ['less', 'Less', i.cat.less], ['rest', 'Unpainted', i.cat.rest]];
+  $('barLegend').hidden = !painted;
+  $('barLegend').replaceChildren(...(painted ? cats.filter(c => c[2] > 0).map(([k, name, n]) => el('li', {}, el('i', { className: `seg-${k}` }), `${name} ${fmt(n)}`)) : []));
+  const tex = textureSummary();
+  $('resTex').textContent = tex[1];
+  $('resTex').className = tex[0];
+  // What the result says about the budget, and a one-click way out when there is one.
+  const w = state.welded, limited = Number(settings.maxError) > 0;
+  let tone = 'ok', text = 'On budget', why = '', action = null;
   if (!over) {
-    note.textContent = i.tris < target * 0.98 && Number(settings.maxError) > 0 ? 'Stopped at the error limit, under budget' : 'On budget';
+    if (i.tris < target * 0.98 && limited) { tone = 'info'; text = 'Under budget'; why = 'It stopped at the error limit before using the whole budget.'; action = ['Remove the limit', clearErrorLimit]; }
   } else {
-    note.classList.add('warn');
-    const w = state.welded;
-    if (i.cat.keep > target * 0.5) note.textContent = `Keep-original areas alone use ${fmt(i.cat.keep)} triangles`;
-    else if (Number(settings.maxError) > 0) note.textContent = 'Stopped at the error limit before reaching the budget';
-    else if (w.stats.keptUVs && w.uvIslands > 100 && !settings.permissive && state.result.uvLayout !== 'new') note.textContent = `UV seams stop it at ${fmt(i.tris)}. Set Texture mapping to Auto or New UVs.`;
-    else note.textContent = `Stopped at ${fmt(i.tris)}: locked or protected areas can't collapse further`;
+    tone = 'warn';
+    text = 'Over budget';
+    if (i.cat.keep > target * 0.5) why = `Keep-original areas alone use ${fmt(i.cat.keep)} triangles. Paint less Keep, or raise the budget.`;
+    else if (limited) { why = 'It stopped at the error limit before reaching the budget.'; action = ['Remove the limit', clearErrorLimit]; }
+    else if (w.stats.keptUVs && w.uvIslands > 100 && !settings.permissive && layout === 'original') {
+      why = `UV seams stop it at ${fmt(i.tris)} triangles.`;
+      action = settings.uvMode === 'keep' ? ['Switch to Auto', () => setUVMode('auto')] : ['Use new UVs', () => setUVMode('new')];
+    } else why = "Locked or protected areas can't collapse any further.";
+  }
+  let whyTone = tone;
+  if (!why && tex[0] === 'warn' && layout === 'original' && settings.uvMode === 'keep') {
+    why = 'Most of the texture lands in the wrong place with the original UVs at this budget.';
+    action = ['Switch to Auto', () => setUVMode('auto')];
+    whyTone = 'warn';
+  }
+  setPill(tone, text);
+  const whyEl = $('resWhy');
+  whyEl.hidden = !why;
+  whyEl.className = `result-why${whyTone === 'warn' ? ' warn' : ''}`;
+  whyEl.replaceChildren(el('span', { textContent: why }));
+  if (action) {
+    const b = el('button', { type: 'button', className: 'btn small', textContent: action[0] });
+    b.addEventListener('click', action[1]);
+    whyEl.append(b);
   }
 }
 
-function updateUVPanel() {
-  const note = $('uvNote'), r = state.result, i = state.info;
-  $('keepUVOpts').hidden = settings.uvMode === 'new';
-  $('exportNote').textContent = r && (r.uvLayout === 'new' || r.uvLayout === 'pending') ? 'The zip holds the model with its new UVs and the baked textures.' : 'The zip holds the model and the textures it uses.';
-  note.classList.remove('warn');
-  note.textContent = '';
-  if (!state.welded || !r || !i) return;
-  if (!state.welded.uvs) { note.textContent = 'This model has no UVs, so there is no texture to keep or bake.'; return; }
+// [tone, text] for the result's texture line.
+function textureSummary() {
+  const r = state.result, i = state.info;
+  if (!state.welded || !state.welded.uvs) return ['', 'none, the model has no UVs'];
+  if (!r || !i) return ['', '—'];
+  if (r.uvLayout === 'pending') return state.texturing ? ['busy', 'new UVs · baking…'] : ['warn', 'new UVs not made yet'];
+  const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
+  if (r.uvLayout === 'new') return state.bake ? ['', `new UVs · baked at ${state.bake.size} px`] : textured ? ['warn', 'new UVs · not baked'] : ['', 'new UVs'];
+  const fit = i.uvFit, bad = fit && fit.misplaced > AUTO_UV_LIMIT;
+  return bad ? ['warn', `original UVs · ${(fit.misplaced * 100).toFixed(0)}% misplaced`] : ['', 'original UVs · fits'];
+}
+// [tone, headline, detail] for the Texture section, or null without a model.
+function uvStatus() {
+  const r = state.result, i = state.info;
+  if (!state.welded) return null;
+  if (!state.welded.uvs) return ['', 'No UVs', 'This model has no UVs, so there is no texture to keep or bake.'];
+  if (!r || !i) return ['busy', 'Reducing…', ''];
   const pct = v => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`;
   const fit = i.uvFit;
-  if (r.uvLayout === 'new' || r.uvLayout === 'pending') {
-    const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
-    const why = i.uvDecision === 'rebuilt' ? `With the original UVs, ${fit.estimated ? 'over ' : ''}${pct(fit.misplaced)} of the texture would land on the wrong spot at this budget, so the reduced mesh ` : '';
-    if (r.uvLayout === 'pending') {
-      const work = textured ? 'Making them and baking the texture in the background; the mesh shows in clay until then.' : 'Making them in the background.';
-      note.textContent = state.texturing ? `${why ? `${why}gets new UVs.` : 'New UVs.'} ${work}` : `${why ? `${why}needs new UVs; ` : 'New UVs: '}not made yet for this result.`;
-      return;
-    }
+  const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
+  const why = i.uvDecision === 'rebuilt' && fit ? `The original UVs would put ${fit.estimated ? 'over ' : ''}${pct(fit.misplaced)} of the texture in the wrong place at this budget.` : '';
+  if (r.uvLayout === 'pending') {
+    if (!state.texturing) return ['warn', 'New UVs not made yet', why];
+    return ['busy', textured ? 'Making new UVs and baking the texture…' : 'Making new UVs…', [why, textured ? 'The reduced view shows clay until it is done.' : ''].filter(Boolean).join(' ')];
+  }
+  if (r.uvLayout === 'new') {
     const a = i.atlas;
-    const baked = state.bake ? `, with the texture baked onto them from the original at ${state.bake.size} px` : textured ? ', but the texture could not be baked' : '';
-    note.textContent = `${why ? `${why}has new UVs` : 'New UVs'}: ${fmt(a.charts)} charts filling ${pct(a.coverage)} of the sheet${baked}.`;
-    return;
+    const baked = state.bake ? `The texture is baked onto them from the original at ${state.bake.size} px.` : textured ? 'The texture could not be baked.' : 'There is no texture to bake.';
+    return [state.bake || !textured ? 'ok' : 'warn', `New UVs · ${fmt(a.charts)} charts · ${pct(a.coverage)} of the sheet`, [why, baked].filter(Boolean).join(' ')];
   }
-  if (!fit) return;
+  if (!fit) return ['ok', 'Original UVs', ''];
   if (settings.uvMode === 'keep') {
-    note.textContent = `Original UVs kept: ${pct(fit.misplaced)} of the texture lands on the wrong spot at this budget.${fit.misplaced > AUTO_UV_LIMIT ? ' Auto or New UVs would bake the texture to fit.' : ''}`;
-    note.classList.toggle('warn', fit.misplaced > AUTO_UV_LIMIT);
-  } else {
-    note.textContent = `The original UVs still fit (${pct(fit.misplaced)} of the texture off), so the texture is used as it is.`;
+    const bad = fit.misplaced > AUTO_UV_LIMIT;
+    return [bad ? 'warn' : 'ok', 'Original UVs', `${pct(fit.misplaced)} of the texture lands in the wrong place at this budget.${bad ? ' Auto or New UVs would bake the texture to fit.' : ''}`];
   }
+  return ['ok', 'Original UVs still fit', fit.misplaced < 0.0005 ? 'The texture lands where it should, so it is used as it is.' : `Only ${pct(fit.misplaced)} of the texture is off, so it is used as it is.`];
+}
+function updateUVPanel() {
+  $('keepUVOpts').hidden = settings.uvMode === 'new';
+  updateExportPanel();
+  const st = uvStatus(), row = $('uvStatus');
+  row.hidden = !st;
+  if (!st) return;
+  row.className = `status-line ${st[0]}`;
+  $('uvHead').textContent = st[1];
+  $('uvNote').textContent = st[2];
+  $('uvNote').hidden = !st[2];
 }
 
 let busyTimer = 0;
 function setBusy(on) {
   clearTimeout(busyTimer);
   const label = $('labelR');
-  if (on) busyTimer = setTimeout(() => { if (!label.querySelector('.busy-dot')) label.append(el('span', { className: 'busy-dot', title: 'Reducing…' })); }, 150);
-  else label.querySelector('.busy-dot')?.remove();
+  if (on) {
+    busyTimer = setTimeout(() => {
+      if (!label.querySelector('.busy-dot')) label.append(el('span', { className: 'busy-dot', title: 'Reducing…' }));
+      $('result').classList.add('stale');
+    }, 150);
+  } else {
+    label.querySelector('.busy-dot')?.remove();
+    $('result').classList.remove('stale');
+  }
 }
 let statusTimer = 0;
 function setStatus(text, tone = 'info', ttl = 0) {
@@ -2093,6 +2235,7 @@ function setStatus(text, tone = 'info', ttl = 0) {
   clearTimeout(statusTimer);
   s.textContent = text;
   s.classList.toggle('error', tone === 'error');
+  if (text) $('hint').classList.remove('show');
   if (ttl) statusTimer = setTimeout(() => { s.textContent = ''; }, ttl);
 }
 function showError(text) { setStatus(text, 'error', 12000); }
@@ -2125,15 +2268,29 @@ async function bakedPng(data, size) {
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-async function materialInfos(stem) {
-  const used = new Set(), out = [];
-  const baked = state.result && state.result.uvLayout === 'new';
-  const mats = state.displayMats.length ? state.displayMats : [null];
-  for (let i = 0; i < mats.length; i++) {
-    const m = mats[i];
+// Unique, file-safe material names, as the exporters write them.
+function materialNames() {
+  const used = new Set();
+  return (state.displayMats.length ? state.displayMats : [null]).map((m, i) => {
     let name = sanitize(m && m.name ? m.name : `Material${i + 1}`);
     while (used.has(name)) name += '_';
     used.add(name);
+    return name;
+  });
+}
+// The opened file a texture image came from, if any.
+function sourceFileOf(img) {
+  const src = img && (img.currentSrc || img.src || '');
+  const known = src && state.meta.blobToName && state.meta.blobToName.get(src);
+  return (known && state.meta.files.get(known.toLowerCase())) || null;
+}
+
+async function materialInfos(stem) {
+  const out = [], names = materialNames();
+  const baked = state.result && state.result.uvLayout === 'new';
+  const mats = state.displayMats.length ? state.displayMats : [null];
+  for (let i = 0; i < mats.length; i++) {
+    const m = mats[i], name = names[i];
     const rgb = m && m.color ? m.color.getRGB(new THREE.Color(), THREE.SRGBColorSpace) : { r: 0.8, g: 0.8, b: 0.8 };
     let texture = null, bytes = null, normal = null;
     const extra = [];
@@ -2148,9 +2305,7 @@ async function materialInfos(stem) {
       for (const slot of MAP_SLOTS) {
         const img = m[slot] && m[slot].image;
         if (!img) continue;
-        const src = img.currentSrc || img.src || '';
-        const known = state.meta.blobToName && state.meta.blobToName.get(src);
-        const file = known && state.meta.files.get(known.toLowerCase());
+        const file = sourceFileOf(img);
         let fileName, data;
         if (file) { fileName = file.name; data = new Uint8Array(await file.arrayBuffer()); }
         else if (slot === 'map') { fileName = `${name}_basecolor.png`; data = await imageToPng(img); }
@@ -2228,6 +2383,83 @@ async function saveZip(filename, bytes) {
   setStatus(`Saved ${filename}`, 'info', 4000);
 }
 
+// What an export writes, without reading any bytes: the model files and the textures, each { name, note, pending }.
+function exportPlan() {
+  const res = state.result;
+  if (!res || !state.meta) return null;
+  const base = sanitize((state.meta.name || 'model').replace(/\.[^.]+$/, ''));
+  const stem = `${base}_${res.triCount}`, ext = settings.format;
+  const files = ext === 'obj' ? [{ name: `${stem}.obj`, note: 'model' }, { name: `${stem}.mtl`, note: 'materials' }] : [{ name: `${stem}.${ext}`, note: 'model' }];
+  const names = materialNames(), seen = new Set(), textures = [];
+  const add = (name, note, pending = false) => { if (!seen.has(name)) { seen.add(name); textures.push({ name, note, pending }); } };
+  if (res.uvLayout === 'new' && state.bake) {
+    for (const x of state.bake.maps) add(`${stem}_${names[x.mi]}_${MAP_FILE[x.slot] || x.slot}.png`, `${SLOT_NAMES[x.slot]} · baked at ${state.bake.size} px`);
+  } else if (res.uvLayout === 'pending') {
+    if (texturedMaterials().length) add('Baked textures', 'still being made; the export waits for them', true);
+  } else if (res.uvLayout !== 'new') {
+    state.displayMats.forEach((m, i) => {
+      for (const slot of MAP_SLOTS) {
+        const img = m[slot] && m[slot].image;
+        if (!img) continue;
+        const file = sourceFileOf(img);
+        if (file) add(file.name, `${SLOT_NAMES[slot]} · the original file`);
+        else if (slot === 'map') add(`${names[i]}_basecolor.png`, `${SLOT_NAMES[slot]} · written from the model`);
+      }
+    });
+  }
+  return { stem, files, textures };
+}
+const ICON_FILE = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M14 3.5v5h5"/></svg>';
+const ICON_IMAGE = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.7"/><path d="m20.5 16-5-5-9 8.5"/></svg>';
+function svgIcon(markup) {
+  const t = document.createElement('template');
+  t.innerHTML = markup;
+  return t.content.firstChild;
+}
+const listText = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+let exportIsOpen = false;
+function updateExportPanel() {
+  if (!exportIsOpen) return;
+  const plan = exportPlan();
+  $('exportBtn').disabled = !plan;
+  $('exportMeta').textContent = plan ? `${fmt(state.result.triCount)} tris · ${fmt(state.result.vertexCount)} verts` : '';
+  if (!plan) {
+    $('exportFiles').replaceChildren(el('li', { className: 'none', textContent: 'Nothing to export yet.' }));
+    $('exportNote').textContent = '';
+    return;
+  }
+  const row = (icon, name, note, cls = '') => el('li', { className: cls }, svgIcon(icon), el('span', { className: 'fname', textContent: name, title: name }), el('span', { className: 'fnote', textContent: note }));
+  const rows = [];
+  if (settings.format === 'glb') {
+    const kinds = [...new Set(plan.textures.filter(t => !t.pending).map(t => t.note.split(' · ')[0]))];
+    rows.push(row(ICON_FILE, plan.files[0].name, kinds.length ? `model, with its ${listText(kinds)} ${kinds.length === 1 ? 'texture' : 'textures'} inside` : 'model'));
+    for (const t of plan.textures.filter(t => t.pending)) rows.push(row(ICON_IMAGE, t.name, t.note, 'pending'));
+  } else {
+    for (const f of plan.files) rows.push(row(ICON_FILE, f.name, f.note));
+    for (const t of plan.textures) rows.push(row(ICON_IMAGE, t.name, t.note, t.pending ? 'pending' : ''));
+  }
+  $('exportFiles').replaceChildren(...rows);
+  const units = { auto: 'in the source file\'s units', m: 'in metres', cm: 'in centimetres' }[settings.units];
+  $('exportNote').textContent = `Saved as ${plan.stem}.zip, ${units}.`;
+}
+function placeExport() {
+  const pop = $('exportPop'), r = $('exportOpen').getBoundingClientRect(), w = Math.min(340, window.innerWidth - 16);
+  pop.style.width = `${w}px`;
+  pop.style.top = `${Math.round(r.bottom + 8)}px`;
+  pop.style.left = `${Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)))}px`;
+}
+function exportToggled(open) {
+  exportIsOpen = open;
+  $('exportOpen').setAttribute('aria-expanded', String(open));
+  if (open) { placeExport(); updateExportPanel(); }
+}
+function closeExport() {
+  const pop = $('exportPop');
+  if (!exportIsOpen) return;
+  if (typeof pop.hidePopover === 'function') pop.hidePopover();
+  else { pop.classList.remove('open'); exportToggled(false); }
+}
+
 async function exportModel() {
   if (!state.result) return;
   const btn = $('exportBtn');
@@ -2235,6 +2467,7 @@ async function exportModel() {
   try {
     const { filename, zip } = await buildExport();
     await saveZip(filename, zip);
+    closeExport();
   } catch (err) {
     console.error(err);
     showError(`Export failed: ${err.message || err}`);
@@ -2357,17 +2590,21 @@ function renderTabs() {
 }
 function updateHeader() {
   const m = state.meta;
-  $('fileName').textContent = !m ? doc.title : m.sample ? 'Sample pawn' : m.name;
-  $('fileMeta').textContent = !m ? (doc.saved ? 'Reopening from your last visit…' : 'Open a model or drop one on the viewport')
-    : m.sample ? 'Procedural example with painted areas — open your own model to replace it'
-    : `${m.kind.toUpperCase()} · ${(m.size / 1048576).toFixed(1)} MB · ${fmt(state.collected.index.length / 3)} triangles`;
+  $('modelName').textContent = !m ? doc.title : m.sample ? 'Sample pawn' : m.name;
+  $('modelName').title = m && !m.sample ? m.name : '';
+  $('modelKind').textContent = !m ? '' : m.sample ? 'built-in sample' : `${m.kind.toUpperCase()} · ${(m.size / 1048576).toFixed(1)} MB`;
+  $('emptyBusyText').textContent = doc.saved ? `Reopening ${doc.saved.model} from your last visit…` : 'Loading the model…';
+  document.title = m ? `${doc.title} · Poly Budget` : 'Poly Budget';
 }
+// Without a model the view shows the open card, and the settings that need a model are dimmed and inert.
 function showEmptyState(on) {
   $('emptyState').hidden = !on;
   $('emptyBusy').hidden = !(loading === doc || doc.saved);
   $('emptyIdle').hidden = !$('emptyBusy').hidden;
   $('toolPal').hidden = on;
   $('toolOpts').hidden = on || settings.tool === 'orbit';
+  for (const sec of document.querySelectorAll('[data-needs-model]')) sec.inert = on;
+  $('stagebar').inert = on;
   requestRender();
 }
 // Near and far planes for the active model, as frameCamera sets them.
@@ -2420,6 +2657,7 @@ function attachDoc() {
   updatePlaneHelper();
   updateTint();
   panels();
+  flashHint();
   $('resErr').textContent = '…';
   if (state.result) setTimeout(() => measureDeviation(state.result), 30);
   if (state.result && state.result.uvLayout === 'pending' && state.geo) startTextureJob();
@@ -2490,7 +2728,7 @@ function syncControls() {
   const labels = less ? ['½', '¼', '⅛'] : ['×2', '×4', '×8'];
   $('strengthSeg').querySelectorAll('button').forEach((b, i) => { b.textContent = labels[i]; });
   $('strengthSeg').hidden = !(settings.tool === 'more' || settings.tool === 'less');
-  $('wire').checked = settings.wire;
+  $('wireBtn').setAttribute('aria-pressed', String(settings.wire));
   const paint = settings.tool !== 'orbit';
   $('showPaintBtn').setAttribute('aria-pressed', String(settings.showPaint));
   $('showPaintBtn').title = settings.showPaint ? 'Hide paint' : 'Show paint';
@@ -2510,6 +2748,7 @@ function syncControls() {
   $('creaseAngle').value = String(settings.creaseAngle);
   $('creaseOut').textContent = `${settings.creaseAngle}°`;
   $('creaseField').hidden = settings.normals !== 'crease';
+  $('normalsMeta').textContent = settings.normals === 'crease' ? `creased ${settings.creaseAngle}°` : settings.normals;
   $('normalWeight').value = String(settings.normalWeight);
   $('nwOut').textContent = settings.normalWeight.toFixed(2);
   $('uvWeight').value = String(settings.uvWeight);
@@ -2521,7 +2760,7 @@ function syncControls() {
   $('tolOut').textContent = `${(tol * 100).toPrecision(2)}% of size`;
   $('units').value = settings.units;
   pressSeg('uvModeSeg', 'uvmode', settings.uvMode);
-  $('bakeSize').value = String(settings.bakeSize);
+  pressSeg('bakeSeg', 'bake', settings.bakeSize);
   $('keepUVOpts').hidden = settings.uvMode === 'new';
   syncSymmetryUI();
   applyTool();
@@ -2542,7 +2781,7 @@ onSeg('modeSeg', 'mode', v => { settings.mode = v; });
 onSeg('strengthSeg', 'strength', v => { settings.strength = Number(v); });
 onSeg('normalsSeg', 'normals', v => { settings.normals = v; scheduleReduce(); });
 onSeg('regSeg', 'reg', v => { settings.regularize = Number(v); scheduleReduce(); });
-onSeg('formatSeg', 'format', v => { settings.format = v; });
+onSeg('formatSeg', 'format', v => { settings.format = v; updateExportPanel(); });
 onSeg('uvModeSeg', 'uvmode', v => { settings.uvMode = v; updateUVPanel(); scheduleReduce(0); });
 onSeg('quickSeg', 'pct', v => { settings.targetPct = Number(v); updateTargetUI(); scheduleReduce(); });
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => { settings.tool = b.dataset.tool; syncControls(); saveSettings(); }));
@@ -2553,19 +2792,38 @@ $('targetSlider').addEventListener('input', e => {
   scheduleReduce(160);
   saveSettings();
 });
-$('targetNum').addEventListener('change', e => {
-  const T = state.welded ? state.welded.triCount : 1;
-  const v = Math.max(4, Math.min(T, Number(e.target.value) || 0));
-  settings.targetPct = Math.max(0.01, (100 * v) / T);
-  updateTargetUI();
-  scheduleReduce(0);
-  saveSettings();
+// A typed budget: a triangle count ("23078", "23,078"), a short count ("20k", "1.5m") or a share of the model ("5%").
+function parseBudget(text, total) {
+  const m = String(text).trim().toLowerCase().replace(/[\s,_]/g, '').match(/^(\d*\.?\d+)(k|m|%)?$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return m[2] === '%' ? (n / 100) * total : n * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1);
+}
+$('targetNum').addEventListener('focus', e => {
+  if (!state.welded) return;
+  e.target.value = String(targetTris());
+  sizeBudgetInput();
+  e.target.select();
 });
+$('targetNum').addEventListener('input', sizeBudgetInput);
+$('targetNum').addEventListener('keydown', e => {
+  if (e.key === 'Enter') e.target.blur();
+  else if (e.key === 'Escape') { e.target.value = String(targetTris()); e.target.blur(); }
+});
+$('targetNum').addEventListener('change', e => {
+  const T = state.welded ? state.welded.triCount : 0, v = parseBudget(e.target.value, T);
+  if (T && v !== null) {
+    const pct = Math.max(0.01, (100 * Math.max(4, Math.min(T, Math.round(v)))) / T);
+    if (pct !== settings.targetPct) { settings.targetPct = pct; saveSettings(); scheduleReduce(0); }
+  }
+  updateTargetUI();
+});
+$('targetNum').addEventListener('blur', updateTargetUI);
 const bindCheck = (id, key, after) => $(id).addEventListener('change', e => { settings[key] = e.target.checked; syncControls(); saveSettings(); after(); });
 const bindRange = (id, key, after, delay) => $(id).addEventListener('input', e => { settings[key] = Number(e.target.value); syncControls(); saveSettings(); after(delay); });
 let weldTimer = 0;
 const reweld = () => { clearTimeout(weldTimer); weldTimer = setTimeout(() => rebuildWeld(false), 350); };
-bindCheck('wire', 'wire', applyDisplaySettings);
+$('wireBtn').addEventListener('click', () => { settings.wire = !settings.wire; syncControls(); saveSettings(); applyDisplaySettings(); });
 $('showPaintBtn').addEventListener('click', () => { settings.showPaint = !settings.showPaint; syncControls(); saveSettings(); applyDisplaySettings(); });
 bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
 bindCheck('permissive', 'permissive', () => scheduleReduce());
@@ -2623,8 +2881,8 @@ bindRange('uvWeight', 'uvWeight', d => scheduleReduce(d), 200);
 bindRange('hardAngle', 'hardAngle', reweld);
 bindRange('weldTol', 'weldTol', reweld);
 $('maxErr').addEventListener('change', e => { settings.maxError = Number(e.target.value); saveSettings(); scheduleReduce(0); });
-$('units').addEventListener('change', e => { settings.units = e.target.value; saveSettings(); });
-$('bakeSize').addEventListener('change', e => { settings.bakeSize = Number(e.target.value); saveSettings(); startTextureJob(); });
+$('units').addEventListener('change', e => { settings.units = e.target.value; saveSettings(); updateExportPanel(); });
+onSeg('bakeSeg', 'bake', v => { if (settings.bakeSize === Number(v)) return; settings.bakeSize = Number(v); startTextureJob(); });
 $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
 $('undoBtn').title = `Undo (${UNDO_KEY})`;
@@ -2661,14 +2919,31 @@ $('texInput').addEventListener('change', e => {
 $('texList').addEventListener('click', e => {
   const b = e.target.closest('button[data-mat]');
   if (!b) return;
-  textureTarget = Number(b.dataset.mat);
+  textureTarget = { mat: Number(b.dataset.mat), slot: b.dataset.slot || 'map' };
   $('texOneInput').click();
 });
 $('texOneInput').addEventListener('change', e => {
   const file = e.target.files[0];
   e.target.value = '';
-  if (file && textureTarget >= 0) setMaterialTexture(textureTarget, file).catch(err => { console.error(err); showError(`Couldn't use ${file.name}: ${err.message || err}`); });
+  if (file && textureTarget) setMaterialTexture(textureTarget.mat, file, textureTarget.slot).catch(err => { console.error(err); showError(`Couldn't use ${file.name}: ${err.message || err}`); });
 });
+// The export panel is a popover under its button; without the Popover API it is a plain panel with the same dismissal.
+{
+  const pop = $('exportPop'), btn = $('exportOpen');
+  if (typeof pop.showPopover === 'function') {
+    pop.addEventListener('beforetoggle', e => exportToggled(e.newState === 'open'));
+  } else {
+    btn.addEventListener('click', () => { pop.classList.toggle('open'); exportToggled(pop.classList.contains('open')); });
+    document.addEventListener('pointerdown', e => { if (exportIsOpen && !pop.contains(e.target) && !btn.contains(e.target)) { pop.classList.remove('open'); exportToggled(false); } });
+    document.addEventListener('keydown', e => { if (exportIsOpen && e.key === 'Escape') { pop.classList.remove('open'); exportToggled(false); btn.focus(); } });
+  }
+  window.addEventListener('resize', () => { if (exportIsOpen) placeExport(); });
+}
+// Foldable sidebar sections remember whether they were open.
+for (const d of document.querySelectorAll('details[data-sec]')) {
+  d.open = !!(settings.sections && settings.sections[d.dataset.sec]);
+  d.addEventListener('toggle', () => { settings.sections = { ...settings.sections, [d.dataset.sec]: d.open }; saveSettings(); });
+}
 
 let dragDepth = 0;
 window.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; $('drop').hidden = false; } });
@@ -2682,7 +2957,7 @@ window.addEventListener('drop', e => {
 });
 
 window.addEventListener('keydown', e => {
-  if (e.target.closest && e.target.closest('input, select, textarea')) return;
+  if (e.target.closest && e.target.closest('input, select, textarea, .pop')) return;
   const k = e.key.toLowerCase();
   if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if ((e.metaKey || e.ctrlKey) && k === 'y') { e.preventDefault(); redo(); return; }
