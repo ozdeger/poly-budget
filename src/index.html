@@ -840,6 +840,7 @@ details.more[open] > summary { margin-bottom: 8px; }
     <details class="sec" id="secQuads" data-sec="quads" data-needs-model hidden>
       <summary><h2>Remeshing</h2><span class="sum-meta" id="quadsMeta"></span></summary>
       <p class="note">Rebuilds the surface as quads whose edges follow its shape, and bakes the texture onto new UVs. Paint More or Less detail to change the quad size there; Keep asks for the smallest quads.</p>
+      <label class="check"><input type="checkbox" id="quadSharp"><span>Keep sharp edges<small>Edges sharper than 45° that run a few quads long become edge loops, so rims and corners stay crisp</small></span></label>
       <label class="check"><input type="checkbox" id="prune2"><span>Remove tiny floating parts<small>Otherwise every separate piece keeps at least a few quads</small></span></label>
     </details>
 

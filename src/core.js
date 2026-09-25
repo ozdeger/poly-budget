@@ -2058,6 +2058,8 @@ export function unwrapResult(mesh, plane, labels, size) {
 // Quads per area in painted regions, as a multiple of the unpainted density. Keep, which can't keep the original
 // triangles here, asks for the densest quads.
 export const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8 };
+// Edges sharper than this (degrees) stay edge loops in Quads mode, when they run long enough to be features.
+export const QUAD_SHARP = 45;
 // Every separate piece gets at least this many quads (while that takes no more than a fifth of the budget).
 const MIN_PIECE_QUADS = 24;
 
@@ -2283,6 +2285,7 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
   const rq = remeshQuads({ positions: base.positions, index, normals: smooth }, {
     targetFaces: quads, density, plane: sym ? { axis: sym.axis, offset: Math.fround(sym.offset) } : null, progress,
     cache: holder.quadCache, cacheKey: `${st.prune ? 1 : 0}|${index.length}|${density ? hashFloats(density) : 'even'}`,
+    sharp: st.quadSharp ?? QUAD_SHARP,
   });
   // Triangles the prune dropped don't exist for the lookups either.
   const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym);

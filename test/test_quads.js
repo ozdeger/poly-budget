@@ -91,3 +91,32 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
   for (let t = 0; t < r.triCount; t++) if (r.quad[t] === 1 && r.positions[r.index[t * 3] * 3] > 1.5) onSmall++;
   check(onSmall >= 12, `small piece: keeps ${onSmall} quads next to the big sphere`);
 }
+
+// Sharp edges: a box keeps its edges and corners crisp instead of rounding them off.
+{
+  const w3 = core.smartWeld(sceneOf(new THREE.BoxGeometry(1.6, 1, 1, 48, 30, 30)), { keepUV: false, hardAngle: 30 });
+  const edgeGap = sharp => {
+    const { result: r } = run(w3, { targetTris: 2000, symmetry: null, quadSharp: sharp });
+    const P = r.positions, idx = r.index;
+    // Distance from points along the box's twelve edges to the remeshed surface.
+    const dist = (x, y, z) => {
+      let best = Infinity;
+      for (let t = 0; t < idx.length; t += 3) {
+        const a = new THREE.Vector3().fromArray(P, idx[t] * 3), b = new THREE.Vector3().fromArray(P, idx[t + 1] * 3), c = new THREE.Vector3().fromArray(P, idx[t + 2] * 3);
+        const q = new THREE.Triangle(a, b, c).closestPointToPoint(new THREE.Vector3(x, y, z), new THREE.Vector3());
+        best = Math.min(best, q.distanceTo(new THREE.Vector3(x, y, z)));
+      }
+      return best;
+    };
+    let worst = 0;
+    const H = [0.8, 0.5, 0.5];
+    for (let axis = 0; axis < 3; axis++) for (const s1 of [-1, 1]) for (const s2 of [-1, 1]) for (let i = 1; i < 8; i++) {
+      const p = [0, 0, 0], o = [(axis + 1) % 3, (axis + 2) % 3];
+      p[axis] = -H[axis] + (2 * H[axis] * i) / 8; p[o[0]] = s1 * H[o[0]]; p[o[1]] = s2 * H[o[1]];
+      worst = Math.max(worst, dist(...p));
+    }
+    return worst;
+  };
+  const crisp = edgeGap(45), round = edgeGap(0);
+  check(crisp < 0.005 && crisp < round / 4, `sharp edges: the box's edges stay within ${crisp.toFixed(4)} of the remesh (${round.toFixed(4)} without)`);
+}

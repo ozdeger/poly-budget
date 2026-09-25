@@ -1604,6 +1604,109 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   return { levels, n, nC, WI };
 }
 
+// ---------- sharp edges ----------
+
+// Sharp edges of the input: where neighbouring triangles turn by more than `angle` degrees. Short runs are surface
+// noise and are dropped; only connected runs at least minLength long count. Returns the kept edges as vertex pairs,
+// normals where each crease vertex takes one side's normal (so the grid snaps to the crease rather than cutting it), and
+// the corners where three or more kept edges meet.
+function findCreases(P, index, N, angle, minLength) {
+  const V = P.length / 3, T = index.length / 3, fn = new Float64Array(T * 3), fa = new Float64Array(T);
+  for (let t = 0; t < T; t++) {
+    const a = index[t * 3] * 3, b = index[t * 3 + 1] * 3, c = index[t * 3 + 2] * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx, l = Math.hypot(x, y, z);
+    fa[t] = l / 2;
+    if (l > 0) { fn[t * 3] = x / l; fn[t * 3 + 1] = y / l; fn[t * 3 + 2] = z / l; }
+  }
+  const start = new Int32Array(V + 1);
+  for (let k = 0; k < index.length; k++) start[index[k] + 1]++;
+  for (let v = 0; v < V; v++) start[v + 1] += start[v];
+  const faces = new Int32Array(index.length), fill = start.slice(0, V);
+  for (let k = 0; k < index.length; k++) faces[fill[index[k]]++] = (k / 3) | 0;
+  const cosA = Math.cos((angle * Math.PI) / 180);
+  const ea = [], eb = [];
+  for (let t = 0; t < T; t++) {
+    for (let k = 0; k < 3; k++) {
+      const a = index[t * 3 + k], b = index[t * 3 + ((k + 1) % 3)];
+      for (let j = start[a]; j < start[a + 1]; j++) {
+        const u = faces[j];
+        if (u <= t || (index[u * 3] !== b && index[u * 3 + 1] !== b && index[u * 3 + 2] !== b)) continue;
+        if (fa[t] > 0 && fa[u] > 0 && fn[t * 3] * fn[u * 3] + fn[t * 3 + 1] * fn[u * 3 + 1] + fn[t * 3 + 2] * fn[u * 3 + 2] < cosA) { ea.push(a); eb.push(b); }
+      }
+    }
+  }
+  // Runs: sharp edges joined at shared vertices; each keeps its total length.
+  const parent = new Int32Array(V);
+  for (let v = 0; v < V; v++) parent[v] = v;
+  const find = x => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  for (let e = 0; e < ea.length; e++) { const x = find(ea[e]), y = find(eb[e]); if (x !== y) parent[x] = y; }
+  const length = new Map();
+  const len = e => Math.hypot(P[ea[e] * 3] - P[eb[e] * 3], P[ea[e] * 3 + 1] - P[eb[e] * 3 + 1], P[ea[e] * 3 + 2] - P[eb[e] * 3 + 2]);
+  for (let e = 0; e < ea.length; e++) { const r = find(ea[e]); length.set(r, (length.get(r) || 0) + len(e)); }
+  const segs = [], deg = new Uint8Array(V);
+  for (let e = 0; e < ea.length; e++) {
+    if (length.get(find(ea[e])) < minLength) continue;
+    segs.push(ea[e], eb[e]);
+    deg[ea[e]] = Math.min(255, deg[ea[e]] + 1); deg[eb[e]] = Math.min(255, deg[eb[e]] + 1);
+  }
+  const out = Float64Array.from(N), corners = [];
+  for (let v = 0; v < V; v++) {
+    if (!deg[v]) continue;
+    if (deg[v] >= 3) corners.push(v);
+    let seed = -1, best = -1;
+    for (let j = start[v]; j < start[v + 1]; j++) if (fa[faces[j]] > best) { best = fa[faces[j]]; seed = faces[j]; }
+    let x = 0, y = 0, z = 0;
+    for (let j = start[v]; j < start[v + 1]; j++) {
+      const f = faces[j];
+      if (fn[f * 3] * fn[seed * 3] + fn[f * 3 + 1] * fn[seed * 3 + 1] + fn[f * 3 + 2] * fn[seed * 3 + 2] < cosA) continue;
+      x += fn[f * 3] * fa[f]; y += fn[f * 3 + 1] * fa[f]; z += fn[f * 3 + 2] * fa[f];
+    }
+    const l = Math.hypot(x, y, z);
+    if (l > 0) { out[v * 3] = x / l; out[v * 3 + 1] = y / l; out[v * 3 + 2] = z / l; }
+  }
+  return { N: out, segs: Uint32Array.from(segs), corners: Int32Array.from(corners) };
+}
+
+// Nearest points on a set of segments, through a uniform grid.
+class SegmentGrid {
+  constructor(P, segs, cell) {
+    this.P = P; this.segs = segs; this.h = cell;
+    this.cells = new Map();
+    for (let s = 0; s < segs.length / 2; s++) {
+      const a = segs[s * 2] * 3, b = segs[s * 2 + 1] * 3;
+      const lo = [0, 1, 2].map(k => Math.floor(Math.min(P[a + k], P[b + k]) / cell)), hi = [0, 1, 2].map(k => Math.floor(Math.max(P[a + k], P[b + k]) / cell));
+      for (let i = lo[0]; i <= hi[0]; i++) for (let j = lo[1]; j <= hi[1]; j++) for (let k = lo[2]; k <= hi[2]; k++) {
+        const key = `${i},${j},${k}`;
+        const l = this.cells.get(key);
+        if (l) l.push(s); else this.cells.set(key, [s]);
+      }
+    }
+  }
+  // The closest point within r of (x, y, z) on any segment: { x, y, z, d, seg } or null.
+  nearest(x, y, z, r) {
+    const P = this.P, h = this.h;
+    let best = null, bd = r * r;
+    const i0 = Math.floor((x - r) / h), i1 = Math.floor((x + r) / h), j0 = Math.floor((y - r) / h), j1 = Math.floor((y + r) / h);
+    const k0 = Math.floor((z - r) / h), k1 = Math.floor((z + r) / h);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) for (let k = k0; k <= k1; k++) {
+      const list = this.cells.get(`${i},${j},${k}`);
+      if (!list) continue;
+      for (const s of list) {
+        const a = this.segs[s * 2] * 3, b = this.segs[s * 2 + 1] * 3;
+        const dx = P[b] - P[a], dy = P[b + 1] - P[a + 1], dz = P[b + 2] - P[a + 2], ll = dx * dx + dy * dy + dz * dz;
+        let t = ll > 0 ? ((x - P[a]) * dx + (y - P[a + 1]) * dy + (z - P[a + 2]) * dz) / ll : 0;
+        t = Math.max(0, Math.min(1, t));
+        const px = P[a] + dx * t, py = P[a + 1] + dy * t, pz = P[a + 2] + dz * t;
+        const d2 = (px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2;
+        if (d2 < bd) { bd = d2; best = { x: px, y: py, z: pz, d: Math.sqrt(d2), seg: s }; }
+      }
+    }
+    return best;
+  }
+}
+
 // ---------- the whole remesh ----------
 
 // mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
@@ -1628,13 +1731,17 @@ export function remeshQuads(mesh, opt) {
   // Extraction tends to give a few percent more faces than area / size², so the first grid starts that much larger.
   let scale = Math.sqrt(weighted / target) * 1.02;
   const sizeAt = v => (dens ? scale / Math.sqrt(Math.max(1e-6, dens[v])) : scale);
+  // Sharp edges (opt.sharp: the angle, 0 for none): the fields see one side's normal along them, and vertices near
+  // them are snapped onto them after extraction.
+  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, 3 * scale) : null;
+  const fieldN = crease && crease.segs.length ? crease.N : srcN;
 
   // The working surface, its hierarchy and the direction field don't depend on the exact budget: they are kept in
   // opt.cache and reused while the grid size stays within the same step of 2^(1/4) and nothing else changed.
   const cellFactor = opt.cellFactor ?? 2.5, splitFactor = opt.splitFactor ?? 0.7;
   const seed = opt.seed ?? 12345;
   const bucket = Math.round(4 * Math.log2(scale / cellFactor));
-  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, opt.normalSmooth ?? 10, opt.smoothAngle ?? 60, opt.intrinsic ? 1 : 0, seed, cellFactor, splitFactor].join('|');
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, opt.normalSmooth ?? 10, opt.smoothAngle ?? 60, opt.intrinsic ? 1 : 0, seed, cellFactor, splitFactor, opt.sharp || 0].join('|');
   const cache = opt.cache || null;
   let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
   if (work) {
@@ -1643,7 +1750,7 @@ export function remeshQuads(mesh, opt) {
     mark('cached');
     if (progress) progress('orientation', 1);
   } else {
-    work = buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress);
+    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress);
     work.scale = scale;
     work.baseS = work.levels.map(L => L.S.slice());
     solveOrientations(work.levels, seed, progress, opt.iterations, opt.intrinsic);
@@ -1724,6 +1831,7 @@ export function remeshQuads(mesh, opt) {
   const border = new Uint8Array(nv);
   for (const [key, c] of edgeUse) if (c === 1) { const a = Math.floor(key / nv); border[a] = 1; border[key - a * nv] = 1; }
   const plane = opt.plane || null;
+  let relaxSharp = null;
   const hitT = new Int32Array(nv).fill(-1), bary = new Float32Array(nv * 3);
   const Nw = srcN;
   const project = v => {
@@ -1734,12 +1842,49 @@ export function remeshQuads(mesh, opt) {
   };
   const snapPlane = v => { if (plane && border[v] && Math.abs(P[v * 3 + plane.axis] - plane.offset) < 0.75 * scale) P[v * 3 + plane.axis] = plane.offset; };
   for (let v = 0; v < nv; v++) { project(v); snapPlane(v); }
+  // Sharp edges: corners take the nearest vertex and hold it; vertices close to an edge move onto it and afterwards only
+  // slide along it.
+  const sharpV = new Uint8Array(nv);
+  let segGrid = null;
+  if (crease && crease.segs.length) {
+    segGrid = new SegmentGrid(srcP, crease.segs, scale);
+    const snapSeg = v => {
+      const q = segGrid.nearest(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], 0.4 * scale);
+      if (!q) return false;
+      P[v * 3] = q.x; P[v * 3 + 1] = q.y; P[v * 3 + 2] = q.z;
+      return true;
+    };
+    for (let v = 0; v < nv; v++) if (nbr[v].length && !border[v] && snapSeg(v)) { sharpV[v] = 1; project(v); }
+    for (const c of crease.corners) {
+      let best = -1, bd = (0.5 * scale) ** 2;
+      for (let v = 0; v < nv; v++) {
+        if (!nbr[v].length || border[v]) continue;
+        const d2 = (P[v * 3] - srcP[c * 3]) ** 2 + (P[v * 3 + 1] - srcP[c * 3 + 1]) ** 2 + (P[v * 3 + 2] - srcP[c * 3 + 2]) ** 2;
+        if (d2 < bd) { bd = d2; best = v; }
+      }
+      if (best < 0) continue;
+      for (let k = 0; k < 3; k++) P[best * 3 + k] = srcP[c * 3 + k];
+      sharpV[best] = 2;
+      project(best);
+    }
+    // Sharp vertices sit on the input surface already; their snapped spot is where they stay between moves.
+    const slide = v => {
+      const sharpNbr = nbr[v].filter(u => sharpV[u]);
+      if (sharpNbr.length < 2) return;
+      let cx = 0, cy = 0, cz = 0;
+      for (const u of sharpNbr) { cx += P[u * 3]; cy += P[u * 3 + 1]; cz += P[u * 3 + 2]; }
+      const q = segGrid.nearest((P[v * 3] + cx / sharpNbr.length) / 2, (P[v * 3 + 1] + cy / sharpNbr.length) / 2, (P[v * 3 + 2] + cz / sharpNbr.length) / 2, 0.6 * scale);
+      if (q) { tmp[v * 3] = q.x; tmp[v * 3 + 1] = q.y; tmp[v * 3 + 2] = q.z; }
+    };
+    relaxSharp = slide;
+  }
   const iterations = opt.relax ?? 6;
   const tmp = new Float64Array(nv * 3);
   for (let it = 0; it < iterations; it++) {
     for (let v = 0; v < nv; v++) {
       const list = nbr[v];
       tmp[v * 3] = P[v * 3]; tmp[v * 3 + 1] = P[v * 3 + 1]; tmp[v * 3 + 2] = P[v * 3 + 2];
+      if (sharpV[v]) { if (sharpV[v] === 1 && relaxSharp) relaxSharp(v); continue; }
       if (!list.length || border[v] || hitT[v] < 0) continue;
       let cx = 0, cy = 0, cz = 0;
       for (const u of list) { cx += P[u * 3]; cy += P[u * 3 + 1]; cz += P[u * 3 + 2]; }
@@ -1755,7 +1900,10 @@ export function remeshQuads(mesh, opt) {
       tmp[v * 3] += (cx - nx * d) * 0.8; tmp[v * 3 + 1] += (cy - ny * d) * 0.8; tmp[v * 3 + 2] += (cz - nz * d) * 0.8;
     }
     P.set(tmp);
-    for (let v = 0; v < nv; v++) if (!border[v]) project(v);
+    for (let v = 0; v < nv; v++) if (!border[v]) {
+      if (sharpV[v]) { const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2]; project(v); P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z; }
+      else project(v);
+    }
   }
   for (let v = 0; v < nv; v++) if (border[v]) { project(v); snapPlane(v); }
   mark('relax');
