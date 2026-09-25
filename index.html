@@ -5701,6 +5701,9 @@ async function prepareModel(root, meta) {
   state.hasColors = !!collected.colors;
   state.displayMats = collected.materials.map(m => {
     const mat = m && m.isMaterial ? m : new THREE.MeshStandardMaterial({ color: 0xc8c2b8 });
+    // Loaders turn on flat shading for a GLB without normals or an OBJ with smoothing off. Here the vertex normals
+    // come from the file or are worked out, and the Normals setting decides the result's, so the views follow them.
+    mat.flatShading = false;
     mat.polygonOffset = true;
     mat.polygonOffsetFactor = 1;
     mat.polygonOffsetUnits = 1;
@@ -6070,6 +6073,7 @@ uniform sampler2D corr;
 uniform sampler2D srcMap;
 uniform mat3 srcMatrix;
 uniform vec2 srcSize;
+uniform vec2 normalScale;
 uniform int mode;
 
 vec3 toSRGB(vec3 c) {
@@ -6096,7 +6100,9 @@ void main() {
       vec3 to = (q0 * e1.y - q1 * e0.y) / den, bo = (q1 * e0.x - q0 * e1.x) / den;
       to = normalize(to - no * dot(no, to));
       vec3 bo2 = cross(no, to) * (dot(cross(no, to), bo) < 0.0 ? -1.0 : 1.0);
+      // Read as three.js shows it: the material's scale, whose sign also carries the green direction (flipped for glTF).
       vec3 nt = s.xyz * 2.0 - 1.0;
+      nt.xy *= normalScale;
       vec3 obj = normalize(to * nt.x + bo2 * nt.y + no * nt.z);
       vec3 nr = normalize(vNrm);
       vec3 tn = normalize(tr - nr * dot(nr, tr));
@@ -6148,7 +6154,7 @@ const bakeMaterial = (vertexShader, fragmentShader, uniforms) => new THREE.Shade
 const corrMat = bakeMaterial(UV_SPACE_VS, CORR_FS, { bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, maxDist: { value: 1 }, cage: { value: 0.01 } });
 const mapMat = bakeMaterial(UV_SPACE_VS, MAP_FS, {
   bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, corr: { value: null }, srcMap: { value: null },
-  srcMatrix: { value: new THREE.Matrix3() }, srcSize: { value: new THREE.Vector2() }, mode: { value: 0 },
+  srcMatrix: { value: new THREE.Matrix3() }, srcSize: { value: new THREE.Vector2() }, normalScale: { value: new THREE.Vector2(1, 1) }, mode: { value: 0 },
 });
 const jfaInitMat = bakeMaterial(QUAD_VS, JFA_INIT_FS, { corr: { value: null } });
 const jfaStepMat = bakeMaterial(QUAD_VS, JFA_STEP_FS, { seeds: { value: null }, stepSize: { value: 1 } });
@@ -6281,6 +6287,7 @@ async function bakeResultAsync(res, info, current) {
         mapMat.uniforms.srcMap.value = tex;
         mapMat.uniforms.srcMatrix.value.copy(tex.matrix);
         mapMat.uniforms.srcSize.value.set(...imageSize(tex.image));
+        mapMat.uniforms.normalScale.value.copy(state.displayMats[job.mi].normalScale || new THREE.Vector2(1, 1));
         mapMat.uniforms.mode.value = slot === 'normalMap' ? 2 : tex.colorSpace === THREE.SRGBColorSpace ? 1 : 0;
         bakePass(mapMat, bake.scratch, mesh);
         fillMat.uniforms.corr.value = bake.corr.texture;
@@ -6315,6 +6322,8 @@ function bakedMaterials(bk) {
       t.needsUpdate = true;
       c[x.slot] = t;
     }
+    // A baked normal map already carries the source's strength and green direction.
+    if (c.normalScale) c.normalScale.set(1, 1);
     c.needsUpdate = true;
     return c;
   });
