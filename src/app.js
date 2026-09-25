@@ -162,6 +162,14 @@ function applyTheme() {
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
 new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
+// Bounds of a position array, worked out once per array (welded positions are never changed in place).
+const boundsCache = new WeakMap();
+function boundsOf(positions) {
+  let b = boundsCache.get(positions);
+  if (!b) boundsCache.set(positions, (b = bounds(positions)));
+  return b;
+}
+
 // ---------- layout & render ----------
 let renderQueued = false;
 function requestRender() {
@@ -224,7 +232,7 @@ new ResizeObserver(() => {
 
 function frameCamera() {
   if (!state.welded) return;
-  const b = bounds(state.welded.positions);
+  const b = boundsOf(state.welded.positions);
   const center = new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
   const radius = b.diag / 2;
   const dist = radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.08;
@@ -1718,7 +1726,7 @@ function trimmedMirrorError(axis, offset, samples) {
 }
 // Coarse scan around the box centre, then golden-section refinement of the plane position.
 function refineOffset(axis, samples) {
-  const b = bounds(state.welded.positions);
+  const b = boundsOf(state.welded.positions);
   const extent = b.max[axis] - b.min[axis] || 1, centre = (b.min[axis] + b.max[axis]) / 2;
   const steps = 12, span = extent * 0.35, stepSize = (2 * span) / steps;
   const f = o => trimmedMirrorError(axis, o, samples);
@@ -1766,8 +1774,8 @@ function setPlaneOffset(offset) {
   syncSymmetryUI();
   updatePlaneHelper();
   updateTint();
-  scheduleMirrorView(300);
-  scheduleReduce(120);
+  scheduleMirrorView(60);
+  scheduleReduce(60);
 }
 function updateTint() {
   const s = settings.symSide === '-' ? -1 : 1;
@@ -1803,13 +1811,14 @@ async function refreshMirrorView() {
     showError(`Couldn't build the mirrored preview: ${err.message || err}`);
   }
 }
-function updatePlaneHelper() {
+// offset: a plane position to show without applying it, while the plane slider is being dragged.
+function updatePlaneHelper(offset = symPlane.offset) {
   const on = settings.symmetry && settings.showPlane && symPlane.ready && state.welded;
   planeL.visible = planeR.visible = !!on;
   if (on) {
-    const b = bounds(state.welded.positions);
+    const b = boundsOf(state.welded.positions);
     const c = [0, 1, 2].map(k => (b.min[k] + b.max[k]) / 2);
-    c[symPlane.axis] = symPlane.offset;
+    c[symPlane.axis] = offset;
     const s = b.size.map(x => x * 1.12 + b.diag * 0.02);
     for (const g of [planeL, planeR]) {
       g.position.set(c[0], c[1], c[2]);
@@ -1834,7 +1843,7 @@ function syncSymmetryUI() {
   neg.textContent = `Keep −${a}`;
   pos.textContent = `Keep +${a}`;
   if (!state.welded || !symPlane.ready) { $('symFitRow').hidden = true; return; }
-  const b = bounds(state.welded.positions);
+  const b = boundsOf(state.welded.positions);
   const lo = b.min[symPlane.axis], hi = b.max[symPlane.axis];
   $('symOffset').value = String(Math.round((1000 * (symPlane.offset - lo)) / Math.max(1e-9, hi - lo)));
   if (document.activeElement !== $('symOffNum')) $('symOffNum').value = String(+symPlane.offset.toPrecision(6));
@@ -1919,9 +1928,9 @@ function flashHint(ms = 5000) {
 }
 
 // ---------- reduction ----------
-function targetTris() {
+function targetTris(pct = settings.targetPct) {
   const T = state.welded ? state.welded.triCount : 0;
-  return Math.max(4, Math.min(T, Math.round((T * settings.targetPct) / 100)));
+  return Math.max(4, Math.min(T, Math.round((T * pct) / 100)));
 }
 function reduceSettings(target) {
   return {
@@ -2048,7 +2057,11 @@ function sizeBudgetInput() {
   const input = $('targetNum');
   input.style.width = `${Math.max(4, input.value.length) + 1}ch`;
 }
-function updateTargetUI() {
+// preview: a budget to show without applying it, while the slider is dragged; nothing else redraws the readout meanwhile.
+let budgetDragging = false;
+function updateTargetUI(preview) {
+  if (budgetDragging && preview === undefined) return;
+  const pct = preview ?? settings.targetPct;
   const input = $('targetNum'), editing = document.activeElement === input;
   if (!state.welded) {
     if (!editing) input.value = '—';
@@ -2057,12 +2070,12 @@ function updateTargetUI() {
     pressSeg('quickSeg', 'pct', null);
     return;
   }
-  const T = state.welded.triCount, t = targetTris();
+  const T = state.welded.triCount, t = targetTris(pct);
   if (!editing) input.value = fmt(t);
   sizeBudgetInput();
-  $('targetOf').textContent = `of ${fmt(T)} · ${settings.targetPct < 1 ? settings.targetPct.toFixed(2) : settings.targetPct.toFixed(1)}%`;
-  $('targetSlider').value = String(Math.round((1000 * Math.log(settings.targetPct / 0.1)) / Math.log(1000)));
-  pressSeg('quickSeg', 'pct', settings.targetPct);
+  $('targetOf').textContent = `of ${fmt(T)} · ${pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%`;
+  $('targetSlider').value = String(Math.round((1000 * Math.log(pct / 0.1)) / Math.log(1000)));
+  pressSeg('quickSeg', 'pct', pct);
   if (display.L && state.left) {
     const L = state.left;
     $('labelLText').textContent = L.mirrored
@@ -3178,12 +3191,21 @@ onSeg('uvModeSeg', 'uvmode', v => { settings.uvMode = v; updateUVPanel(); schedu
 onSeg('quickSeg', 'pct', v => { settings.targetPct = Number(v); updateTargetUI(); scheduleReduce(); });
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => { settings.tool = b.dataset.tool; syncControls(); saveSettings(); }));
 
-$('targetSlider').addEventListener('input', e => {
-  settings.targetPct = Math.min(100, 0.1 * Math.pow(1000, Number(e.target.value) / 1000));
+// Sliders show their value while they move and apply it once, when let go ('change'), so a drag regenerates once.
+// A drag that ends where it started applies nothing, so the readout goes back to what is in use.
+const pctFromSlider = v => Math.min(100, 0.1 * Math.pow(1000, Number(v) / 1000));
+$('targetSlider').addEventListener('pointerdown', () => { budgetDragging = true; });
+$('targetSlider').addEventListener('input', e => updateTargetUI(pctFromSlider(e.target.value)));
+$('targetSlider').addEventListener('change', e => {
+  budgetDragging = false;
+  settings.targetPct = pctFromSlider(e.target.value);
   updateTargetUI();
-  scheduleReduce(160);
   saveSettings();
+  scheduleReduce(60);
 });
+for (const type of ['pointerup', 'pointercancel']) {
+  $('targetSlider').addEventListener(type, () => setTimeout(() => { budgetDragging = false; updateTargetUI(); }, 0));
+}
 // A typed budget: a triangle count ("23078", "23,078"), a short count ("20k", "1.5m") or a share of the model ("5%").
 function parseBudget(text, total) {
   const m = String(text).trim().toLowerCase().replace(/[\s,_]/g, '').match(/^(\d*\.?\d+)(k|m|%)?$/);
@@ -3210,11 +3232,15 @@ $('targetNum').addEventListener('change', e => {
   }
   updateTargetUI();
 });
-$('targetNum').addEventListener('blur', updateTargetUI);
+$('targetNum').addEventListener('blur', () => updateTargetUI());
 const bindCheck = (id, key, after) => $(id).addEventListener('change', e => { settings[key] = e.target.checked; syncControls(); saveSettings(); after(); });
-const bindRange = (id, key, after, delay) => $(id).addEventListener('input', e => { settings[key] = Number(e.target.value); syncControls(); saveSettings(); after(delay); });
+const bindRange = (id, key, apply) => {
+  const input = $(id);
+  input.addEventListener('input', () => { settings[key] = Number(input.value); syncControls(); });
+  input.addEventListener('change', () => { settings[key] = Number(input.value); syncControls(); saveSettings(); apply(); });
+};
 let weldTimer = 0;
-const reweld = () => { clearTimeout(weldTimer); weldTimer = setTimeout(() => rebuildWeld(false), 350); };
+const reweld = () => { clearTimeout(weldTimer); weldTimer = setTimeout(() => rebuildWeld(false), 60); };
 $('wireBtn').addEventListener('click', () => { settings.wire = !settings.wire; syncControls(); saveSettings(); applyDisplaySettings(); });
 $('showPaintBtn').addEventListener('click', () => { settings.showPaint = !settings.showPaint; syncControls(); saveSettings(); applyDisplaySettings(); });
 bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
@@ -3255,21 +3281,31 @@ $('symDetect').addEventListener('click', async () => {
   updateModelPanel();
   scheduleReduce(0);
 });
-$('symOffset').addEventListener('input', e => {
-  if (!state.welded) return;
-  const b = bounds(state.welded.positions), a = symPlane.axis;
-  let off = b.min[a] + ((b.max[a] - b.min[a]) * Number(e.target.value)) / 1000;
-  if (b.min[a] < 0 && b.max[a] > 0 && Math.abs(off) < (b.max[a] - b.min[a]) * 0.005) off = 0;
-  setPlaneOffset(off);
-});
+// The plane position a slider value stands for (0-1000 across the model), snapping to 0 near the middle of a centred model.
+function sliderOffset(value) {
+  const b = boundsOf(state.welded.positions), a = symPlane.axis;
+  const off = b.min[a] + ((b.max[a] - b.min[a]) * Number(value)) / 1000;
+  return b.min[a] < 0 && b.max[a] > 0 && Math.abs(off) < (b.max[a] - b.min[a]) * 0.005 ? 0 : off;
+}
+// While the plane slider moves only the plane and its number follow; the fit, the mirrored preview and the reduction
+// are worked out when it is let go.
+function previewPlane(offset) {
+  updatePlaneHelper(offset);
+  if (document.activeElement !== $('symOffNum')) $('symOffNum').value = String(+offset.toPrecision(6));
+}
+$('symOffset').addEventListener('input', e => { if (state.welded) previewPlane(sliderOffset(e.target.value)); });
+$('symOffset').addEventListener('change', e => { if (state.welded) setPlaneOffset(sliderOffset(e.target.value)); });
+for (const type of ['pointerup', 'pointercancel']) {
+  $('symOffset').addEventListener(type, () => setTimeout(() => { if (state.welded && symPlane.ready) { syncSymmetryUI(); updatePlaneHelper(); } }, 0));
+}
 $('symOffNum').addEventListener('change', e => {
   const v = Number(e.target.value);
   if (Number.isFinite(v)) setPlaneOffset(v);
 });
 bindRange('brushSize', 'brush', () => {});
-bindRange('creaseAngle', 'creaseAngle', d => scheduleReduce(d), 200);
-bindRange('normalWeight', 'normalWeight', d => scheduleReduce(d), 200);
-bindRange('uvWeight', 'uvWeight', d => scheduleReduce(d), 200);
+bindRange('creaseAngle', 'creaseAngle', () => scheduleReduce(60));
+bindRange('normalWeight', 'normalWeight', () => scheduleReduce(60));
+bindRange('uvWeight', 'uvWeight', () => scheduleReduce(60));
 bindRange('hardAngle', 'hardAngle', reweld);
 bindRange('weldTol', 'weldTol', reweld);
 $('maxErr').addEventListener('change', e => { settings.maxError = Number(e.target.value); saveSettings(); scheduleReduce(0); });
