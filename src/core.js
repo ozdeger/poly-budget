@@ -1695,7 +1695,12 @@ export function unwrap(mesh, opt = {}) {
       for (let i = 1; i < n; i++) { if (start[i] < start[pinA]) pinA = i; if (start[i] > start[pinB]) pinB = i; }
       const solved = pinA !== pinB ? lscm(n, tris, X, start, pinA, pinB) : start;
       if (chartIsValid(solved, n, tris, a3)) uv = solved;
-      else if (!chartIsValid(start, n, tris, a3)) { splits++; queue.push(...split(faces)); continue; }
+      else if (!chartIsValid(start, n, tris, a3)) {
+        // A chart that won't split any further (one quad) keeps the flattening it has.
+        const pieces = split(faces);
+        if (pieces.length > 1) { splits++; queue.push(...pieces); continue; }
+        uv = solved;
+      }
     }
     let uvArea = 0, a3Total = 0;
     for (let t = 0; t < m; t++) {

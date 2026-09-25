@@ -411,7 +411,34 @@ function optimizePositions(L, iterations) {
   }
 }
 
-function solveFields(levels, seed, progress) {
+// Triangles around which the direction field turns by a quarter (index ±1): where poles will be.
+function orientationSingularities(L, index) {
+  const { Q, N } = L;
+  let count = 0;
+  const rot = (ia, ib) => {
+    // Integer quarter turns from a to b (Instant Meshes' compat_orientation_extrinsic_index_4).
+    const q0x = Q[ia], q0y = Q[ia + 1], q0z = Q[ia + 2], n0x = N[ia], n0y = N[ia + 1], n0z = N[ia + 2];
+    const q1x = Q[ib], q1y = Q[ib + 1], q1z = Q[ib + 2], n1x = N[ib], n1y = N[ib + 1], n1z = N[ib + 2];
+    const A = [[q0x, q0y, q0z], [n0y * q0z - n0z * q0y, n0z * q0x - n0x * q0z, n0x * q0y - n0y * q0x]];
+    const B = [[q1x, q1y, q1z], [n1y * q1z - n1z * q1y, n1z * q1x - n1x * q1z, n1x * q1y - n1y * q1x]];
+    let best = -1, ba = 0, bb = 0;
+    for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+      const d = Math.abs(A[i][0] * B[j][0] + A[i][1] * B[j][1] + A[i][2] * B[j][2]);
+      if (d > best) { best = d; ba = i; bb = j; }
+    }
+    if (A[ba][0] * B[bb][0] + A[ba][1] * B[bb][1] + A[ba][2] * B[bb][2] < 0) bb += 2;
+    return bb - ba;
+  };
+  for (let t = 0; t < index.length; t += 3) {
+    let idx = 0;
+    for (let k = 0; k < 3; k++) idx += rot(index[t + k] * 3, index[t + (k + 1) % 3] * 3);
+    idx = ((idx % 4) + 4) % 4;
+    if (idx === 1 || idx === 3) count++;
+  }
+  return count;
+}
+
+function solveFields(levels, seed, progress, iterations = 6) {
   const rand = random(seed);
   const top = levels[levels.length - 1], T6 = new Float64Array(6);
   for (const L of levels) { L.Q = new Float64Array(L.n * 3); L.O = new Float64Array(L.n * 3); }
@@ -428,7 +455,7 @@ function solveFields(levels, seed, progress) {
     done = 0;
     for (let l = levels.length - 1; l >= 0; l--) {
       const L = levels[l];
-      if (kind === 'orientation') optimizeOrientations(L, 6); else optimizePositions(L, 6);
+      if (kind === 'orientation') optimizeOrientations(L, iterations); else optimizePositions(L, iterations);
       done += L.n;
       if (progress) progress(kind, done / total);
       if (l === 0) break;
@@ -709,32 +736,32 @@ function quadScore(P, q) {
 }
 // Splits a polygon with an even number of sides into quads without new vertices, choosing the split whose quads come
 // closest to right angles overall (every split for up to ten sides; larger ones cut the best quad off first).
-function evenToQuads(P, poly) {
+// taken(a, b): an edge that already exists elsewhere; a cut along it would give that edge a third face, so it costs
+// more than any shape.
+function evenToQuads(P, poly, taken = null) {
   if (poly.length <= 4) return { score: poly.length === 4 ? quadScore(P, poly) : 0, quads: [poly] };
+  const cut = i => {
+    const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
+    return { q, score: quadScore(P, q) + (taken && taken(q[0], q[3]) ? 1000 : 0), rest: poly.filter((_, k) => k !== (i + 1) % poly.length && k !== (i + 2) % poly.length) };
+  };
   if (poly.length > 10) {
-    let best = Infinity, bi = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]));
-      if (s < best) { best = s; bi = i; }
-    }
-    const q = [0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]);
-    const rest = evenToQuads(P, poly.filter((_, k) => k !== (bi + 1) % poly.length && k !== (bi + 2) % poly.length));
-    return { score: best + rest.score, quads: [q, ...rest.quads] };
+    let best = null;
+    for (let i = 0; i < poly.length; i++) { const c = cut(i); if (!best || c.score < best.score) best = c; }
+    const rest = evenToQuads(P, best.rest, taken);
+    return { score: best.score + rest.score, quads: [best.q, ...rest.quads] };
   }
   let best = null;
   for (let i = 0; i < poly.length; i++) {
-    const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
-    const rest = evenToQuads(P, poly.filter((_, k) => k !== (i + 1) % poly.length && k !== (i + 2) % poly.length));
-    const score = quadScore(P, q) + rest.score;
-    if (!best || score < best.score) best = { score, quads: [q, ...rest.quads] };
+    const c = cut(i), rest = evenToQuads(P, c.rest, taken), score = c.score + rest.score;
+    if (!best || score < best.score) best = { score, quads: [c.q, ...rest.quads] };
   }
   return best;
 }
 // A pentagon as a quad and a triangle, whichever split leaves the better quad.
-function pentagonSplit(P, poly) {
+function pentagonSplit(P, poly, taken = null) {
   let best = Infinity, bi = 0;
   for (let i = 0; i < 5; i++) {
-    const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % 5]));
+    const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % 5])) + (taken && taken(poly[i], poly[(i + 3) % 5]) ? 1000 : 0);
     if (s < best) { best = s; bi = i; }
   }
   return [[0, 1, 2, 3].map(k => poly[(bi + k) % 5]), [poly[(bi + 3) % 5], poly[(bi + 4) % 5], poly[bi]]];
@@ -780,12 +807,13 @@ function extractFaces(G) {
     }
   };
   let origin = 0;
+  const taken = (a, b) => adj[a].includes(b);
   const fill = poly => {
     // Odd faces keep five sides (or three) for the all-quad pass; the rest become quads.
     while (poly.length > 5 && poly.length & 1) {
       let best = Infinity, bi = 0;
       for (let i = 0; i < poly.length; i++) {
-        const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]));
+        const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % poly.length])) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0);
         if (s < best) { best = s; bi = i; }
       }
       const q = [0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]);
@@ -794,7 +822,7 @@ function extractFaces(G) {
       poly = poly.filter((_, k) => k !== (bi + 1) % poly.length && k !== (bi + 2) % poly.length);
     }
     if (poly.length >= 6) {
-      for (const q of evenToQuads(P, poly).quads) { q.origin = 10 + origin; faces.push(q); }
+      for (const q of evenToQuads(P, poly, taken).quads) { q.origin = 10 + origin; faces.push(q); }
       return;
     }
     if (poly.length >= 3) { poly.origin = origin; faces.push(poly); }
@@ -808,6 +836,38 @@ function extractFaces(G) {
       }
     }
   }
+  const unuse = p => {
+    for (let k = 0; k < p.length; k++) {
+      const a = p[k], b = p[(k + 1) % p.length], j = adj[a].indexOf(b);
+      if (j >= 0) used[a][j] = 0;
+    }
+  };
+  // Pockets: where the edges fold back, the same corners are walked once from each side; neither face is real.
+  {
+    const seen = new Map();
+    for (const p of faces) { const k = p.slice().sort((x, y) => x - y).join(','); seen.set(k, (seen.get(k) || 0) + 1); }
+    for (let f = faces.length - 1; f >= 0; f--) {
+      if (seen.get(faces[f].slice().sort((x, y) => x - y).join(',')) < 2) continue;
+      unuse(faces[f]);
+      faces.splice(f, 1);
+    }
+  }
+  // Flaps: a face hanging off the surface by one edge (two or more of its corners belong to no other face) is dropped,
+  // so the hole it covers gets filled properly.
+  for (let round = 0; round < 3; round++) {
+    const uses = new Int32Array(nv);
+    for (const p of faces) for (const v of p) uses[v]++;
+    let dropped = 0;
+    for (let f = faces.length - 1; f >= 0; f--) {
+      const p = faces[f];
+      if (p.filter(v => uses[v] === 1).length < 2) continue;
+      unuse(p);
+      faces.splice(f, 1);
+      dropped++;
+    }
+    if (!dropped) break;
+  }
+  const faceKeys = new Set(faces.map(p => p.slice().sort((x, y) => x - y).join(',')));
   // Holes: keep only the edges that a face uses on one side, and walk the loops they form; small ones are filled.
   const rimAdj = [], rimUsed = [];
   for (let i = 0; i < nv; i++) {
@@ -834,6 +894,8 @@ function extractFaces(G) {
       if (!poly) continue;
       let fixedCount = 0;
       for (const v of poly) if (G.fixed[v]) fixedCount++;
+      // A loop around one existing face is that face seen from behind, not a hole.
+      if (faceKeys.has(poly.slice().sort((x, y) => x - y).join(','))) continue;
       if (poly.length <= 6 || fixedCount < poly.length / 2) fill(poly);
     }
   }
@@ -907,6 +969,7 @@ function evenFaces(faces, P, nv) {
     odd = odd.filter(f => unpaired[f]);
     if (!progress) break;
   }
+  const taken = (a, b) => a < nv && b < nv && edgeId.has(a < b ? a * nv + b : b * nv + a);
   // Split the chosen edges.
   const mid = new Int32Array(E).fill(-1);
   let n = nv;
@@ -930,15 +993,15 @@ function evenFaces(faces, P, nv) {
     }
     if (poly.length & 1) {
       // An odd face that found no partner: a pentagon becomes a quad and a triangle, a triangle stays.
-      if (poly.length === 5) out.push(...pentagonSplit(P2x, poly));
+      if (poly.length === 5) out.push(...pentagonSplit(P2x, poly, taken));
       else if (poly.length === 3) out.push(poly);
       else {
-        const q = evenToQuads(P2x, poly.slice(0, poly.length - 1)).quads;
+        const q = evenToQuads(P2x, poly.slice(0, poly.length - 1), taken).quads;
         out.push(...q, [poly[poly.length - 2], poly[poly.length - 1], poly[0]]);
       }
       continue;
     }
-    out.push(...evenToQuads(P2x, poly).quads);
+    out.push(...evenToQuads(P2x, poly, taken).quads);
   }
   const clean = removeDoublets(out, n);
   return { faces: clean.faces, positions: P2x, nv: n, unpaired: odd.length, doublets: clean.removed };
@@ -973,6 +1036,168 @@ function removeDoublets(faces, nv) {
     if (!changed) break;
   }
   return { faces: faces.filter(Boolean), removed };
+}
+
+// Fewer poles: an inner edge between two quads can turn to join the other corners of the six-sided region they make,
+// which moves one edge's worth of valence from its two ends to two other corners; and a quad whose opposite corners
+// both have three edges while the other two have five can close up, merging the two three-edge corners. Either is
+// taken when it lowers the sum of (valence - 4)² and the new quads stay convex (Tarini et al., "Practical quad mesh
+// simplification", 2010, use the same moves). Faces touching an open border are left alone.
+function optimizeValence(faces, P) {
+  const nv = P.length / 3;
+  const newell = q => {
+    let x = 0, y = 0, z = 0;
+    for (let k = 0; k < q.length; k++) {
+      const a = q[k] * 3, b = q[(k + 1) % q.length] * 3;
+      x += (P[a + 1] - P[b + 1]) * (P[a + 2] + P[b + 2]);
+      y += (P[a + 2] - P[b + 2]) * (P[a] + P[b]);
+      z += (P[a] - P[b]) * (P[a + 1] + P[b + 1]);
+    }
+    return [x, y, z];
+  };
+  // Convex, and facing the way of n, in the plane across n.
+  const convex = (q, n) => {
+    for (let k = 0; k < 4; k++) {
+      const a = q[k] * 3, b = q[(k + 1) % 4] * 3, c = q[(k + 2) % 4] * 3;
+      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+      const vx = P[c] - P[b], vy = P[c + 1] - P[b + 1], vz = P[c + 2] - P[b + 2];
+      const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+      const cl = Math.hypot(cx, cy, cz), ul = Math.hypot(ux, uy, uz), vl = Math.hypot(vx, vy, vz);
+      // Turning the right way, by at least a few degrees.
+      if ((cx * n[0] + cy * n[1] + cz * n[2]) <= 0.08 * ul * vl * Math.hypot(n[0], n[1], n[2]) || cl === 0) return false;
+    }
+    return true;
+  };
+  let moves = 0;
+  for (let sweep = 0; sweep < 12; sweep++) {
+    const nbr = Array.from({ length: nv }, () => new Set()), edgeFaces = new Map();
+    faces.forEach((q, f) => {
+      if (!q) return;
+      for (let k = 0; k < q.length; k++) {
+        const a = q[k], b = q[(k + 1) % q.length], key = a < b ? a * nv + b : b * nv + a;
+        nbr[a].add(b); nbr[b].add(a);
+        const l = edgeFaces.get(key);
+        if (l) l.push(f); else edgeFaces.set(key, [f]);
+      }
+    });
+    const border = new Uint8Array(nv);
+    for (const [key, l] of edgeFaces) if (l.length !== 2) { const a = Math.floor(key / nv); border[a] = border[key - a * nv] = 1; }
+    const deg = v => nbr[v].size, E = d => (d - 4) * (d - 4);
+    const touched = new Uint8Array(faces.length);
+    let changed = 0;
+    for (const [key, l] of edgeFaces) {
+      if (l.length !== 2) continue;
+      const [f1, f2] = l;
+      if (touched[f1] || touched[f2]) continue;
+      const q1 = faces[f1], q2 = faces[f2];
+      if (!q1 || !q2 || q1.length !== 4 || q2.length !== 4) continue;
+      const u0 = Math.floor(key / nv), v0 = key - u0 * nv;
+      // Orient: q1 runs u -> v, q2 runs v -> u.
+      let i1 = q1.indexOf(u0), u = u0, v = v0;
+      if (q1[(i1 + 1) % 4] !== v0) { i1 = q1.indexOf(v0); u = v0; v = u0; }
+      if (q1[(i1 + 1) % 4] !== v) continue;
+      const i2 = q2.indexOf(v);
+      if (q2[(i2 + 1) % 4] !== u) continue;
+      const p = q1[(i1 + 2) % 4], q = q1[(i1 + 3) % 4], r = q2[(i2 + 2) % 4], s2 = q2[(i2 + 3) % 4];
+      const hex = [u, r, s2, v, p, q];
+      if (new Set(hex).size !== 6 || hex.some(x => border[x])) continue;
+      const n = newell(q1), n2 = newell(q2);
+      n[0] += n2[0]; n[1] += n2[1]; n[2] += n2[2];
+      const before = E(deg(u)) + E(deg(v));
+      let best = 0, pick = null;
+      for (const [x, y, A, B] of [[r, p, [r, s2, v, p], [p, q, u, r]], [s2, q, [s2, v, p, q], [q, u, r, s2]]]) {
+        if (nbr[x].has(y)) continue;
+        const gain = before + E(deg(x)) + E(deg(y)) - (E(deg(u) - 1) + E(deg(v) - 1) + E(deg(x) + 1) + E(deg(y) + 1));
+        if (gain > best && deg(u) > 3 && deg(v) > 3 && convex(A, n) && convex(B, n)) { best = gain; pick = [A, B]; }
+      }
+      if (!pick) continue;
+      const [A] = pick, x = A[0], y = A[3];
+      nbr[u].delete(v); nbr[v].delete(u); nbr[x].add(y); nbr[y].add(x);
+      faces[f1] = pick[0];
+      faces[f2] = pick[1];
+      touched[f1] = touched[f2] = 1;
+      changed++;
+    }
+    // Diagonal collapses: corners 3-5-3-5 around a quad, with the neighbourhood as it now stands.
+    const at = Array.from({ length: nv }, () => []);
+    faces.forEach((q, f) => { if (q) for (const x of q) at[x].push(f); });
+    const done = new Uint8Array(faces.length);
+    for (let f = 0; f < faces.length; f++) {
+      const q = faces[f];
+      if (!q || q.length !== 4 || done[f] || q.some(x => border[x])) continue;
+      for (const o of [0, 1]) {
+        const a = q[o], b = q[o + 1], c = q[o + 2], d = q[(o + 3) % 4];
+        if (deg(a) !== 3 || deg(c) !== 3 || deg(b) < 5 || deg(d) < 5) continue;
+        const around = at[c].filter(g => g !== f && faces[g]);
+        if (around.some(g => done[g]) || at[a].some(g => done[g])) continue;
+        for (let k = 0; k < 3; k++) P[a * 3 + k] = (P[a * 3 + k] + P[c * 3 + k]) / 2;
+        for (const g of around) { faces[g] = faces[g].map(x => (x === c ? a : x)); done[g] = 1; }
+        for (const g of at[a]) done[g] = 1;
+        faces[f] = null;
+        done[f] = 1;
+        changed++;
+        break;
+      }
+    }
+    moves += changed;
+    if (!changed) break;
+  }
+  return { faces: faces.filter(Boolean), moves };
+}
+
+// Last repairs: a face that repeats another's corners, a third face on an edge and a face hanging by one edge are
+// dropped, and the small holes that leaves are closed (with quads, and a triangle for an odd hole).
+function repairFaces(faces, P, nv, keepOpen) {
+  let list = faces.slice(), dropped = 0, filled = 0;
+  const seen = new Set();
+  list = list.filter(p => {
+    const k = p.slice().sort((a, b) => a - b).join(',');
+    if (seen.has(k)) { dropped++; return false; }
+    seen.add(k);
+    return true;
+  });
+  const edgeUse = new Map();
+  list = list.filter(p => {
+    const keys = p.map((a, k) => { const b = p[(k + 1) % p.length]; return a < b ? a * nv + b : b * nv + a; });
+    if (keys.some(key => (edgeUse.get(key) || 0) >= 2)) { dropped++; return false; }
+    for (const key of keys) edgeUse.set(key, (edgeUse.get(key) || 0) + 1);
+    return true;
+  });
+  for (let round = 0; round < 3; round++) {
+    const uses = new Int32Array(nv);
+    for (const p of list) for (const v of p) uses[v]++;
+    const before = list.length;
+    list = list.filter(p => p.filter(v => uses[v] === 1).length < 2);
+    dropped += before - list.length;
+    if (list.length === before) break;
+  }
+  if (dropped) {
+    // Holes: loops of half-edges no face uses the other way, away from real open borders.
+    const half = new Map();
+    for (const p of list) for (let k = 0; k < p.length; k++) half.set(p[k] * nv + p[(k + 1) % p.length], 1);
+    const next = new Map();
+    for (const p of list) {
+      for (let k = 0; k < p.length; k++) {
+        const a = p[k], b = p[(k + 1) % p.length];
+        if (!half.has(b * nv + a)) next.set(b, a);
+      }
+    }
+    const done = new Set();
+    const taken = (a, b) => half.has(a * nv + b) || half.has(b * nv + a);
+    for (const start of next.keys()) {
+      if (done.has(start)) continue;
+      const loop = [];
+      let v = start;
+      while (v !== undefined && !done.has(v) && loop.length < 12) { done.add(v); loop.push(v); v = next.get(v); }
+      if (v !== start || loop.length < 3 || loop.every(x => keepOpen(x))) continue;
+      if (loop.length & 1) {
+        const q = loop.length > 3 ? evenToQuads(P, loop.slice(0, loop.length - 1), taken).quads : [];
+        list.push(...q, loop.length > 3 ? [loop[loop.length - 2], loop[loop.length - 1], loop[0]] : loop);
+      } else list.push(...evenToQuads(P, loop, taken).quads);
+      filled++;
+    }
+  }
+  return { faces: list, dropped, filled };
 }
 
 // ---------- surface lookup ----------
@@ -1306,8 +1531,9 @@ export function remeshQuads(mesh, opt) {
   if (progress) progress('prepare', 1);
 
   const seed = opt.seed ?? 12345;
-  solveFields(levels, seed, progress);
+  solveFields(levels, seed, progress, opt.iterations);
   mark('fields');
+  if (opt.debug === 'singularities') return { singularities: orientationSingularities(L0, WI), n };
 
   const grid = new SurfaceGrid(srcP, srcIdx, scale);
   const attempts = [];
@@ -1352,7 +1578,13 @@ export function remeshQuads(mesh, opt) {
   }
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
-  const nv = even.nv, P = even.positions, faces = even.faces;
+  const nv = even.nv, P = even.positions;
+  const tidy = opt.valence === false ? { faces: even.faces, moves: 0 } : optimizeValence(even.faces, P);
+  // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open.
+  const keepOpen = v => v < result.G.nv && result.G.fixed[v] === 1;
+  const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
+  const faces = repaired.dropped ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
+  mark('valence');
   const nbr = new Array(nv);
   for (let v = 0; v < nv; v++) nbr[v] = [];
   const edgeUse = new Map();
@@ -1427,7 +1659,7 @@ export function remeshQuads(mesh, opt) {
   });
   return {
     positions, faces: out, faceCount: faces.length, hit: { tri, bary: bc }, faceTri,
-    stats: { quads, others, unpaired: even.unpaired, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
+    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
   };
 }
 

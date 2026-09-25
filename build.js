@@ -24,7 +24,7 @@ const page = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Reduce a 3D model to a triangle budget in the browser, with painted detail areas, mirror symmetry and texture re-baking.">
+<meta name="description" content="Reduce a 3D model to a triangle budget in the browser, or remesh it into quads, with painted detail areas, mirror symmetry and texture re-baking.">
 <link rel="icon" href="${icon}">
 ${html.slice(0, cut)}
 <style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>

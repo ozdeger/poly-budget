@@ -1,13 +1,13 @@
 # Poly Budget
 
-Bring heavy 3D models down to a triangle budget in the browser, without losing their look.
+Bring heavy 3D models down to a triangle budget in the browser, without losing their look, as reduced triangles or as a clean all-quad remesh.
 
 **Open it:** https://ozdeger.github.io/poly-budget/
 
 > [!NOTE]
 > **Written by AI, not maintained by hand.** Everything in this repository, the code, the tests and this README, is written and revised by an AI coding assistant (Claude, working in Claude Code) from its owner's requests. None of it is written or kept up to date by hand. Treat it as generated code: check what it produces before you rely on it, and read the code before you reuse it.
 
-Poly Budget is for models that are far too dense for real-time use: scans, sculpts and AI-generated meshes that arrive with a million or more triangles, split vertices and thousands of UV islands. Set a triangle budget, paint where the detail matters, and export a model whose textures still fit.
+Poly Budget is for models that are far too dense for real-time use: scans, sculpts and AI-generated meshes that arrive with a million or more triangles, split vertices and thousands of UV islands. Set a triangle budget, paint where the detail matters, and export a model whose textures still fit. Switch the budget to **Quads** and the model is rebuilt as quads whose edges follow its shape instead, ready for editing, subdivision and rigging.
 
 Everything runs in your browser. Models and textures are never uploaded.
 
@@ -28,6 +28,22 @@ Everything runs in your browser. Models and textures are never uploaded.
 - When a result misses the budget, it says why (Keep areas too large, the error limit, UV seams) and offers the fix in one click when there is one.
 - Reduction options fine-tune the pass: an error limit that stops early, optimised vertex positions, even or very even triangles, how strongly shading is protected, locked open borders, and removal of tiny floating parts (pieces under 1% of the model's size). Normals are kept from the file, made smooth from the original's dense surface, or creased at an angle.
 
+### Triangles or quads
+
+The toggle at the top of the budget picks what comes out.
+
+- **Triangles** reduces the model's own triangles, as described above. It keeps the most shape for the fewest triangles.
+- **Quads** rebuilds the surface as a new mesh of quads, at the budget's triangle count divided by two. The edges run along the shape, around limbs and across faces, so the result can be edited, subdivided and rigged. Unity still counts it as triangles (two per quad), so the budget means the same in both modes.
+- In Quads mode the budget is typed and shown in quads (`12500`, `12.5k`); a percentage is still of the original triangles. Remeshing can't hit an exact count: it lands within a few percent, which counts as on budget.
+- Every face is a quad. The result card adds the quad count and the poles: vertices where other than four quads meet, which is where edge loops start and end.
+- Painting sets the quad size: More detail gives 2, 4 or 8 times as many quads per area, Less detail ½, ¼ or ⅛, and Keep the smallest quads (8 times). Separate small pieces always keep at least a few quads, unless Remove tiny floating parts is on.
+- Mirror symmetry works the same way: the kept half is remeshed with the mirror plane held as an edge loop, then mirrored, so every vertex has its partner.
+- A quad mesh has new topology, so its UVs are always new: the texture is baked onto them from the original, as for New UVs. The unwrap never cuts a quad in two.
+- Normals are taken from the original surface where each new vertex sits (Original or Smooth), or creased at an angle.
+- FBX and OBJ store the faces as quads. GLB can only hold triangles, so it gets two per quad.
+
+Quads mode takes longer than a reduction: about 2 to 4 seconds for a model of a million triangles, with the progress in the result card.
+
 ### Paint where detail matters
 
 Pick a tool from the palette on the left of the view; its options float above the model.
@@ -36,7 +52,7 @@ Pick a tool from the palette on the left of the view; its options float above th
 | --- | --- | --- |
 | More detail | M | the detail a 2, 4 or 8 times larger budget would keep there |
 | Less detail | L | ½, ¼ or ⅛ of the triangles it would get otherwise |
-| Keep original | K | its vertices stay exactly as they are |
+| Keep original | K | its vertices stay exactly as they are (in Quads mode: the smallest quads) |
 | Erase | E | no paint |
 | Orbit | O | back to navigating |
 
@@ -82,6 +98,7 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 | Key | Does |
 | --- | --- |
 | 1 / 2 / 3 | Side by side / original / reduced |
+| Q | Triangles or quads |
 | W | Wireframe |
 | U | Texture & UVs panel |
 | O, M, L, K, E | Orbit, More detail, Less detail, Keep original, Erase |
@@ -100,6 +117,21 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 6. **Bake.** For every texel of the new layout a shader finds the original surface below it (a ray cast inward from a thin cage along the normal, else the nearest point that faces the same way), reads the original UV there and samples each map. [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) answers these queries on the GPU, and the work is spread over frames so the view stays responsive.
 7. **Export.** FBX and OBJ are written directly; GLB goes through the three.js exporter.
 
+### Quad remeshing
+
+Quads mode replaces step 3 with a remesher (`src/quad.js`) that follows [Instant Meshes](https://github.com/wjakob/instant-meshes) (Jakob, Tarini, Panozzo and Sorkine-Hornung, *Instant Field-Aligned Meshes*, SIGGRAPH Asia 2015):
+
+1. The welded model is merged once more by position alone, so UV seams, hard edges and material borders no longer cut the surface.
+2. A dense surface is clustered into a working surface of about two and a half vertices per quad edge, and edges still too long are split.
+3. A multi-resolution hierarchy of ever coarser vertex graphs is built. Two fields are smoothed on it from the coarsest level down: a direction field (which way edges run, up to quarter turns), then a position field (where the corners of a square grid of the target edge length sit). Painted density and small pieces shrink the grid locally. Open borders and the mirror plane are constraints that edges run along.
+4. Input vertices on the same grid corner are merged and those one grid step apart are joined; faces are read off this graph by walking around each vertex. Holes where the grid tore across a fold tighter than a grid step are closed.
+5. Instant Meshes leaves some triangles and pentagons among the quads. Each of these odd faces is paired with its nearest odd neighbour (or an open border) through the faces between them, the edges those paths cross are split, and every face, now with an even number of sides, is cut into quads. The density barely changes, unlike Instant Meshes' own all-quad mode, which splits every face in four.
+6. Edge rotations and diagonal collapses that lower the number of poles are applied (the moves of Tarini et al., *Practical Quad Mesh Simplification*, 2010), and leftover defects are repaired.
+7. Vertices are relaxed toward their neighbours along the surface and projected back onto the original, and the grid size is corrected once if the count missed the budget by more than 4%.
+8. Each quad becomes two triangles for the rest of the tool, marked as a pair so the unwrap, the UV panel, the wireframe and the FBX and OBJ writers all treat it as one face.
+
+The Instant Meshes code is under a BSD licence, whose notice is kept at the top of `src/quad.js`.
+
 ## Browser support
 
 A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new UVs also needs float render targets (`EXT_color_buffer_float`), which current desktop browsers have; without them, keep the original UVs. The page loads its libraries from jsDelivr, so it needs a connection to start.
@@ -109,6 +141,7 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 - Skinned meshes are reduced in their bind pose and exported without bones. Animations are not kept.
 - One UV set per model.
 - Memory is the browser's: a model of 1.5 million triangles with 4K textures works on a desktop, phones may run out.
+- Quads mode doesn't reach the quality of dedicated retopology tools on every model. Expect some poles, about one vertex in six or eight on organic shapes, and parts much thinner than a quad edge (fingers, strands of hair at low budgets) come out rough.
 
 ## Project layout
 
@@ -118,7 +151,8 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 | --- | --- |
 | `src/index.html` | Markup and styles |
 | `src/app.js` | The UI: loading, tabs, painting, the texture and UV panel, the GPU bake, saving the session, export |
-| `src/core.js` | The mesh work, with no DOM code so it also runs in Node: welding, the reduction passes, the UV fit check, unwrapping, UV layout edges, the FBX and OBJ writers |
+| `src/core.js` | The mesh work, with no DOM code so it also runs in Node: welding, the reduction passes, the quad pipeline around the remesher, the UV fit check, unwrapping, UV layout edges, the FBX and OBJ writers |
+| `src/quad.js` | The quad remesher: working surface, field hierarchy, extraction, the all-quad pass, pole moves and relaxation |
 | `src/collect.js` | Flattens a three.js scene into one mesh |
 | `src/worker.js` | Reductions and unwraps, off the main thread |
 | `src/fbx_template.json` | The FBX header and definitions the writer starts from |
@@ -129,6 +163,6 @@ Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with
 
 - `npm install` installs the packages the tests use.
 - `npm run serve` previews the built page at http://127.0.0.1:8731.
-- `npm test` runs the checks on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry, new UVs and UV layout edges.
+- `npm test` runs the checks on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry, new UVs, UV layout edges, normals and quad remeshing.
 - To add a real model to a check, pass its path: `node test/test_unwrap.js path/to/model.fbx`. The same works for `test_core.js` and `test_symmetry.js`.
 - `testdata/` and `local/` are ignored by git, for your own models and helper scripts.
