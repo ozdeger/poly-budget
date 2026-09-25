@@ -385,6 +385,9 @@ details.more[open] > summary { margin-bottom: 8px; }
 .big:hover { border-color: var(--line-strong); }
 .big:focus { border-color: var(--accent); background: var(--raise); outline: none; }
 .of { color: var(--muted); font: 12px/1.3 var(--font-num); }
+.unit { margin-left: -6px; color: var(--text); font: 500 14px/1.2 var(--font-num); }
+.seg.topo button { padding: 3px 9px; font-size: 12px; gap: 5px; }
+.seg.topo svg.i { width: 13px; height: 13px; }
 .result { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raise); }
 .result-head { display: flex; align-items: center; gap: 8px; min-height: 22px; }
 .result-head h3 { margin: 0; font: 600 11px/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
@@ -760,17 +763,22 @@ details.more[open] > summary { margin-bottom: 8px; }
     </section>
 
     <section class="sec" aria-labelledby="hBudget" data-needs-model>
-      <h2 id="hBudget">Triangle budget</h2>
-      <div class="readout"><input class="big" id="targetNum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Triangle budget" title="Type a triangle count, a percentage (5%) or a short count (20k)"><span class="of" id="targetOf"></span></div>
+      <div class="sec-head"><h2 id="hBudget">Budget</h2>
+        <div class="seg topo" role="group" aria-label="Output" id="topoSeg">
+          <button type="button" data-topo="tris" title="Reduce the model's own triangles (Q)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 20.5 19h-17z"/></svg>Triangles</button><button type="button" data-topo="quads" title="Rebuild the surface as quads that follow its shape (Q)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="1"/><path d="M12 4.5v15M4.5 12h15"/></svg>Quads</button>
+        </div>
+      </div>
+      <div class="readout"><input class="big" id="targetNum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Triangle budget" title="Type a triangle count, a percentage (5%) or a short count (20k)"><span class="unit" id="targetUnit">tris</span><span class="of" id="targetOf"></span></div>
       <input type="range" id="targetSlider" min="0" max="1000" step="1" aria-label="Triangle budget slider">
       <div class="seg fill" role="group" aria-label="Quick budget" id="quickSeg">
         <button type="button" data-pct="50">50%</button><button type="button" data-pct="25">25%</button><button type="button" data-pct="10">10%</button><button type="button" data-pct="5">5%</button><button type="button" data-pct="1">1%</button>
       </div>
       <div class="result" id="result">
         <div class="result-head"><h3>Result</h3><span class="pill" id="bNote" role="status"></span></div>
-        <div class="result-nums"><span><b id="resTris">—</b> tris</span><span><b id="resVerts">—</b> verts</span><span class="result-time" id="resTime" title="Time the last reduction took"></span></div>
+        <div class="result-nums"><span id="resQuadsBox" hidden><b id="resQuads">—</b> quads</span><span><b id="resTris">—</b> tris</span><span><b id="resVerts">—</b> verts</span><span class="result-time" id="resTime" title="Time the last reduction took"></span></div>
         <dl class="result-rows">
           <dt title="Distance from the reduced surface to the original, sampled at 4,000 points, as a share of the model's largest dimension">Deviation</dt><dd id="resErr">—</dd>
+          <dt id="resPolesLabel" hidden title="Vertices where other than four quads meet (not counting open borders); edge loops start and end at them">Poles</dt><dd id="resPoles" hidden>—</dd>
           <dt>Texture</dt><dd id="resTex">—</dd>
         </dl>
         <div class="bar" id="bar" role="img" aria-label="Result triangles by painted region">
@@ -829,6 +837,12 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
     </section>
 
+    <details class="sec" id="secQuads" data-sec="quads" data-needs-model hidden>
+      <summary><h2>Remeshing</h2><span class="sum-meta" id="quadsMeta"></span></summary>
+      <p class="note">Rebuilds the surface as quads whose edges follow its shape, and bakes the texture onto new UVs. Paint More or Less detail to change the quad size there; Keep asks for the smallest quads.</p>
+      <label class="check"><input type="checkbox" id="prune2"><span>Remove tiny floating parts<small>Otherwise every separate piece keeps at least a few quads</small></span></label>
+    </details>
+
     <details class="sec" id="secReduce" data-sec="reduce" data-needs-model>
       <summary><h2>Reduction options</h2></summary>
       <label class="field"><span>Stop early at error</span>
@@ -885,7 +899,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       <canvas id="gl" tabindex="0" aria-label="Model preview"></canvas>
       <div class="divider" id="divider"></div>
       <div class="vlabel" id="labelL"><b>Original</b><span id="labelLText"></span></div>
-      <div class="vlabel" id="labelR"><b>Reduced</b><span id="labelRText"></span></div>
+      <div class="vlabel" id="labelR"><b id="labelRName">Reduced</b><span id="labelRText"></span></div>
       <div class="toolpal" id="toolPal" role="toolbar" aria-label="Paint tools" aria-orientation="vertical">
         <button type="button" class="tool" data-tool="orbit" id="toolOrbit" title="Orbit (O)" aria-label="Orbit"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(-24 12 12)"/><circle cx="12" cy="12" r="2.6"/></svg></button>
         <button type="button" class="tool" data-tool="more" id="toolMore" title="More detail (M)" aria-label="More detail"><span class="swatch more" aria-hidden="true">+</span></button>
@@ -942,7 +956,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       <div class="uv-stage" id="uvStage">
         <canvas id="uvCanvas" aria-label="Texture with its UV layout"></canvas>
         <div class="uv-pane" id="uvPaneA" data-pane="A"><div class="vlabel"><b>Original</b><span id="uvLabelA"></span></div><div class="uv-msg" id="uvMsgA" hidden></div></div>
-        <div class="uv-pane" id="uvPaneB" data-pane="B"><div class="vlabel"><b>Reduced</b><span id="uvLabelB"></span></div><div class="uv-msg" id="uvMsgB" hidden></div></div>
+        <div class="uv-pane" id="uvPaneB" data-pane="B"><div class="vlabel"><b id="uvNameB">Reduced</b><span id="uvLabelB"></span></div><div class="uv-msg" id="uvMsgB" hidden></div></div>
         <div class="uv-sep" id="uvSep" hidden></div>
       </div>
       <div class="uv-foot" id="uvFoot"><span>Scroll to zoom · drag to pan · double-click to fit</span></div>

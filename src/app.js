@@ -12,7 +12,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
-import { LABEL, AUTO_UV_LIMIT, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
+import { LABEL, AUTO_UV_LIMIT, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
 
 const $ = id => document.getElementById(id);
@@ -29,7 +29,7 @@ const MESHOPT_URL = 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_si
 // ---------- settings ----------
 const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
-  targetPct: 10, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
+  targetPct: 10, topology: 'tris', maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
@@ -51,7 +51,7 @@ function saveSettings() {
 // ---------- tabs ----------
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
-const DOC_KEYS = ['targetPct', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
+const DOC_KEYS = ['targetPct', 'topology', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
   'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'symmetry', 'symSide'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
@@ -105,6 +105,7 @@ const clayMat = new THREE.MeshStandardMaterial({ roughness: 0.66, metalness: 0, 
 const facetMat = clayMat.clone();
 facetMat.flatShading = true;
 const wireMat = new THREE.MeshBasicMaterial({ wireframe: true, transparent: true, opacity: 0.4, depthWrite: false });
+const quadWireMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55, depthWrite: false });
 const paintMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
 const ringMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.95, depthTest: false, side: THREE.DoubleSide });
 const ringGeo = new THREE.RingGeometry(0.93, 1, 72);
@@ -147,6 +148,7 @@ function applyTheme() {
   clayMat.color.set(cssVar('--clay'));
   facetMat.color.set(cssVar('--clay'));
   wireMat.color.set(cssVar('--wire'));
+  quadWireMat.color.set(cssVar('--wire'));
   ringMat.color.set(cssVar('--text'));
   planeMat.color.set(cssVar('--accent'));
   tintMat.color.set(cssVar('--accent'));
@@ -261,6 +263,7 @@ const engine = {
       this.worker.onmessage = ({ data }) => {
         const w = this.waiters.get(data.id);
         if (!w) return;
+        if (data.type === 'progress') { if (w.onProgress) w.onProgress(data); return; }
         this.waiters.delete(data.id);
         if (data.type === 'error') w.reject(new Error(data.message)); else w.resolve(data);
       };
@@ -274,17 +277,18 @@ const engine = {
     this.worker = null;
     const pending = [...this.waiters.values()];
     this.waiters.clear();
-    for (const w of pending) this.callLocal(w.msg).then(w.resolve, w.reject);
+    for (const w of pending) this.callLocal(w.msg, w.onProgress).then(w.resolve, w.reject);
   },
-  call(msg) {
-    if (!this.worker) return this.callLocal(msg);
+  // onProgress({ stage, frac }): reports from a long remesh.
+  call(msg, onProgress = null) {
+    if (!this.worker) return this.callLocal(msg, onProgress);
     const id = ++this.seq;
     return new Promise((resolve, reject) => {
-      this.waiters.set(id, { resolve, reject, msg });
+      this.waiters.set(id, { resolve, reject, msg, onProgress });
       this.worker.postMessage({ ...msg, id });
     });
   },
-  async callLocal(msg) {
+  async callLocal(msg, onProgress = null) {
     if (!this.local) {
       const mod = await import(MESHOPT_URL);
       await mod.MeshoptSimplifier.ready;
@@ -302,7 +306,7 @@ const engine = {
       if (msg.type === 'load') return { type: 'loaded' };
     }
     if (msg.type === 'mirror') return { type: 'mirrored', result: mirrorOriginal(ctx, msg.plane) };
-    const { result, info } = runReduction(L.S, ctx, msg.labels, msg.settings, msg.finalize);
+    const { result, info } = runReduction(L.S, ctx, msg.labels, msg.settings, msg.finalize, onProgress ? (stage, frac) => onProgress({ stage, frac }) : null);
     return { type: 'reduced', result, info };
   },
   // The worker keeps one context per tab.
@@ -1410,7 +1414,8 @@ function surfaceMaterials(side) {
   return state.displayMats.map(() => m);
 }
 
-function makeDisplay(scene, geo, side) {
+// edges: vertex pairs to draw as the wireframe instead of every triangle edge (a quad result's edges).
+function makeDisplay(scene, geo, side, edges = null) {
   const surface = new THREE.Mesh(geo, surfaceMaterials(side));
   const paintGeo = new THREE.BufferGeometry();
   paintGeo.setAttribute('position', geo.attributes.position);
@@ -1418,11 +1423,17 @@ function makeDisplay(scene, geo, side) {
   const colors = new Uint8Array(geo.attributes.position.count * 4);
   paintGeo.setAttribute('color', new THREE.BufferAttribute(colors, 4, true));
   const paint = new THREE.Mesh(paintGeo, paintMat);
-  const wire = new THREE.Mesh(geo, wireMat);
+  let wire, wireGeo = null;
+  if (edges) {
+    wireGeo = new THREE.BufferGeometry();
+    wireGeo.setAttribute('position', geo.attributes.position);
+    wireGeo.setIndex(new THREE.BufferAttribute(edges, 1));
+    wire = new THREE.LineSegments(wireGeo, quadWireMat);
+  } else wire = new THREE.Mesh(geo, wireMat);
   const tint = new THREE.Mesh(geo, tintMat);
   for (const m of [surface, paint, wire, tint]) m.frustumCulled = false;
   scene.add(surface, paint, wire, tint);
-  return { surface, paint, wire, tint, colors, geo, paintGeo, tris: geo.index.count / 3 };
+  return { surface, paint, wire, wireGeo, tint, colors, geo, paintGeo, tris: geo.index.count / 3 };
 }
 
 function disposeDisplay(d, scene) {
@@ -1430,6 +1441,22 @@ function disposeDisplay(d, scene) {
   scene.remove(d.surface, d.paint, d.wire, d.tint);
   d.geo.dispose();
   d.paintGeo.dispose();
+  if (d.wireGeo) d.wireGeo.dispose();
+}
+
+// A quad result's edges, each once and without the diagonals, as vertex pairs.
+function quadEdges(res) {
+  const idx = res.index, T = idx.length / 3, seen = new Set(), out = [];
+  const add = (a, b) => {
+    const key = a < b ? a * 4294967296 + b : b * 4294967296 + a;
+    if (!seen.has(key)) { seen.add(key); out.push(a, b); }
+  };
+  for (let t = 0; t < T; t++) {
+    const q = res.quad[t] === 1 ? quadCorners(idx, t) : null;
+    if (q) { for (let k = 0; k < 4; k++) add(q[k], q[(k + 1) % 4]); t++; continue; }
+    for (let k = 0; k < 3; k++) add(idx[t * 3 + k], idx[t * 3 + ((k + 1) % 3)]);
+  }
+  return Uint32Array.from(out);
 }
 
 // The left view shows a surface: the welded original, or the original with its kept half mirrored.
@@ -1453,7 +1480,7 @@ function setLeftSurface(surf) {
 
 function buildReducedDisplay(res) {
   disposeDisplay(display.R, sceneR);
-  display.R = makeDisplay(sceneR, buildSurfaceGeometry(res.positions, res.normals, res.uvs, res.colors, res.index, res.vMat), 'R');
+  display.R = makeDisplay(sceneR, buildSurfaceGeometry(res.positions, res.normals, res.uvs, res.colors, res.index, res.vMat), 'R', res.quad ? quadEdges(res) : null);
   display.R.srcId = res.srcId;
   recolorReduced();
   applyDisplaySettings();
@@ -1956,6 +1983,9 @@ function flashHint(ms = 5000) {
 }
 
 // ---------- reduction ----------
+// In Quads mode the budget is shown and typed as quads (two triangles each); it is kept as triangles either way.
+const quadMode = () => settings.topology === 'quads';
+const quadCount = res => { let n = 0; if (res && res.quad) for (let t = 0; t < res.quad.length; t++) if (res.quad[t] === 1) n++; return n; };
 function targetTris(pct = settings.targetPct) {
   const T = state.welded ? state.welded.triCount : 0;
   return Math.max(4, Math.min(T, Math.round((T * pct) / 100)));
@@ -1965,7 +1995,7 @@ function reduceSettings(target) {
     targetTris: target ?? targetTris(), maxError: Number(settings.maxError), lockBorder: settings.lockBorder,
     permissive: settings.permissive, prune: settings.prune, regularize: settings.regularize, normalWeight: settings.normalWeight,
     uvWeight: settings.uvWeight, optimizePositions: settings.optimizePositions,
-    uvMode: settings.uvMode, deferUV: true, hardAngle: settings.hardAngle,
+    uvMode: settings.uvMode, deferUV: true, hardAngle: settings.hardAngle, topology: settings.topology,
     symmetry: settings.symmetry && symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset, keepPositive: settings.symSide !== '-' } : null,
   };
 }
@@ -1985,7 +2015,8 @@ async function runReduce() {
   setBusy(true);
   try {
     const d = doc, labels = state.labels.slice(), st = reduceSettings();
-    const out = await engine.call({ type: 'reduce', doc: d.id, labels, settings: st, finalize: finalizeOptions() });
+    const onProgress = st.topology === 'quads' ? p => { if (d === doc) showRemeshProgress(p); } : null;
+    const out = await engine.call({ type: 'reduce', doc: d.id, labels, settings: st, finalize: finalizeOptions() }, onProgress);
     if (d === doc) showResult(out.result, out.info, labels, st);
     else keepResult(d, out.result, out.info, labels, st);
   } catch (err) {
@@ -2093,6 +2124,10 @@ function updateTargetUI(preview) {
   if (budgetDragging && preview === undefined) return;
   const pct = preview ?? settings.targetPct;
   const input = $('targetNum'), editing = document.activeElement === input;
+  const unit = quadMode() ? 'quads' : 'tris';
+  $('targetUnit').textContent = unit;
+  input.setAttribute('aria-label', quadMode() ? 'Quad budget' : 'Triangle budget');
+  input.title = `Type a ${quadMode() ? 'quad' : 'triangle'} count, a percentage of the original triangles (5%) or a short count (20k)`;
   if (!state.welded) {
     if (!editing) input.value = '—';
     sizeBudgetInput();
@@ -2100,10 +2135,10 @@ function updateTargetUI(preview) {
     pressSeg('quickSeg', 'pct', null);
     return;
   }
-  const T = state.welded.triCount, t = targetTris(pct);
-  if (!editing) input.value = fmt(t);
+  const T = state.welded.triCount, t = targetTris(pct), q = quadMode(), share = `${pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%`;
+  if (!editing) input.value = fmt(q ? Math.round(t / 2) : t);
   sizeBudgetInput();
-  $('targetOf').textContent = `of ${fmt(T)} · ${pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}%`;
+  $('targetOf').textContent = q ? `${fmt(t)} tris of ${fmt(T)} · ${share}` : `of ${fmt(T)} · ${share}`;
   $('targetSlider').value = String(Math.round((1000 * Math.log(pct / 0.1)) / Math.log(1000)));
   pressSeg('quickSeg', 'pct', pct);
   if (display.L && state.left) {
@@ -2144,17 +2179,24 @@ function updateResultUI() {
     $('bMarker').hidden = true;
     $('barLegend').replaceChildren();
     $('resWhy').hidden = true;
-    setPill(state.welded ? 'busy' : '', state.welded ? 'Reducing…' : '');
+    setPill(state.welded ? 'busy' : '', state.welded ? (quadMode() ? 'Remeshing…' : 'Reducing…') : '');
     $('labelRText').textContent = '';
     $('resSym').hidden = true;
     return;
   }
-  const target = targetTris(), over = i.tris > target * 1.02;
+  // A remesh lands near its budget rather than on it, so it counts as on budget within 4%.
+  const quads = i.quads || 0, slack = quads ? 0.04 : 0.02;
+  const target = targetTris(), over = i.tris > target * (1 + slack);
+  $('resQuadsBox').hidden = !quads;
+  $('resQuads').textContent = fmt(quads);
   $('resTris').textContent = fmt(i.tris);
   $('resVerts').textContent = fmt(i.verts);
   $('resTime').textContent = i.ms >= 1000 ? `${(i.ms / 1000).toFixed(1)} s` : `${fmt(i.ms)} ms`;
+  $('resPolesLabel').hidden = $('resPoles').hidden = !quads;
+  if (quads && i.poles) $('resPoles').textContent = `${fmt(i.poles.count)} · ${((100 * i.poles.count) / Math.max(1, i.poles.inner)).toFixed(0)}% of vertices`;
+  $('labelRName').textContent = $('uvNameB').textContent = quads ? 'Remeshed' : 'Reduced';
   const layout = state.result && state.result.uvLayout;
-  $('labelRText').replaceChildren(`${fmt(i.tris)} tris · ${fmt(i.verts)} verts${i.symmetry ? ' · mirrored' : ''}${layout === 'new' ? ' · new UVs' : layout === 'pending' ? ' · baking texture…' : ''}`);
+  $('labelRText').replaceChildren(`${quads ? `${fmt(quads)} quads · ` : ''}${fmt(i.tris)} tris · ${fmt(i.verts)} verts${i.symmetry ? ' · mirrored' : ''}${layout === 'new' ? ' · new UVs' : layout === 'pending' ? ' · baking texture…' : ''}`);
   if (over) $('labelRText').append(el('span', { className: 'warn', textContent: ' · over budget' }));
   const sym = i.symmetry, symEl = $('resSym');
   symEl.hidden = !sym;
@@ -2183,7 +2225,14 @@ function updateResultUI() {
   // What the result says about the budget, and a one-click way out when there is one.
   const w = state.welded, limited = Number(settings.maxError) > 0;
   let tone = 'ok', text = 'On budget', why = '', action = null;
-  if (!over) {
+  if (quads) {
+    // Remeshing: counts land within a few percent; the paint can still ask for more than the budget allows.
+    if (over || i.tris < target * (1 - slack)) {
+      tone = over ? 'warn' : 'info';
+      text = over ? 'Over budget' : 'Under budget';
+      why = `Remeshing lands near the budget, not on it: ${fmt(i.tris)} of ${fmt(target)} triangles.`;
+    }
+  } else if (!over) {
     if (i.tris < target * 0.98 && limited) { tone = 'info'; text = 'Under budget'; why = 'It stopped at the error limit before using the whole budget.'; action = ['Remove the limit', clearErrorLimit]; }
   } else {
     tone = 'warn';
@@ -2199,6 +2248,8 @@ function updateResultUI() {
     } else why = "Locked or protected areas can't collapse any further.";
   }
   let whyTone = tone;
+  // The toggle was just flipped and the other kind of result is still on its way.
+  if (!!quads !== quadMode()) { why = quadMode() ? 'Remeshing into quads…' : 'Going back to triangles…'; whyTone = 'info'; action = null; }
   if (!why && tex[0] === 'warn' && layout === 'original' && settings.uvMode === 'keep') {
     why = 'Most of the texture lands in the wrong place with the original UVs at this budget.';
     action = ['Switch to Auto', () => setUVMode('auto')];
@@ -2236,7 +2287,7 @@ function uvStatus() {
   const pct = v => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`;
   const fit = i.uvFit;
   const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
-  const why = i.uvDecision === 'rebuilt' && fit ? `The original UVs would put ${fit.estimated ? 'over ' : ''}${pct(fit.misplaced)} of the texture in the wrong place at this budget.` : '';
+  const why = r.quad ? 'Quads always get new UVs.' : i.uvDecision === 'rebuilt' && fit ? `The original UVs would put ${fit.estimated ? 'over ' : ''}${pct(fit.misplaced)} of the texture in the wrong place at this budget.` : '';
   if (r.uvLayout === 'pending') {
     if (!state.texturing) return ['warn', 'New UVs not made yet', why];
     return ['busy', textured ? 'Making new UVs and baking the texture…' : 'Making new UVs…', [why, textured ? 'The reduced view shows clay until it is done.' : ''].filter(Boolean).join(' ')];
@@ -2254,7 +2305,7 @@ function uvStatus() {
   return ['ok', 'Original UVs still fit', fit.misplaced < 0.0005 ? 'The texture lands where it should, so it is used as it is.' : `Only ${pct(fit.misplaced)} of the texture is off, so it is used as it is.`];
 }
 function updateUVPanel() {
-  $('keepUVOpts').hidden = settings.uvMode === 'new';
+  $('keepUVOpts').hidden = quadMode() || settings.uvMode === 'new';
   updateExportPanel();
   const st = uvStatus(), row = $('uvStatus');
   row.hidden = !st;
@@ -2264,6 +2315,14 @@ function updateUVPanel() {
   $('uvNote').textContent = st[2];
   $('uvNote').hidden = !st[2];
   refreshUVView();
+}
+
+// Remeshing reports its stage; the result pill shows how far it got.
+const REMESH_STAGES = { prepare: [0, 0.1], orientation: [0.1, 0.35], position: [0.35, 0.7], extract: [0.7, 0.85], relax: [0.85, 1] };
+function showRemeshProgress({ stage, frac }) {
+  const r = REMESH_STAGES[stage];
+  if (!r) return;
+  setPill('busy', `Remeshing… ${Math.round(100 * (r[0] + (r[1] - r[0]) * Math.min(1, Math.max(0, frac))))}%`);
 }
 
 let busyTimer = 0;
@@ -2434,12 +2493,15 @@ async function saveZip(filename, bytes) {
   setStatus(`Saved ${filename}`, 'info', 4000);
 }
 
+// Files are named after the model and its size: triangles, or quads for a remeshed result.
+const exportStem = (base, res) => (res.quad ? `${base}_${quadCount(res)}quads` : `${base}_${res.triCount}`);
+
 // What an export writes, without reading any bytes: the model files and the textures, each { name, note, pending }.
 function exportPlan() {
   const res = state.result;
   if (!res || !state.meta) return null;
   const base = sanitize((state.meta.name || 'model').replace(/\.[^.]+$/, ''));
-  const stem = `${base}_${res.triCount}`, ext = settings.format;
+  const stem = exportStem(base, res), ext = settings.format;
   const files = ext === 'obj' ? [{ name: `${stem}.obj`, note: 'model' }, { name: `${stem}.mtl`, note: 'materials' }] : [{ name: `${stem}.${ext}`, note: 'model' }];
   const names = materialNames(), seen = new Set(), textures = [];
   const add = (name, note, pending = false) => { if (!seen.has(name)) { seen.add(name); textures.push({ name, note, pending }); } };
@@ -2473,7 +2535,8 @@ function updateExportPanel() {
   if (!exportIsOpen) return;
   const plan = exportPlan();
   $('exportBtn').disabled = !plan;
-  $('exportMeta').textContent = plan ? `${fmt(state.result.triCount)} tris · ${fmt(state.result.vertexCount)} verts` : '';
+  const nq = quadCount(state.result);
+  $('exportMeta').textContent = plan ? `${nq ? `${fmt(nq)} quads · ` : ''}${fmt(state.result.triCount)} tris · ${fmt(state.result.vertexCount)} verts` : '';
   if (!plan) {
     $('exportFiles').replaceChildren(el('li', { className: 'none', textContent: 'Nothing to export yet.' }));
     $('exportNote').textContent = '';
@@ -2491,7 +2554,8 @@ function updateExportPanel() {
   }
   $('exportFiles').replaceChildren(...rows);
   const units = { auto: 'in the source file\'s units', m: 'in metres', cm: 'in centimetres' }[settings.units];
-  $('exportNote').textContent = `Saved as ${plan.stem}.zip, ${units}.`;
+  const quadNote = !nq ? '' : settings.format === 'glb' ? ' GLB holds triangles only; FBX and OBJ keep the quads.' : ' Faces are written as quads.';
+  $('exportNote').textContent = `Saved as ${plan.stem}.zip, ${units}.${quadNote}`;
 }
 function placeExport() {
   const pop = $('exportPop'), r = $('exportOpen').getBoundingClientRect(), w = Math.min(340, window.innerWidth - 16);
@@ -2535,7 +2599,7 @@ async function buildExport() {
   if (state.result.uvLayout === 'pending') throw new Error("the new UVs and texture couldn't be made for this result");
   const base = sanitize((state.meta.name || 'model').replace(/\.[^.]+$/, ''));
   const unitScale = settings.units === 'm' ? 100 : settings.units === 'cm' ? 1 : state.meta.unitScale || 100;
-  const res = state.result, stem = `${base}_${res.triCount}`;
+  const res = state.result, stem = exportStem(base, res);
   const mats = await materialInfos(stem);
   const parts = state.collected.parts;
   setStatus('Writing files…');
@@ -3172,7 +3236,7 @@ function syncControls() {
   $('showPaintBtn').title = settings.showPaint ? 'Hide paint' : 'Show paint';
   $('toolPal').hidden = !state.welded;
   $('toolOpts').hidden = !state.welded || !paint;
-  const name = { more: 'More detail', less: 'Less detail', keep: 'Keep original', erase: 'Erase' }[settings.tool] || '';
+  const name = { more: 'More detail', less: 'Less detail', keep: quadMode() ? 'Keep · smallest quads' : 'Keep original', erase: 'Erase' }[settings.tool] || '';
   $('optName').textContent = name;
   $('optName').dataset.tool = settings.tool;
   $('optSize').hidden = settings.mode === 'fill';
@@ -3198,9 +3262,16 @@ function syncControls() {
   const tol = weldTolerance();
   $('tolOut').textContent = `${(tol * 100).toPrecision(2)}% of size`;
   $('units').value = settings.units;
-  pressSeg('uvModeSeg', 'uvmode', settings.uvMode);
+  const q = quadMode();
+  pressSeg('topoSeg', 'topo', settings.topology);
+  $('prune2').checked = settings.prune;
+  $('secQuads').hidden = !q;
+  $('secReduce').hidden = q;
+  // Quads always get new UVs.
+  pressSeg('uvModeSeg', 'uvmode', q ? 'new' : settings.uvMode);
+  for (const b of $('uvModeSeg').querySelectorAll('button')) b.disabled = q && b.dataset.uvmode !== 'new';
   pressSeg('bakeSeg', 'bake', settings.bakeSize);
-  $('keepUVOpts').hidden = settings.uvMode === 'new';
+  $('keepUVOpts').hidden = q || settings.uvMode === 'new';
   syncSymmetryUI();
   applyTool();
 }
@@ -3223,6 +3294,18 @@ onSeg('regSeg', 'reg', v => { settings.regularize = Number(v); scheduleReduce();
 onSeg('formatSeg', 'format', v => { settings.format = v; updateExportPanel(); });
 onSeg('uvModeSeg', 'uvmode', v => { settings.uvMode = v; updateUVPanel(); scheduleReduce(0); });
 onSeg('quickSeg', 'pct', v => { settings.targetPct = Number(v); updateTargetUI(); scheduleReduce(); });
+onSeg('topoSeg', 'topo', v => setTopology(v));
+// Triangles reduce the model; Quads remesh it. The budget stays the same number of triangles.
+function setTopology(v) {
+  if (settings.topology === v) return;
+  settings.topology = v;
+  syncControls();
+  saveSettings();
+  updateTargetUI();
+  updateUVPanel();
+  updateResultUI();
+  scheduleReduce(0);
+}
 document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => { settings.tool = b.dataset.tool; syncControls(); saveSettings(); }));
 
 // Sliders show their value while they move and apply it once, when let go ('change'), so a drag regenerates once.
@@ -3241,25 +3324,27 @@ for (const type of ['pointerup', 'pointercancel']) {
   $('targetSlider').addEventListener(type, () => setTimeout(() => { budgetDragging = false; updateTargetUI(); }, 0));
 }
 // A typed budget: a triangle count ("23078", "23,078"), a short count ("20k", "1.5m") or a share of the model ("5%").
-function parseBudget(text, total) {
+// In Quads mode a count is quads (unit 2 triangles each); a percentage is always of the original triangles.
+function parseBudget(text, total, unit = 1) {
   const m = String(text).trim().toLowerCase().replace(/[\s,_]/g, '').match(/^(\d*\.?\d+)(k|m|%)?$/);
   if (!m) return null;
   const n = Number(m[1]);
-  return m[2] === '%' ? (n / 100) * total : n * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1);
+  return m[2] === '%' ? (n / 100) * total : n * unit * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1);
 }
+const budgetText = () => String(quadMode() ? Math.round(targetTris() / 2) : targetTris());
 $('targetNum').addEventListener('focus', e => {
   if (!state.welded) return;
-  e.target.value = String(targetTris());
+  e.target.value = budgetText();
   sizeBudgetInput();
   e.target.select();
 });
 $('targetNum').addEventListener('input', sizeBudgetInput);
 $('targetNum').addEventListener('keydown', e => {
   if (e.key === 'Enter') e.target.blur();
-  else if (e.key === 'Escape') { e.target.value = String(targetTris()); e.target.blur(); }
+  else if (e.key === 'Escape') { e.target.value = budgetText(); e.target.blur(); }
 });
 $('targetNum').addEventListener('change', e => {
-  const T = state.welded ? state.welded.triCount : 0, v = parseBudget(e.target.value, T);
+  const T = state.welded ? state.welded.triCount : 0, v = parseBudget(e.target.value, T, quadMode() ? 2 : 1);
   if (T && v !== null) {
     const pct = Math.max(0.01, (100 * Math.max(4, Math.min(T, Math.round(v)))) / T);
     if (pct !== settings.targetPct) { settings.targetPct = pct; saveSettings(); scheduleReduce(0); }
@@ -3281,6 +3366,7 @@ bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
 bindCheck('permissive', 'permissive', () => scheduleReduce());
 bindCheck('lockBorder', 'lockBorder', () => scheduleReduce());
 bindCheck('prune', 'prune', () => scheduleReduce());
+bindCheck('prune2', 'prune', () => scheduleReduce());
 bindCheck('tintMirror', 'tintMirror', applyDisplaySettings);
 bindCheck('showPlane', 'showPlane', updatePlaneHelper);
 $('symOn').addEventListener('change', async e => {
@@ -3459,6 +3545,7 @@ window.addEventListener('keydown', e => {
   else if (k === 'f') settings.mode = settings.mode === 'fill' ? 'brush' : 'fill';
   else if (k === 'w') { settings.wire = !settings.wire; applyDisplaySettings(); }
   else if (k === 'u') { setUVOpen(!settings.uvOpen); return; }
+  else if (k === 'q') { setTopology(quadMode() ? 'tris' : 'quads'); return; }
   else if (k === '1' || k === '2' || k === '3') { settings.view = ['split', 'original', 'reduced'][Number(k) - 1]; requestRender(); }
   else if (k === '[' || k === ']') {
     // One step up or down in the brush's own rounding, even where 20% of the size rounds back to the same value.

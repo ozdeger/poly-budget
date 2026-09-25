@@ -1,3 +1,5 @@
+import { remeshQuads, QUAD_NONE } from './quad.js';
+
 export const LABEL = { NONE: 0, MORE1: 1, MORE2: 2, MORE3: 3, LESS1: -1, LESS2: -2, LESS3: -3, KEEP: 100 };
 export const MORE_MULT = { 1: 2, 2: 4, 3: 8 };
 export const LESS_MULT = { '-1': 0.5, '-2': 0.25, '-3': 0.125 };
@@ -418,7 +420,8 @@ function faceNormalsOf(positions, index) {
   return fn;
 }
 
-function creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, angle) {
+// quad: pair marks (see validatePairs); both triangles of a quad take the quad's normal, so its diagonal never splits.
+function creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, angle, quad = null) {
   const V = positions.length / 3, F = index.length / 3;
   const cosA = Math.cos((angle * Math.PI) / 180);
   const b = bounds(positions);
@@ -429,6 +432,12 @@ function creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, ang
     o[2] = Math.round((positions[i * 3 + 2] - b.min[2]) / step);
   });
   const fn = faceNormalsOf(positions, index);
+  if (quad) {
+    for (let t = 0; t + 1 < F; t++) {
+      if (quad[t] !== 1) continue;
+      for (let k = 0; k < 3; k++) fn[t * 3 + k] = fn[(t + 1) * 3 + k] = fn[t * 3 + k] + fn[(t + 1) * 3 + k];
+    }
+  }
   const fu = new Float32Array(F * 3);
   for (let t = 0; t < F; t++) {
     const l = Math.hypot(fn[t * 3], fn[t * 3 + 1], fn[t * 3 + 2]) || 1;
@@ -477,11 +486,19 @@ function creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, ang
 // vertex), so shading follows the original rather than the reduced triangles. Where the reduced surface turns far from
 // that normal, in very coarse areas, the normal leans back toward the reduced surface's own.
 function surfaceNormals(smooth, srcId, positions, index) {
-  const V = srcId.length, out = new Float32Array(V * 3), own = computeSmoothNormals(positions, index);
+  const V = srcId.length, picked = new Float32Array(V * 3);
+  for (let v = 0; v < V; v++) for (let k = 0; k < 3; k++) picked[v * 3 + k] = smooth[srcId[v] * 3 + k];
+  return leanToSurface(picked, positions, index);
+}
+// Normals that turn more than 75° from the mesh's own smooth normals lean back toward them.
+function leanToSurface(N, positions, index) {
+  const V = positions.length / 3, out = new Float32Array(V * 3), own = computeSmoothNormals(positions, index);
   const cosLimit = Math.cos((75 * Math.PI) / 180);
   for (let v = 0; v < V; v++) {
-    const s = srcId[v] * 3, o = v * 3;
-    let x = smooth[s], y = smooth[s + 1], z = smooth[s + 2];
+    const o = v * 3;
+    let x = N[o], y = N[o + 1], z = N[o + 2];
+    const l0 = Math.hypot(x, y, z) || 1;
+    x /= l0; y /= l0; z /= l0;
     const d = x * own[o] + y * own[o + 1] + z * own[o + 2];
     if (d < cosLimit) {
       const t = Math.min(1, (cosLimit - d) / (cosLimit + 1));
@@ -548,6 +565,8 @@ export function exportObjects(result, parts, materials, merge, name) {
     const remap = new Map();
     const matMap = new Map();
     const idx = new Uint32Array(tris.length * 3), triMat = new Uint16Array(tris.length);
+    const quad = result.quad ? Uint8Array.from(tris, t => result.quad[t]) : null;
+    if (quad) validatePairs(quad);
     tris.forEach((t, j) => {
       for (let k = 0; k < 3; k++) {
         const v = result.index[t * 3 + k];
@@ -568,9 +587,32 @@ export function exportObjects(result, parts, materials, merge, name) {
       if (COL) COL.set(result.colors.subarray(v * 3, v * 3 + 3), o * 3);
     }
     const mats = [...matMap.keys()].map(gm => materials[gm]);
-    objects.push({ name: merge ? name : parts[partIds[0]].name, positions: P, normals: N, uvs: UV, colors: COL, index: idx, triMat, materials: mats });
+    objects.push({ name: merge ? name : parts[partIds[0]].name, positions: P, normals: N, uvs: UV, colors: COL, index: idx, quad, triMat, materials: mats });
   }
   return objects;
+}
+
+// ---------- quads ----------
+// A quad is kept as two consecutive triangles: quad[t] is 1 on the first and 2 on the second (0 for a lone triangle).
+// Clears marks whose partner went missing; half: where a mirrored copy starts, so no pair spans the two copies.
+function validatePairs(quad, half = Infinity) {
+  for (let t = 0; t < quad.length; t++) {
+    if (quad[t] === 1 && !(t + 1 < quad.length && quad[t + 1] === 2 && (t < half) === (t + 1 < half))) quad[t] = 0;
+    else if (quad[t] === 2 && !(t > 0 && quad[t - 1] === 1)) quad[t] = 0;
+  }
+}
+
+// The four corners of the quad made by triangles t and t + 1: the second triangle's corner that the first lacks goes
+// between the two they share. Null when the triangles don't share exactly two corners.
+export function quadCorners(index, t) {
+  const a = [index[t * 3], index[t * 3 + 1], index[t * 3 + 2]], b = [index[t * 3 + 3], index[t * 3 + 4], index[t * 3 + 5]];
+  const extra = b.filter(v => !a.includes(v));
+  if (extra.length !== 1) return null;
+  for (let k = 0; k < 3; k++) {
+    const x = a[k], y = a[(k + 1) % 3];
+    if (b.includes(x) && b.includes(y)) return [y, a[(k + 2) % 3], x, extra[0]];
+  }
+  return null;
 }
 
 // ---------- FBX (binary 7400, Blender-compatible layout) ----------
@@ -657,14 +699,29 @@ function fromTemplate(n) {
 const N = (name, props = [], children = []) => [name, props, children];
 const P70 = (name, type, label, flags, ...vals) => N('P', [['S', name], ['S', type], ['S', label], ['S', flags], ...vals]);
 
-function edgesOf(index) {
-  const seen = new Map();
+// An export object's faces: its quads (pairs of triangles) and lone triangles, as { corners, tri } with tri the
+// first triangle (for the material).
+function polygonsOf(o) {
+  const T = o.index.length / 3, out = [];
+  for (let t = 0; t < T; t++) {
+    const q = o.quad && o.quad[t] === 1 ? quadCorners(o.index, t) : null;
+    if (q) { out.push({ corners: q, tri: t }); t++; continue; }
+    out.push({ corners: [o.index[t * 3], o.index[t * 3 + 1], o.index[t * 3 + 2]], tri: t });
+  }
+  return out;
+}
+
+// Each edge once, as the polygon-vertex index where it starts (FBX's Edges).
+function edgesOf(polys) {
+  const seen = new Set();
   const out = [];
-  for (let k = 0; k < index.length; k++) {
-    const t = (k / 3) | 0, j = k % 3;
-    const a = index[k], b = index[t * 3 + ((j + 1) % 3)];
-    const key = a < b ? a * 4294967296 + b : b * 4294967296 + a;
-    if (!seen.has(key)) { seen.set(key, 1); out.push(k); }
+  let k = 0;
+  for (const { corners } of polys) {
+    for (let j = 0; j < corners.length; j++, k++) {
+      const a = corners[j], b = corners[(j + 1) % corners.length];
+      const key = a < b ? a * 4294967296 + b : b * 4294967296 + a;
+      if (!seen.has(key)) { seen.add(key); out.push(k); }
+    }
   }
   return Int32Array.from(out);
 }
@@ -699,27 +756,33 @@ export function writeFBX(objects, opt, template) {
   let geoCount = 0, matCount = 0, texCount = 0;
   for (const o of objects) {
     const gid = id(), mid = id();
-    const T = o.index.length / 3;
-    const pvi = new Int32Array(o.index.length);
-    for (let k = 0; k < o.index.length; k++) pvi[k] = k % 3 === 2 ? ~o.index[k] : o.index[k];
+    const polys = polygonsOf(o);
+    const corners = [];
+    for (const p of polys) corners.push(...p.corners);
+    const pvi = new Int32Array(corners.length), cornerIndex = Int32Array.from(corners);
+    let k0 = 0;
+    for (const p of polys) {
+      for (let j = 0; j < p.corners.length; j++) pvi[k0 + j] = j === p.corners.length - 1 ? ~p.corners[j] : p.corners[j];
+      k0 += p.corners.length;
+    }
     const layer = [N('Version', [['I', 100]]), N('LayerElement', [], [N('Type', [['S', 'LayerElementNormal']]), N('TypedIndex', [['I', 0]])])];
     const geoChildren = [
       ['Properties70', [], [], true],
       N('GeometryVersion', [['I', 124]]),
       N('Vertices', [['d', Float64Array.from(o.positions)]]),
       N('PolygonVertexIndex', [['i', pvi]]),
-      N('Edges', [['i', edgesOf(o.index)]]),
+      N('Edges', [['i', edgesOf(polys)]]),
       N('LayerElementNormal', [['I', 0]], [
         N('Version', [['I', 101]]), N('Name', [['S', '']]),
         N('MappingInformationType', [['S', 'ByPolygonVertex']]), N('ReferenceInformationType', [['S', 'IndexToDirect']]),
-        N('Normals', [['d', Float64Array.from(o.normals)]]), N('NormalsIndex', [['i', Int32Array.from(o.index)]]),
+        N('Normals', [['d', Float64Array.from(o.normals)]]), N('NormalsIndex', [['i', cornerIndex]]),
       ]),
     ];
     if (o.uvs) {
       geoChildren.push(N('LayerElementUV', [['I', 0]], [
         N('Version', [['I', 101]]), N('Name', [['S', 'UVMap']]),
         N('MappingInformationType', [['S', 'ByPolygonVertex']]), N('ReferenceInformationType', [['S', 'IndexToDirect']]),
-        N('UV', [['d', Float64Array.from(o.uvs)]]), N('UVIndex', [['i', Int32Array.from(o.index)]]),
+        N('UV', [['d', Float64Array.from(o.uvs)]]), N('UVIndex', [['i', cornerIndex]]),
       ]));
       layer.push(N('LayerElement', [], [N('Type', [['S', 'LayerElementUV']]), N('TypedIndex', [['I', 0]])]));
     }
@@ -730,7 +793,7 @@ export function writeFBX(objects, opt, template) {
       geoChildren.push(N('LayerElementColor', [['I', 0]], [
         N('Version', [['I', 101]]), N('Name', [['S', 'Col']]),
         N('MappingInformationType', [['S', 'ByPolygonVertex']]), N('ReferenceInformationType', [['S', 'IndexToDirect']]),
-        N('Colors', [['d', rgba]]), N('ColorIndex', [['i', Int32Array.from(o.index)]]),
+        N('Colors', [['d', rgba]]), N('ColorIndex', [['i', cornerIndex]]),
       ]));
       layer.push(N('LayerElement', [], [N('Type', [['S', 'LayerElementColor']]), N('TypedIndex', [['I', 0]])]));
     }
@@ -738,7 +801,7 @@ export function writeFBX(objects, opt, template) {
     geoChildren.push(N('LayerElementMaterial', [['I', 0]], [
       N('Version', [['I', 101]]), N('Name', [['S', '']]),
       N('MappingInformationType', [['S', single ? 'AllSame' : 'ByPolygon']]), N('ReferenceInformationType', [['S', 'IndexToDirect']]),
-      N('Materials', [['i', single ? Int32Array.of(0) : Int32Array.from(o.triMat)]]),
+      N('Materials', [['i', single ? Int32Array.of(0) : Int32Array.from(polys, p => o.triMat[p.tri])]]),
     ]));
     layer.push(N('LayerElement', [], [N('Type', [['S', 'LayerElementMaterial']]), N('TypedIndex', [['I', 0]])]));
     geoChildren.push(N('Layer', [['I', 0]], layer));
@@ -903,12 +966,11 @@ export function writeOBJ(objects, opt) {
     for (let i = 0; i < n; i++) lines.push(`v ${(o.positions[i * 3] * s).toFixed(6)} ${(o.positions[i * 3 + 1] * s).toFixed(6)} ${(o.positions[i * 3 + 2] * s).toFixed(6)}`);
     if (o.uvs) for (let i = 0; i < n; i++) lines.push(`vt ${o.uvs[i * 2].toFixed(6)} ${o.uvs[i * 2 + 1].toFixed(6)}`);
     for (let i = 0; i < n; i++) lines.push(`vn ${o.normals[i * 3].toFixed(5)} ${o.normals[i * 3 + 1].toFixed(5)} ${o.normals[i * 3 + 2].toFixed(5)}`);
-    const T = o.index.length / 3;
     let current = -1;
-    for (let t = 0; t < T; t++) {
-      const m = o.triMat[t] ?? 0;
+    for (const p of polygonsOf(o)) {
+      const m = o.triMat[p.tri] ?? 0;
       if (m !== current && o.materials[m]) { lines.push(`usemtl ${o.materials[m].name}`); current = m; }
-      const f = [0, 1, 2].map(k => { const v = o.index[t * 3 + k] + base; return o.uvs ? `${v}/${v}/${v}` : `${v}//${v}`; });
+      const f = p.corners.map(c => { const v = c + base; return o.uvs ? `${v}/${v}/${v}` : `${v}//${v}`; });
       lines.push(`f ${f.join(' ')}`);
     }
     for (const m of o.materials) {
@@ -997,7 +1059,7 @@ function measureUVFit(ctx, result) {
 // borders and open borders), as pairs of vertex indices into mesh.uvs. Vertices at the same place with the same UV
 // count as one, so an edge that is only split for its normals isn't taken for a seam, while islands that are stacked
 // in UV space (mirrored halves) keep their own borders. keep(t) picks triangles; triEnd stops early (a mirrored
-// result's own half).
+// result's own half). The diagonals of quads (mesh.quad) are left out.
 export function uvEdges(mesh, keep = null, triEnd = mesh.index.length / 3) {
   const f32 = a => (a instanceof Float32Array ? a : Float32Array.from(a));
   const P = f32(mesh.positions), UV = f32(mesh.uvs), idx = mesh.index, V = UV.length / 2;
@@ -1007,6 +1069,14 @@ export function uvEdges(mesh, keep = null, triEnd = mesh.index.length / 3) {
   });
   const rep = new Int32Array(G).fill(-1);
   for (let i = 0; i < V; i++) if (rep[group[i]] < 0) rep[group[i]] = i;
+  // A quad's diagonal (the edge its two triangles share) is not drawn.
+  const pair = mesh.quad || null;
+  const diagonal = (t, a, b) => {
+    if (!pair || !pair[t]) return false;
+    const p = pair[t] === 1 ? t + 1 : t - 1;
+    const g0 = group[idx[p * 3]], g1 = group[idx[p * 3 + 1]], g2 = group[idx[p * 3 + 2]];
+    return (a === g0 || a === g1 || a === g2) && (b === g0 || b === g1 || b === g2);
+  };
   // Half-edges bucketed by their lower end, then sorted within each (small) bucket so equal edges sit together.
   const start = new Uint32Array(G + 1);
   const visit = fn => {
@@ -1014,7 +1084,7 @@ export function uvEdges(mesh, keep = null, triEnd = mesh.index.length / 3) {
       if (keep && !keep(t)) continue;
       for (let k = 0; k < 3; k++) {
         const a = group[idx[t * 3 + k]], b = group[idx[t * 3 + ((k + 1) % 3)]];
-        if (a !== b) fn(a < b ? a : b, a < b ? b : a);
+        if (a !== b && !diagonal(t, a, b)) fn(a < b ? a : b, a < b ? b : a);
       }
     }
   };
@@ -1421,6 +1491,10 @@ export function unwrap(mesh, opt = {}) {
     if (l > 0) { fn[t * 3] = nx / l; fn[t * 3 + 1] = ny / l; fn[t * 3 + 2] = nz / l; }
   }
   const tiny = totalArea * 1e-12;
+  // The two triangles of a quad (mesh.quad) always share a chart, so the quad keeps one set of UVs.
+  const pair = mesh.quad || null;
+  const partner = t => (!pair ? -1 : pair[t] === 1 ? t + 1 : pair[t] === 2 ? t - 1 : -1);
+  if (pair && dens) for (let t = 0; t + 1 < T; t++) if (pair[t] === 1) dens[t + 1] = dens[t];
   const groupOf = t => mesh.vMat[idx[t * 3]] * 65536 + mesh.vPart[idx[t * 3]];
   const dot = (t, u) => fn[t * 3] * fn[u * 3] + fn[t * 3 + 1] * fn[u * 3 + 1] + fn[t * 3 + 2] * fn[u * 3 + 2];
 
@@ -1439,6 +1513,19 @@ export function unwrap(mesh, opt = {}) {
     if (area[t] > tiny && area[t2] > tiny && dot(t, t2) < cosCrease) continue;
     adj[t * 3 + k] = t2;
     adj[h] = t;
+  }
+  if (pair) {
+    for (let t = 0; t + 1 < T; t++) {
+      if (pair[t] !== 1) continue;
+      const u = t + 1;
+      for (let k = 0; k < 3; k++) {
+        const a = pid[idx[t * 3 + k]], b = pid[idx[t * 3 + ((k + 1) % 3)]];
+        for (let j = 0; j < 3; j++) {
+          const c = pid[idx[u * 3 + j]], d = pid[idx[u * 3 + ((j + 1) % 3)]];
+          if (a === d && b === c) { adj[t * 3 + k] = u; adj[u * 3 + j] = t; }
+        }
+      }
+    }
   }
 
   // Grow charts from the largest faces, always taking the neighbour closest to the chart's mean normal.
@@ -1464,13 +1551,18 @@ export function unwrap(mesh, opt = {}) {
         if (d < cosMax) continue;
         if (1 - d > key + 0.02 && heap.size && heap.k[0] < 1 - d) { heap.push(1 - d, f); continue; }
       }
-      chart[f] = c;
-      sx += fn[f * 3] * area[f]; sy += fn[f * 3 + 1] * area[f]; sz += fn[f * 3 + 2] * area[f];
+      const mate = partner(f), members = mate >= 0 && chart[mate] < 0 ? [f, mate] : [f];
+      for (const m of members) {
+        chart[m] = c;
+        sx += fn[m * 3] * area[m]; sy += fn[m * 3 + 1] * area[m]; sz += fn[m * 3 + 2] * area[m];
+      }
       const ll = Math.hypot(sx, sy, sz) || 1;
-      for (let k = 0; k < 3; k++) {
-        const g = adj[f * 3 + k];
-        if (g < 0 || chart[g] >= 0) continue;
-        heap.push(area[g] > tiny ? 1 - (fn[g * 3] * sx + fn[g * 3 + 1] * sy + fn[g * 3 + 2] * sz) / ll : 0, g);
+      for (const m of members) {
+        for (let k = 0; k < 3; k++) {
+          const g = adj[m * 3 + k];
+          if (g < 0 || chart[g] >= 0) continue;
+          heap.push(area[g] > tiny ? 1 - (fn[g * 3] * sx + fn[g * 3 + 1] * sy + fn[g * 3 + 2] * sz) / ll : 0, g);
+        }
       }
     }
   }
@@ -1549,6 +1641,7 @@ export function unwrap(mesh, opt = {}) {
     for (let i = 0; i < sorted.length; i++) { acc += area[faces[sorted[i]]] + tiny; if (acc >= w / 2) { cut = Math.max(1, Math.min(sorted.length - 1, i)); break; } }
     const side = new Map();
     sorted.forEach((i, rank) => side.set(faces[i], rank < cut ? 0 : 1));
+    for (const f of faces) { const m = partner(f); if (pair && pair[f] === 1 && side.has(m)) side.set(m, side.get(f)); }
     const pieces = [];
     for (const f of faces) {
       if (inPart[f] === partId) continue;
@@ -1666,7 +1759,7 @@ export function unwrap(mesh, opt = {}) {
   }
   const coverage = atlases.reduce((s, a) => s + a.coverage, 0) / Math.max(1, atlases.length);
   return {
-    mesh: { positions, normals, uvs: uvs.slice(0, nOut * 2), colors, srcId, index: outIndex, vPart, vMat, vertexCount: nOut, triCount: T },
+    mesh: { positions, normals, uvs: uvs.slice(0, nOut * 2), colors, srcId, index: outIndex, quad: pair, vPart, vMat, vertexCount: nOut, triCount: T },
     info: { charts: done.length, coverage, atlases, size, stats: { grown: C, merged: merged.count, splits } },
   };
 }
@@ -1696,7 +1789,7 @@ export function cutHalf(mesh, plane) {
     }
     return id;
   };
-  const out = [];
+  const out = [], triSrc = [];
   const poly = [0, 0, 0, 0], vs = [0, 0, 0], ds = [0, 0, 0];
   let inPlane = 0;
   for (let t = 0; t < T; t++) {
@@ -1705,6 +1798,7 @@ export function cutHalf(mesh, plane) {
     if (ds[0] >= 0 && ds[1] >= 0 && ds[2] >= 0) {
       if (ds[0] === 0 && ds[1] === 0 && ds[2] === 0) { inPlane++; continue; }
       out.push(vs[0], vs[1], vs[2]);
+      triSrc.push(t);
       continue;
     }
     if (ds[0] <= 0 && ds[1] <= 0 && ds[2] <= 0) continue;
@@ -1714,7 +1808,7 @@ export function cutHalf(mesh, plane) {
       if (dc >= 0) poly[n++] = c;
       if ((dc > 0 && dn < 0) || (dc < 0 && dn > 0)) poly[n++] = cutVertex(c, nx);
     }
-    for (let j = 1; j + 1 < n; j++) out.push(poly[0], poly[j], poly[j + 1]);
+    for (let j = 1; j + 1 < n; j++) { out.push(poly[0], poly[j], poly[j + 1]); triSrc.push(t); }
   }
   const total = V + cutA.length;
   const used = new Int32Array(total).fill(-1);
@@ -1749,7 +1843,7 @@ export function cutHalf(mesh, plane) {
   }
   const index = new Uint32Array(out.length);
   for (let k = 0; k < out.length; k++) index[k] = used[out[k]];
-  return { mesh: { positions, normals, uvs, colors, index, vPart, vMat, vertexCount: n }, origOf, onPlane, inPlane };
+  return { mesh: { positions, normals, uvs, colors, index, vPart, vMat, vertexCount: n }, origOf, onPlane, inPlane, triSrc: Uint32Array.from(triSrc) };
 }
 
 // Mirrors a finalized half across the plane; vertices on the plane are shared by both halves.
@@ -1792,16 +1886,18 @@ export function mirrorMerge(half, plane) {
   const T = half.index.length / 3, src = half.index;
   let keep = 0;
   for (let t = 0; t < T; t++) if (!(seam[src[t * 3]] && seam[src[t * 3 + 1]] && seam[src[t * 3 + 2]])) keep++;
-  const index = new Uint32Array(keep * 6);
+  const index = new Uint32Array(keep * 6), quad = half.quad ? new Uint8Array(keep * 2) : null;
   let o = 0;
   for (let t = 0; t < T; t++) {
     const a = src[t * 3], b = src[t * 3 + 1], c = src[t * 3 + 2];
     if (seam[a] && seam[b] && seam[c]) continue;
     index[o] = a; index[o + 1] = b; index[o + 2] = c;
     index[keep * 3 + o] = mirrorOf[a]; index[keep * 3 + o + 1] = mirrorOf[c]; index[keep * 3 + o + 2] = mirrorOf[b];
+    if (quad) quad[o / 3] = quad[keep + o / 3] = half.quad[t];
     o += 3;
   }
-  return { positions, normals, uvs, colors, srcId, twin, index, vPart, vMat, vertexCount: n, halfCount: V, triCount: keep * 2, seamVertices: V - extra, inPlaneDropped: T - keep };
+  if (quad) validatePairs(quad, keep);
+  return { positions, normals, uvs, colors, srcId, twin, index, quad, vPart, vMat, vertexCount: n, halfCount: V, triCount: keep * 2, seamVertices: V - extra, inPlaneDropped: T - keep };
 }
 
 // Confirms every vertex has a partner at its mirrored position.
@@ -1937,7 +2033,7 @@ export function unwrapResult(mesh, plane, labels, size) {
     const V = mesh.halfCount, K = mesh.triCount / 2;
     base = {
       positions: mesh.positions.subarray(0, V * 3), normals: mesh.normals.subarray(0, V * 3), uvs: null,
-      colors: mesh.colors ? mesh.colors.subarray(0, V * 3) : null, index: mesh.index.subarray(0, K * 3),
+      colors: mesh.colors ? mesh.colors.subarray(0, V * 3) : null, index: mesh.index.subarray(0, K * 3), quad: mesh.quad ? mesh.quad.subarray(0, K) : null,
       vPart: mesh.vPart.subarray(0, V), vMat: mesh.vMat.subarray(0, V), srcId: mesh.srcId.subarray(0, V), vertexCount: V, triCount: K,
     };
   }
@@ -1953,13 +2049,262 @@ export function unwrapResult(mesh, plane, labels, size) {
   return { result, atlas: u.info, symmetry };
 }
 
+// ---------- quad remeshing ----------
+// Quads per area in painted regions, as a multiple of the unpainted density. Keep, which can't keep the original
+// triangles here, asks for the densest quads.
+export const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8 };
+// Every separate piece gets at least this many quads (while that takes no more than a fifth of the budget).
+const MIN_PIECE_QUADS = 24;
+
+// The welded surface with the vertices that share a position and part merged (UV seams, hard edges and material
+// borders no longer cut it), for remeshing. rep: the welded vertex each merged one stands for; triMat: each triangle's
+// material; normals: the file's, smooth: the whole surface's smooth normals, both averaged per vertex.
+function geometryOf(ctx) {
+  if (ctx.geo) return ctx.geo;
+  const m = ctx.mesh, V = m.vertexCount, P = m.positions;
+  const bits = new Int32Array(P.buffer, P.byteOffset, V * 3);
+  const g = groupBy(V, 4, (i, o) => { o[0] = bits[i * 3]; o[1] = bits[i * 3 + 1]; o[2] = bits[i * 3 + 2]; o[3] = m.vPart[i]; });
+  const C = g.count, rep = new Int32Array(C).fill(-1);
+  for (let v = 0; v < V; v++) if (rep[g.group[v]] < 0) rep[g.group[v]] = v;
+  const positions = new Float32Array(C * 3), normals = new Float32Array(C * 3), smooth = new Float32Array(C * 3);
+  const colors = m.colors ? new Float32Array(C * 3) : null, vPart = new Uint16Array(C), vMat = new Uint16Array(C);
+  const sm = smoothNormalsOf(m);
+  for (let v = 0; v < V; v++) {
+    const c = g.group[v];
+    for (let k = 0; k < 3; k++) { normals[c * 3 + k] += m.normals[v * 3 + k]; smooth[c * 3 + k] += sm[v * 3 + k]; }
+  }
+  for (let c = 0; c < C; c++) {
+    const r = rep[c];
+    for (let k = 0; k < 3; k++) positions[c * 3 + k] = P[r * 3 + k];
+    if (colors) for (let k = 0; k < 3; k++) colors[c * 3 + k] = m.colors[r * 3 + k];
+    vPart[c] = m.vPart[r]; vMat[c] = m.vMat[r];
+    for (const n of [normals, smooth]) {
+      const l = Math.hypot(n[c * 3], n[c * 3 + 1], n[c * 3 + 2]) || 1;
+      for (let k = 0; k < 3; k++) n[c * 3 + k] /= l;
+    }
+  }
+  const idx = new Uint32Array(m.index.length), triMat = new Uint16Array(m.index.length / 3);
+  let n = 0;
+  for (let t = 0; t < m.index.length; t += 3) {
+    const a = g.group[m.index[t]], b = g.group[m.index[t + 1]], c = g.group[m.index[t + 2]];
+    if (a === b || b === c || a === c) continue;
+    triMat[n / 3] = m.vMat[m.index[t]];
+    idx[n++] = a; idx[n++] = b; idx[n++] = c;
+  }
+  ctx.geo = { mesh: { positions, normals, smooth, colors, uvs: null, index: idx.slice(0, n), vPart, vMat, vertexCount: C }, triMat: triMat.slice(0, n / 3), rep, half: null };
+  return ctx.geo;
+}
+
+// Density per vertex that gives each separate piece at least MIN_PIECE_QUADS quads, on top of the painted density.
+function pieceDensity(mesh, density, quads) {
+  const V = mesh.vertexCount, idx = mesh.index, P = mesh.positions, uf = new UnionFind(V);
+  for (let t = 0; t < idx.length; t += 3) { uf.union(idx[t], idx[t + 1]); uf.union(idx[t + 1], idx[t + 2]); }
+  const { labels, count } = uf.labels(V);
+  if (count < 2) return density;
+  const area = new Float64Array(count), weighted = new Float64Array(count);
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const ar = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2, k = labels[idx[t]];
+    area[k] += ar;
+    weighted[k] += density ? (ar * (density[idx[t]] + density[idx[t + 1]] + density[idx[t + 2]])) / 3 : ar;
+  }
+  let total = 0;
+  for (let k = 0; k < count; k++) total += weighted[k];
+  // Quads a piece would get, and the boost that lifts it to the minimum; the boosts together stay within a fifth.
+  let min = MIN_PIECE_QUADS, extra = 0;
+  const boost = new Float64Array(count).fill(1);
+  for (let pass = 0; pass < 2; pass++) {
+    extra = 0;
+    for (let k = 0; k < count; k++) {
+      const share = (quads * weighted[k]) / total;
+      boost[k] = share > 0 && share < min ? min / share : 1;
+      if (boost[k] > 1) extra += min - share;
+    }
+    if (extra <= quads * 0.2) break;
+    min *= (quads * 0.2) / extra;
+  }
+  if (!boost.some(b => b > 1)) return density;
+  const out = new Float32Array(V);
+  for (let v = 0; v < V; v++) out[v] = (density ? density[v] : 1) * boost[labels[v]];
+  return out;
+}
+
+// The remesher's quads as the result mesh: two consecutive triangles per quad (quad marks as in validatePairs), split
+// along the shorter diagonal, with the input's normals, colours and nearest welded vertex where each vertex sits.
+// A vertex whose faces lie on different materials gets one copy per material.
+// plane: the mirror plane, whose vertices must not make up a whole triangle (mirroring would drop it).
+function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null) {
+  const nv = rq.positions.length / 3, F = rq.faceCount, faces = rq.faces, BI = base.index, P = rq.positions;
+  const hitT = rq.hit.tri, bc = rq.hit.bary;
+  const near = new Int32Array(nv), nOrig = new Float32Array(nv * 3), nSmooth = new Float32Array(nv * 3);
+  const col = base.colors ? new Float32Array(nv * 3) : null;
+  for (let v = 0; v < nv; v++) {
+    const t = hitT[v];
+    if (t < 0) continue;
+    const ia = BI[t * 3], ib = BI[t * 3 + 1], ic = BI[t * 3 + 2], wa = bc[v * 3], wb = bc[v * 3 + 1], wc = bc[v * 3 + 2];
+    near[v] = wa >= wb && wa >= wc ? ia : wb >= wc ? ib : ic;
+    for (let k = 0; k < 3; k++) {
+      nOrig[v * 3 + k] = base.normals[ia * 3 + k] * wa + base.normals[ib * 3 + k] * wb + base.normals[ic * 3 + k] * wc;
+      nSmooth[v * 3 + k] = smooth[ia * 3 + k] * wa + smooth[ib * 3 + k] * wb + smooth[ic * 3 + k] * wc;
+      if (col) col[v * 3 + k] = base.colors[ia * 3 + k] * wa + base.colors[ib * 3 + k] * wb + base.colors[ic * 3 + k] * wc;
+    }
+  }
+  const copyOf = new Map(), srcV = [], mats = [];
+  const vid = (v, m) => {
+    const key = v * 65536 + m;
+    let o = copyOf.get(key);
+    if (o === undefined) { o = srcV.length; copyOf.set(key, o); srcV.push(v); mats.push(m); }
+    return o;
+  };
+  const d2 = (a, b) => (P[a * 3] - P[b * 3]) ** 2 + (P[a * 3 + 1] - P[b * 3 + 1]) ** 2 + (P[a * 3 + 2] - P[b * 3 + 2]) ** 2;
+  const off32 = plane ? Math.fround(plane.offset) : 0;
+  const onPlane = v => plane && P[v * 3 + plane.axis] === off32;
+  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane.
+  const alongAC = (a, b, c, d) => {
+    const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
+    const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
+    if (acFlat !== bdFlat) return bdFlat;
+    return d2(a, c) <= d2(b, d);
+  };
+  const tris = [], marks = [];
+  let quads = 0;
+  for (let f = 0; f < F; f++) {
+    const t = rq.faceTri[f], a = faces[f * 4], b = faces[f * 4 + 1], c = faces[f * 4 + 2], d = faces[f * 4 + 3];
+    const m = t >= 0 ? triMat[t] : base.vMat[near[a]];
+    if (d === QUAD_NONE) { tris.push(vid(a, m), vid(b, m), vid(c, m)); marks.push(0); continue; }
+    if (alongAC(a, b, c, d)) tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m));
+    else tris.push(vid(b, m), vid(c, m), vid(d, m), vid(b, m), vid(d, m), vid(a, m));
+    marks.push(1, 2);
+    quads++;
+  }
+  const n = srcV.length;
+  let positions = new Float32Array(n * 3), normals = new Float32Array(n * 3), colors = col ? new Float32Array(n * 3) : null;
+  let srcId = new Uint32Array(n), vPart = new Uint16Array(n), vMat = new Uint16Array(n), uvs = null;
+  const pick = fopt.normals === 'smooth' ? nSmooth : nOrig;
+  for (let o = 0; o < n; o++) {
+    const v = srcV[o];
+    for (let k = 0; k < 3; k++) { positions[o * 3 + k] = P[v * 3 + k]; normals[o * 3 + k] = pick[v * 3 + k]; }
+    const l = Math.hypot(normals[o * 3], normals[o * 3 + 1], normals[o * 3 + 2]) || 1;
+    for (let k = 0; k < 3; k++) normals[o * 3 + k] /= l;
+    if (colors) for (let k = 0; k < 3; k++) colors[o * 3 + k] = Math.min(1, Math.max(0, col[v * 3 + k]));
+    srcId[o] = welded(near[v]);
+    vPart[o] = base.vPart[near[v]];
+    vMat[o] = mats[o];
+  }
+  let index = Uint32Array.from(tris);
+  const quad = Uint8Array.from(marks);
+  if (fopt.normals === 'smooth') normals = leanToSurface(normals, positions, index);
+  else if (fopt.normals === 'crease') {
+    ({ positions, normals, uvs, colors, srcId, index, vPart, vMat } = creased(positions, normals, null, colors, srcId, index, vPart, vMat, fopt.creaseAngle ?? 60, quad));
+  }
+  return { mesh: { positions, normals, uvs, colors, srcId, index, quad, vPart, vMat, vertexCount: positions.length / 3, triCount: index.length / 3 }, quads };
+}
+
+const countQuads = res => { let n = 0; for (let t = 0; t < res.quad.length; t++) if (res.quad[t] === 1) n++; return n; };
+
+// Vertices where other than four edges meet, not counting open borders; vertices at one position count once.
+export function quadPoles(res) {
+  const P = res.positions, V = res.vertexCount, idx = res.index;
+  const bits = new Int32Array(P.buffer, P.byteOffset, V * 3);
+  const g = groupBy(V, 3, (i, o) => { o[0] = bits[i * 3]; o[1] = bits[i * 3 + 1]; o[2] = bits[i * 3 + 2]; });
+  const G = g.count, edges = new Map();
+  const add = (a, b) => {
+    a = g.group[a]; b = g.group[b];
+    if (a === b) return;
+    const key = a < b ? a * G + b : b * G + a;
+    edges.set(key, (edges.get(key) || 0) + 1);
+  };
+  for (let t = 0; t < idx.length / 3; t++) {
+    const q = res.quad && res.quad[t] === 1 ? quadCorners(idx, t) : null;
+    if (q) { for (let k = 0; k < 4; k++) add(q[k], q[(k + 1) % 4]); t++; continue; }
+    for (let k = 0; k < 3; k++) add(idx[t * 3 + k], idx[t * 3 + ((k + 1) % 3)]);
+  }
+  const deg = new Int32Array(G), border = new Uint8Array(G);
+  for (const [key, c] of edges) {
+    const a = Math.floor(key / G), b = key - a * G;
+    deg[a]++; deg[b]++;
+    if (c === 1) border[a] = border[b] = 1;
+  }
+  let count = 0, inner = 0;
+  for (let v = 0; v < G; v++) {
+    if (!deg[v] || border[v]) continue;
+    inner++;
+    if (deg[v] !== 4) count++;
+  }
+  return { count, inner };
+}
+
+// Rebuilds the surface as quads (st.targetTris / 2 of them). Under symmetry the kept half is remeshed with its cut
+// held on the plane as an edge loop, and mirrored. Painted regions set the local density.
+function remeshVariant(S, ctx, labels, st, fopt, progress) {
+  const t0 = Date.now(), geo = geometryOf(ctx), sym = st.symmetry;
+  let base = geo.mesh, toGeo = null, triMat = geo.triMat, smooth = geo.mesh.smooth;
+  if (sym) {
+    const H = halfFor(geo, sym);
+    if (!H.triMat) {
+      H.triMat = new Uint16Array(H.triSrc.length);
+      for (let t = 0; t < H.triSrc.length; t++) H.triMat[t] = geo.triMat[H.triSrc[t]];
+      H.smooth = new Float32Array(H.mesh.vertexCount * 3);
+      for (let v = 0; v < H.mesh.vertexCount; v++) for (let k = 0; k < 3; k++) H.smooth[v * 3 + k] = geo.mesh.smooth[H.origOf[v] * 3 + k];
+    }
+    base = H.mesh; toGeo = H.origOf; triMat = H.triMat; smooth = H.smooth;
+  }
+  const welded = v => geo.rep[toGeo ? toGeo[v] : v];
+  const V = base.vertexCount, quads = Math.max(8, Math.round(st.targetTris / 2 / (sym ? 2 : 1)));
+  let index = base.index;
+  if (st.prune && S) index = S.simplifyPrune(index, base.positions, 3, PRUNE_SIZE);
+  let density = null;
+  if (labels) {
+    density = new Float32Array(V);
+    let any = false;
+    for (let v = 0; v < V; v++) { const l = labels[welded(v)]; density[v] = QUAD_DENSITY[l] ?? 1; if (l) any = true; }
+    if (!any) density = null;
+  }
+  density = pieceDensity({ positions: base.positions, index, vertexCount: V }, density, quads);
+  const rq = remeshQuads({ positions: base.positions, index, normals: smooth }, {
+    targetFaces: quads, density, plane: sym ? { axis: sym.axis, offset: Math.fround(sym.offset) } : null, progress,
+  });
+  // Triangles the prune dropped don't exist for the lookups either.
+  const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym);
+  let result = surf.mesh, symmetry = null;
+  if (sym) {
+    result = mirrorMerge(result, sym);
+    symmetry = checkSymmetry(result, sym);
+    symmetry.seamVertices = result.seamVertices;
+  }
+  const faceLabels = labels ? Int8Array.from(result.srcId, s => labels[s]) : null;
+  const cat = categorize(result.index, faceLabels);
+  return {
+    result,
+    info: {
+      error: 0, ms: Date.now() - t0, target: st.targetTris, tris: result.triCount, verts: result.vertexCount, quads: countQuads(result),
+      keepCount: 0, cat, symmetry, atlas: null, remesh: rq.stats, poles: quadPoles(result),
+    },
+  };
+}
+
 // Past this share of misplaced texels, Auto gives the reduced mesh new UVs.
 export const AUTO_UV_LIMIT = 0.03;
 
 // One entry point for the worker and the main-thread fallback. ctx caches the cut half per plane,
 // the UV-free variant of the mesh and the texel ownership of the original UVs.
 // st.uvMode: 'keep' keeps the original UVs, 'new' reduces without UV seams and unwraps, 'auto' picks per result.
-export function runReduction(S, ctx, labels, st, fopt) {
+// st.topology 'quads' remeshes into quads instead; their UVs are always new (made later when st.deferUV).
+export function runReduction(S, ctx, labels, st, fopt, progress = null) {
+  if (st.topology === 'quads') {
+    const out = remeshVariant(S, ctx, labels, st, fopt, progress);
+    if (ctx.mesh.uvs) {
+      if (st.deferUV) out.result.uvLayout = 'pending';
+      else {
+        const u = unwrapResult(out.result, st.symmetry, labels, st.bakeSize || 1024);
+        out.result = u.result;
+        out.info.atlas = u.atlas;
+      }
+    }
+    return out;
+  }
   const mode = ctx.mesh.uvs ? st.uvMode || 'keep' : 'keep';
   const kept = () => {
     const out = reduceVariant(S, ctx, labels, st, fopt, null);

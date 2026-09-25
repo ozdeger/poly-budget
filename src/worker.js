@@ -11,6 +11,7 @@ self.onmessage = async ({ data }) => {
       const transfer = [r.positions.buffer, r.normals.buffer, r.index.buffer, r.vPart.buffer, r.vMat.buffer, r.srcId.buffer, r.uvs.buffer];
       if (r.twin) transfer.push(r.twin.buffer);
       if (r.colors) transfer.push(r.colors.buffer);
+      if (r.quad) transfer.push(r.quad.buffer);
       self.postMessage({ type: 'unwrapped', id: data.id, ...out }, transfer);
       return;
     }
@@ -36,11 +37,20 @@ self.onmessage = async ({ data }) => {
       return;
     }
     if (data.type === 'reduce') {
-      const { result, info } = runReduction(MeshoptSimplifier, ctx, data.labels, data.settings, data.finalize);
+      // Remeshing takes seconds, so it reports how far it got (at most every 100 ms).
+      let last = 0;
+      const progress = (stage, frac) => {
+        const now = Date.now();
+        if (now - last < 100) return;
+        last = now;
+        self.postMessage({ type: 'progress', id: data.id, stage, frac });
+      };
+      const { result, info } = runReduction(MeshoptSimplifier, ctx, data.labels, data.settings, data.finalize, progress);
       const transfer = [result.positions.buffer, result.normals.buffer, result.index.buffer, result.vPart.buffer, result.vMat.buffer, result.srcId.buffer];
       if (result.twin) transfer.push(result.twin.buffer);
       if (result.uvs) transfer.push(result.uvs.buffer);
       if (result.colors) transfer.push(result.colors.buffer);
+      if (result.quad) transfer.push(result.quad.buffer);
       self.postMessage({ type: 'reduced', id: data.id, result, info }, transfer);
     }
   } catch (err) {
