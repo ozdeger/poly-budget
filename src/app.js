@@ -1581,6 +1581,12 @@ function pick(clientX, clientY) {
 }
 
 function brushRadius() { return (state.diag * settings.brush) / 100; }
+// Brush size in % of the model's size. The slider runs on a log scale so the small sizes get most of its length, and
+// sizes are kept to 0.1 below 3%, 0.5 below 10% and whole numbers above.
+const BRUSH_MIN = 0.5, BRUSH_MAX = 30;
+const roundBrush = b => { const c = Math.min(BRUSH_MAX, Math.max(BRUSH_MIN, b)); return c < 3 ? Math.round(c * 10) / 10 : c < 10 ? Math.round(c * 2) / 2 : Math.round(c); };
+const brushFromSlider = v => roundBrush(BRUSH_MIN * Math.pow(BRUSH_MAX / BRUSH_MIN, Number(v) / 1000));
+const sliderFromBrush = b => Math.round((1000 * Math.log(b / BRUSH_MIN)) / Math.log(BRUSH_MAX / BRUSH_MIN));
 function paintValue() {
   switch (settings.tool) {
     case 'more': return settings.strength;
@@ -3170,7 +3176,8 @@ function syncControls() {
   $('optName').textContent = name;
   $('optName').dataset.tool = settings.tool;
   $('optSize').hidden = settings.mode === 'fill';
-  $('brushSize').value = String(settings.brush);
+  // While the slider is held it keeps its own position; its readout still follows.
+  if (document.activeElement !== $('brushSize')) $('brushSize').value = String(sliderFromBrush(settings.brush));
   $('brushOut').textContent = `${settings.brush}%`;
   $('maxErr').value = String(settings.maxError);
   $('optPos').checked = settings.optimizePositions;
@@ -3329,7 +3336,8 @@ $('symOffNum').addEventListener('change', e => {
   const v = Number(e.target.value);
   if (Number.isFinite(v)) setPlaneOffset(v);
 });
-bindRange('brushSize', 'brush', () => {});
+$('brushSize').addEventListener('input', e => { settings.brush = brushFromSlider(e.target.value); syncControls(); });
+$('brushSize').addEventListener('change', () => saveSettings());
 bindRange('creaseAngle', 'creaseAngle', () => scheduleReduce(60));
 bindRange('normalWeight', 'normalWeight', () => scheduleReduce(60));
 bindRange('uvWeight', 'uvWeight', () => scheduleReduce(60));
@@ -3452,9 +3460,11 @@ window.addEventListener('keydown', e => {
   else if (k === 'w') { settings.wire = !settings.wire; applyDisplaySettings(); }
   else if (k === 'u') { setUVOpen(!settings.uvOpen); return; }
   else if (k === '1' || k === '2' || k === '3') { settings.view = ['split', 'original', 'reduced'][Number(k) - 1]; requestRender(); }
-  else if (k === '[' || k === ']') settings.brush = Math.min(30, Math.max(0.5, settings.brush * (k === ']' ? 1.2 : 1 / 1.2)));
-  else return;
-  settings.brush = Math.round(settings.brush * 2) / 2;
+  else if (k === '[' || k === ']') {
+    // One step up or down in the brush's own rounding, even where 20% of the size rounds back to the same value.
+    const next = roundBrush(settings.brush * (k === ']' ? 1.2 : 1 / 1.2));
+    settings.brush = next !== settings.brush ? next : roundBrush(settings.brush + (k === ']' ? 0.1 : -0.1));
+  } else return;
   syncControls();
   saveSettings();
 });
