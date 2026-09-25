@@ -306,7 +306,6 @@ function simplifierFlags(st) {
   if (st.regularize === 2) flags.push('Regularize');
   if (st.lockBorder) flags.push('LockBorder');
   if (st.permissive) flags.push('Permissive');
-  if (st.prune) flags.push('Prune');
   return flags;
 }
 
@@ -316,6 +315,9 @@ function concatIndex(a, b) {
   out.set(b, a.length);
   return out;
 }
+
+// Remove tiny floating parts: pieces smaller than this share of the model's size.
+export const PRUNE_SIZE = 0.01;
 
 // Region-aware reduction. labels: Int8Array per vertex (LABEL values).
 // st.seam (under symmetry): vertices on the mirror plane. They are the cut half's border but not a real one, so they stay
@@ -337,6 +339,9 @@ export function reduce(S, mesh, packed, labels, st) {
   if (packed.uvOff > 0) weights.push(st.uvWeight, st.uvWeight);
   if (packed.colOff > 0) weights.push(st.uvWeight, st.uvWeight, st.uvWeight);
   let index = mesh.index;
+  // Tiny floating parts go first, by their size alone. The simplifier's own Prune option cuts at the error limit, and
+  // with no limit it removes whole pieces, the model itself included, when it can't otherwise reach the budget.
+  if (st.prune) index = S.simplifyPrune(index, positions, 3, PRUNE_SIZE);
   const present = new Set();
   if (labels) for (let i = 0; i < V; i++) if (labels[i]) present.add(labels[i]);
   const regionTris = {};
@@ -468,6 +473,35 @@ function creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, ang
   return { positions: P, normals: N, uvs: UV, colors: COL, srcId: SRC, index: idx, vPart: pP, vMat: pM };
 }
 
+// Normals for a reduced mesh from the smooth normals of the dense surface it came from (srcId: the source vertex of each
+// vertex), so shading follows the original rather than the reduced triangles. Where the reduced surface turns far from
+// that normal, in very coarse areas, the normal leans back toward the reduced surface's own.
+function surfaceNormals(smooth, srcId, positions, index) {
+  const V = srcId.length, out = new Float32Array(V * 3), own = computeSmoothNormals(positions, index);
+  const cosLimit = Math.cos((75 * Math.PI) / 180);
+  for (let v = 0; v < V; v++) {
+    const s = srcId[v] * 3, o = v * 3;
+    let x = smooth[s], y = smooth[s + 1], z = smooth[s + 2];
+    const d = x * own[o] + y * own[o + 1] + z * own[o + 2];
+    if (d < cosLimit) {
+      const t = Math.min(1, (cosLimit - d) / (cosLimit + 1));
+      x += (own[o] - x) * t; y += (own[o + 1] - y) * t; z += (own[o + 2] - z) * t;
+    }
+    const l = Math.hypot(x, y, z) || 1;
+    out[o] = x / l; out[o + 1] = y / l; out[o + 2] = z / l;
+  }
+  return out;
+}
+
+// Smooth normals of a mesh's own surface, worked out once per mesh.
+const smoothCache = new WeakMap();
+function smoothNormalsOf(mesh) {
+  let n = smoothCache.get(mesh);
+  if (!n) smoothCache.set(mesh, (n = computeSmoothNormals(mesh.positions, mesh.index)));
+  return n;
+}
+
+// opt.smooth: smooth normals of `mesh`'s dense surface, per vertex of `mesh`, for the 'smooth' mode.
 export function finalize(mesh, red, opt = {}) {
   const src = red.index, pos = red.positions, attrs = red.attrs, stride = red.stride, uvOff = red.uvOff, colOff = red.colOff;
   const V = pos.length / 3;
@@ -494,7 +528,7 @@ export function finalize(mesh, red, opt = {}) {
   let index = new Uint32Array(src.length);
   for (let k = 0; k < src.length; k++) index[k] = remap[src[k]];
   if (opt.normals === 'smooth') {
-    normals = computeSmoothNormals(positions, index);
+    normals = opt.smooth ? surfaceNormals(opt.smooth, srcId, positions, index) : computeSmoothNormals(positions, index);
   } else if (opt.normals === 'crease') {
     ({ positions, normals, uvs, colors, srcId, index, vPart, vMat } = creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, opt.creaseAngle ?? 60));
   }
@@ -1862,7 +1896,7 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   };
   if (!sym) {
     const red = reduce(S, c.mesh, c.packed, labels, st);
-    const u = flatten(finalize(c.mesh, red, fopt));
+    const u = flatten(finalize(c.mesh, red, { ...fopt, smooth: fopt.normals === 'smooth' ? smoothNormalsOf(c.mesh) : null }));
     return { result: u.mesh, info: { error: red.error, ms: Date.now() - t0, target: red.target, tris: u.mesh.triCount, verts: u.mesh.vertexCount, keepCount: red.keepCount, cat: categorize(red.index, labels), symmetry: null, atlas: u.info } };
   }
   const H = halfFor(c, sym);
@@ -1876,7 +1910,13 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, seam: H.onPlane, border: st.lockBorder ? H.border : null });
   const axis = sym.axis, off32 = Math.fround(sym.offset);
   for (let v = 0; v < H.onPlane.length; v++) if (H.onPlane[v]) red.positions[v * 3 + axis] = off32;
-  const fin = finalize(H.mesh, red, fopt);
+  // The half's smooth normals come from the whole surface, so vertices on the plane see both sides.
+  if (fopt.normals === 'smooth' && !H.smooth) {
+    const full = smoothNormalsOf(c.mesh);
+    H.smooth = new Float32Array(H.mesh.vertexCount * 3);
+    for (let v = 0; v < H.mesh.vertexCount; v++) for (let k = 0; k < 3; k++) H.smooth[v * 3 + k] = full[H.origOf[v] * 3 + k];
+  }
+  const fin = finalize(H.mesh, red, { ...fopt, smooth: fopt.normals === 'smooth' ? H.smooth : null });
   for (let v = 0; v < fin.srcId.length; v++) fin.srcId[v] = H.origOf[fin.srcId[v]];
   const u = flatten(fin);
   const full = mirrorMerge(u.mesh, sym);
