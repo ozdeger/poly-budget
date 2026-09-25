@@ -444,8 +444,17 @@ details.more[open] > summary { margin-bottom: 8px; }
 .pair.bad b { color: var(--crit); }
 
 /* ---------- stage ---------- */
-.stage { grid-area: stage; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+.stage {
+  grid-area: stage;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "bar bar" "view uv";
+  min-width: 0;
+  min-height: 0;
+}
 .stagebar {
+  grid-area: bar;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -471,7 +480,44 @@ details.more[open] > summary { margin-bottom: 8px; }
 .tbtn:hover { border-color: var(--muted); }
 .tbtn[aria-pressed="true"], .tbtn[aria-expanded="true"] { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); }
 .tbtn kbd { margin-left: 1px; }
-.viewport { position: relative; min-height: 0; background: var(--viewport); overflow: hidden; }
+.viewport { grid-area: view; position: relative; min-height: 0; background: var(--viewport); overflow: hidden; }
+
+/* ---------- texture & UV drawer ---------- */
+.uvdrawer {
+  grid-area: uv;
+  position: relative;
+  width: var(--uvw, 420px);
+  max-width: calc(100vw - var(--side) - 260px);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+.uv-grip { position: absolute; left: -5px; top: 0; bottom: 0; width: 9px; z-index: 3; cursor: col-resize; touch-action: none; }
+.uv-grip::after { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px; background: transparent; transition: background 0.12s; }
+.uv-grip:hover::after, .uv-grip.drag::after, .uv-grip:focus-visible::after { background: var(--accent); width: 2px; left: 3px; }
+.uv-grip:focus-visible { outline: none; }
+.uv-head { display: flex; align-items: center; gap: 8px; padding: 10px 8px 0 14px; }
+.uv-head h2 { margin: 0; font: 600 11px/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
+.icon-btn { flex: none; display: grid; place-items: center; width: 28px; height: 28px; margin-left: auto; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.icon-btn:hover { background: var(--raise); color: var(--text); }
+.uv-bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px 12px; border-bottom: 1px solid var(--line); }
+.uv-bar select { flex: 1 1 130px; }
+.uv-bar .seg { flex: none; }
+.uv-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--viewport); }
+.uv-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.uv-pane { position: absolute; cursor: grab; touch-action: none; }
+.uv-pane.drag { cursor: grabbing; }
+.uv-pane .vlabel { top: 10px; left: 10px; }
+.uv-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; color: var(--muted); font-size: 12px; text-align: center; pointer-events: none; }
+.uv-msg.busy::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--accent); vertical-align: middle; animation: pulse 0.9s ease-in-out infinite; }
+.uv-sep { position: absolute; background: var(--line-strong); pointer-events: none; }
+.uv-foot { display: flex; gap: 12px; padding: 7px 14px; border-top: 1px solid var(--line); font: 11px/1.4 var(--font-num); color: var(--muted); white-space: nowrap; overflow: hidden; }
+.uv-foot span { overflow: hidden; text-overflow: ellipsis; }
+.linkbtn { margin-left: auto; padding: 0; border: 0; background: none; color: var(--accent); font: 500 12px/1.2 var(--font-ui); cursor: pointer; }
+.linkbtn:hover { text-decoration: underline; }
 .viewport canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .vlabel {
   position: absolute;
@@ -648,6 +694,9 @@ details.more[open] > summary { margin-bottom: 8px; }
   .stagebar { padding-inline: 12px; }
   .toolopts { left: 60px; right: 10px; transform: none; max-width: none; }
   .viewport { height: 58vh; min-height: 320px; }
+  .stage { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "view" "uv"; }
+  .uvdrawer { width: auto; max-width: none; height: min(170vw, 900px); border-left: 0; border-top: 1px solid var(--line); }
+  .uv-grip { display: none; }
   .side { border-right: 0; overflow: visible; }
 }
 @media (max-width: 600px) {
@@ -660,7 +709,7 @@ details.more[open] > summary { margin-bottom: 8px; }
   .open-label { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .pill.busy::before, .status-line.busy::before { animation: none; }
+  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .pill.busy::before, .status-line.busy::before, .uv-msg.busy::before { animation: none; }
   .hint { transition: none; }
 }
 </style>
@@ -739,7 +788,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       <ul class="mats" id="texList"></ul>
       <input type="file" id="texInput" multiple hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
       <input type="file" id="texOneInput" hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
-      <div class="field"><span>UV mapping</span>
+      <div class="field"><span>UV mapping<button type="button" class="linkbtn" id="uvViewLink" title="Show the textures with their UV layouts (U)">View the layout</button></span>
         <div class="seg fill" role="group" aria-label="UV mapping" id="uvModeSeg">
           <button type="button" data-uvmode="auto" title="Keep the original UVs while they still fit the texture, otherwise make new ones">Auto</button><button type="button" data-uvmode="keep" title="Always keep the original UVs">Original UVs</button><button type="button" data-uvmode="new" title="Always make new UVs and bake the texture onto them">New UVs</button>
         </div>
@@ -831,6 +880,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
       <button type="button" class="tbtn" id="wireBtn" aria-pressed="false" title="Show the triangle edges (W)" aria-label="Wireframe"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12h16M12 4v16M4 12l8-8M12 20l8-8"/></svg><span class="t-label">Wireframe</span><kbd>W</kbd></button>
       <span class="spacer"></span>
+      <button type="button" class="tbtn" id="uvBtn" aria-expanded="false" aria-controls="uvDrawer" title="Show the textures with their UV layouts (U)" aria-label="Texture and UVs"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M7.5 7.5h4v4h-4zM13.5 16.5l3-5 2 5z"/></svg><span class="t-label">Texture &amp; UVs</span><kbd>U</kbd></button>
       <button type="button" class="tbtn" id="frameBtn" title="Fit the model in the view" aria-label="Frame the model"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span class="t-label">Frame</span></button>
     </div>
     <div class="viewport" id="viewport">
@@ -875,6 +925,30 @@ details.more[open] > summary { margin-bottom: 8px; }
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <div class="drop" id="drop" hidden><div>Drop a model with its textures, or textures for the open model</div></div>
     </div>
+    <aside class="uvdrawer" id="uvDrawer" aria-labelledby="hUVView" hidden>
+      <div class="uv-grip" id="uvGrip" role="separator" aria-orientation="vertical" aria-label="Resize the texture panel" tabindex="0"></div>
+      <div class="uv-head">
+        <h2 id="hUVView">Texture &amp; UVs</h2>
+        <button type="button" class="icon-btn" id="uvClose" title="Close (U)" aria-label="Close the texture panel"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <div class="uv-bar">
+        <select class="input" id="uvMat" aria-label="Material"></select>
+        <select class="input" id="uvSlot" aria-label="Texture map"></select>
+        <div class="seg" role="group" aria-label="UV lines" id="uvLinesSeg">
+          <button type="button" data-lines="none" title="The texture alone">None</button><button type="button" data-lines="seams" title="Only the island borders">Seams</button><button type="button" data-lines="all" title="Every triangle edge, with the island borders stronger">All</button>
+        </div>
+        <div class="seg" role="group" aria-label="Panes" id="uvPanesSeg">
+          <button type="button" data-panes="both">Both</button><button type="button" data-panes="A">Original</button><button type="button" data-panes="B">Reduced</button>
+        </div>
+      </div>
+      <div class="uv-stage" id="uvStage">
+        <canvas id="uvCanvas" aria-label="Texture with its UV layout"></canvas>
+        <div class="uv-pane" id="uvPaneA" data-pane="A"><div class="vlabel"><b>Original</b><span id="uvLabelA"></span></div><div class="uv-msg" id="uvMsgA" hidden></div></div>
+        <div class="uv-pane" id="uvPaneB" data-pane="B"><div class="vlabel"><b>Reduced</b><span id="uvLabelB"></span></div><div class="uv-msg" id="uvMsgB" hidden></div></div>
+        <div class="uv-sep" id="uvSep" hidden></div>
+      </div>
+      <div class="uv-foot" id="uvFoot"><span>Scroll to zoom · drag to pan · double-click to fit</span></div>
+    </aside>
   </main>
 </div>
 
@@ -1847,6 +1921,67 @@ function measureUVFit(ctx, result) {
   }
   const m = uvMisplaced(ctx.own, ctx.mesh.uvIsland, result.uvs, result.index, result.srcId);
   return { misplaced: Math.max(0, (m - ctx.ownBase) / Math.max(1e-6, 1 - ctx.ownBase)), raw: m, base: ctx.ownBase, ms: Date.now() - t0 };
+}
+
+// A mesh's layout in UV space, for drawing it: every edge once, and the seams (edges only one triangle uses: UV island
+// borders and open borders), as pairs of vertex indices into mesh.uvs. Vertices at the same place with the same UV
+// count as one, so an edge that is only split for its normals isn't taken for a seam, while islands that are stacked
+// in UV space (mirrored halves) keep their own borders. keep(t) picks triangles; triEnd stops early (a mirrored
+// result's own half).
+function uvEdges(mesh, keep = null, triEnd = mesh.index.length / 3) {
+  const f32 = a => (a instanceof Float32Array ? a : Float32Array.from(a));
+  const P = f32(mesh.positions), UV = f32(mesh.uvs), idx = mesh.index, V = UV.length / 2;
+  const pb = new Int32Array(P.buffer, P.byteOffset, P.length), ub = new Int32Array(UV.buffer, UV.byteOffset, UV.length);
+  const { group, count: G } = groupBy(V, 5, (i, out) => {
+    out[0] = ub[i * 2]; out[1] = ub[i * 2 + 1]; out[2] = pb[i * 3]; out[3] = pb[i * 3 + 1]; out[4] = pb[i * 3 + 2];
+  });
+  const rep = new Int32Array(G).fill(-1);
+  for (let i = 0; i < V; i++) if (rep[group[i]] < 0) rep[group[i]] = i;
+  // Half-edges bucketed by their lower end, then sorted within each (small) bucket so equal edges sit together.
+  const start = new Uint32Array(G + 1);
+  const visit = fn => {
+    for (let t = 0; t < triEnd; t++) {
+      if (keep && !keep(t)) continue;
+      for (let k = 0; k < 3; k++) {
+        const a = group[idx[t * 3 + k]], b = group[idx[t * 3 + ((k + 1) % 3)]];
+        if (a !== b) fn(a < b ? a : b, a < b ? b : a);
+      }
+    }
+  };
+  visit(lo => { start[lo + 1]++; });
+  for (let g = 0; g < G; g++) start[g + 1] += start[g];
+  const hi = new Uint32Array(start[G]), fill = start.slice(0, G);
+  visit((lo, h) => { hi[fill[lo]++] = h; });
+  let edges = 0, seams = 0;
+  for (let g = 0; g < G; g++) {
+    const s = start[g], e = start[g + 1];
+    for (let i = s + 1; i < e; i++) {
+      const x = hi[i];
+      let j = i - 1;
+      while (j >= s && hi[j] > x) { hi[j + 1] = hi[j]; j--; }
+      hi[j + 1] = x;
+    }
+    for (let i = s; i < e;) {
+      let j = i + 1;
+      while (j < e && hi[j] === hi[i]) j++;
+      edges++;
+      if (j - i === 1) seams++;
+      i = j;
+    }
+  }
+  const E = new Uint32Array(edges * 2), S = new Uint32Array(seams * 2);
+  let ne = 0, ns = 0;
+  for (let g = 0; g < G; g++) {
+    const e = start[g + 1];
+    for (let i = start[g]; i < e;) {
+      let j = i + 1;
+      while (j < e && hi[j] === hi[i]) j++;
+      E[ne++] = rep[g]; E[ne++] = rep[hi[i]];
+      if (j - i === 1) { S[ns++] = rep[g]; S[ns++] = rep[hi[i]]; }
+      i = j;
+    }
+  }
+  return { edges: E, seams: S };
 }
 
 // Merges welded vertices that differ only by UV, so reduction can ignore the old UV seams.
@@ -3821,6 +3956,67 @@ function measureUVFit(ctx, result) {
   return { misplaced: Math.max(0, (m - ctx.ownBase) / Math.max(1e-6, 1 - ctx.ownBase)), raw: m, base: ctx.ownBase, ms: Date.now() - t0 };
 }
 
+// A mesh's layout in UV space, for drawing it: every edge once, and the seams (edges only one triangle uses: UV island
+// borders and open borders), as pairs of vertex indices into mesh.uvs. Vertices at the same place with the same UV
+// count as one, so an edge that is only split for its normals isn't taken for a seam, while islands that are stacked
+// in UV space (mirrored halves) keep their own borders. keep(t) picks triangles; triEnd stops early (a mirrored
+// result's own half).
+function uvEdges(mesh, keep = null, triEnd = mesh.index.length / 3) {
+  const f32 = a => (a instanceof Float32Array ? a : Float32Array.from(a));
+  const P = f32(mesh.positions), UV = f32(mesh.uvs), idx = mesh.index, V = UV.length / 2;
+  const pb = new Int32Array(P.buffer, P.byteOffset, P.length), ub = new Int32Array(UV.buffer, UV.byteOffset, UV.length);
+  const { group, count: G } = groupBy(V, 5, (i, out) => {
+    out[0] = ub[i * 2]; out[1] = ub[i * 2 + 1]; out[2] = pb[i * 3]; out[3] = pb[i * 3 + 1]; out[4] = pb[i * 3 + 2];
+  });
+  const rep = new Int32Array(G).fill(-1);
+  for (let i = 0; i < V; i++) if (rep[group[i]] < 0) rep[group[i]] = i;
+  // Half-edges bucketed by their lower end, then sorted within each (small) bucket so equal edges sit together.
+  const start = new Uint32Array(G + 1);
+  const visit = fn => {
+    for (let t = 0; t < triEnd; t++) {
+      if (keep && !keep(t)) continue;
+      for (let k = 0; k < 3; k++) {
+        const a = group[idx[t * 3 + k]], b = group[idx[t * 3 + ((k + 1) % 3)]];
+        if (a !== b) fn(a < b ? a : b, a < b ? b : a);
+      }
+    }
+  };
+  visit(lo => { start[lo + 1]++; });
+  for (let g = 0; g < G; g++) start[g + 1] += start[g];
+  const hi = new Uint32Array(start[G]), fill = start.slice(0, G);
+  visit((lo, h) => { hi[fill[lo]++] = h; });
+  let edges = 0, seams = 0;
+  for (let g = 0; g < G; g++) {
+    const s = start[g], e = start[g + 1];
+    for (let i = s + 1; i < e; i++) {
+      const x = hi[i];
+      let j = i - 1;
+      while (j >= s && hi[j] > x) { hi[j + 1] = hi[j]; j--; }
+      hi[j + 1] = x;
+    }
+    for (let i = s; i < e;) {
+      let j = i + 1;
+      while (j < e && hi[j] === hi[i]) j++;
+      edges++;
+      if (j - i === 1) seams++;
+      i = j;
+    }
+  }
+  const E = new Uint32Array(edges * 2), S = new Uint32Array(seams * 2);
+  let ne = 0, ns = 0;
+  for (let g = 0; g < G; g++) {
+    const e = start[g + 1];
+    for (let i = start[g]; i < e;) {
+      let j = i + 1;
+      while (j < e && hi[j] === hi[i]) j++;
+      E[ne++] = rep[g]; E[ne++] = rep[hi[i]];
+      if (j - i === 1) { S[ns++] = rep[g]; S[ns++] = rep[hi[i]]; }
+      i = j;
+    }
+  }
+  return { edges: E, seams: S };
+}
+
 // Merges welded vertices that differ only by UV, so reduction can ignore the old UV seams.
 function stripUVs(mesh, hardAngle = 30) {
   const P = mesh.positions, N = mesh.normals, V = mesh.vertexCount, idx = mesh.index;
@@ -4879,6 +5075,7 @@ const DEFAULTS = {
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, sections: {},
+  uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
 };
 const settings = { ...DEFAULTS };
 // Only settings the tool still has are read back, so options removed since they were saved drop out.
@@ -5001,6 +5198,7 @@ function applyTheme() {
   }
   if (state.labels) recolorAll();
   requestRender();
+  uvThemeChanged();
 }
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
 new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -5751,6 +5949,7 @@ function updateTexturePanel() {
     return el('li', {}, el('span', { className: 'mat-name', textContent: m.name || `Material ${i + 1}`, title: m.name || '' }), el('div', { className: 'tiles' }, ...tiles));
   });
   list.replaceChildren(...rows);
+  refreshUVView();
 }
 
 // ---------- texture bake for new UVs ----------
@@ -6269,6 +6468,7 @@ function buildReducedDisplay(res) {
   display.R.srcId = res.srcId;
   recolorReduced();
   applyDisplaySettings();
+  refreshUVView();
 }
 
 function applyDisplaySettings() {
@@ -7058,6 +7258,7 @@ function updateUVPanel() {
   $('uvHead').textContent = st[1];
   $('uvNote').textContent = st[2];
   $('uvNote').hidden = !st[2];
+  refreshUVView();
 }
 
 let busyTimer = 0;
@@ -7412,6 +7613,392 @@ function paintSample() {
   recolorAll();
 }
 
+// ---------- texture & UV panel ----------
+// A drawer beside the view shows one texture of the open tab with its UV layout drawn over it: the original model on
+// one pane, the reduced result on the other. It has its own small WebGL renderer and draws only when something changes.
+// Textures show their stored values (no tone mapping or colour conversion), magnified texels stay square.
+const UV_TEX_VS = /* glsl */'varying vec2 vUv; void main() { vUv = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy, 0.0, 1.0); }';
+const UV_TEX_FS = /* glsl */`
+uniform sampler2D map;
+uniform mat3 uvTransform;
+uniform bool hasMap;
+uniform vec3 checkA;
+uniform vec3 checkB;
+uniform vec3 outside;
+uniform float cell;
+varying vec2 vUv;
+void main() {
+  vec2 c = floor(gl_FragCoord.xy / cell);
+  vec3 col = mod(c.x + c.y, 2.0) < 1.0 ? checkA : checkB;
+  // Outside the 0-1 sheet the checker fades into the background, so UVs that stray off it stand out.
+  bool inside = vUv.x >= 0.0 && vUv.x <= 1.0 && vUv.y >= 0.0 && vUv.y <= 1.0;
+  if (hasMap && inside) {
+    vec4 t = texture2D(map, (uvTransform * vec3(vUv, 1.0)).xy);
+    col = mix(col, t.rgb, t.a);
+  }
+  gl_FragColor = vec4(inside ? col : mix(col, outside, 0.8), 1.0);
+}`;
+// Triangle edges partly invert what is under them, so they read on light and dark texels alike; seams (island borders)
+// are a solid colour that few textures share.
+const UV_LINE_VS = /* glsl */'void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy, 0.0, 1.0); }';
+const uvEdgeMaterial = () => new THREE.ShaderMaterial({
+  vertexShader: UV_LINE_VS,
+  fragmentShader: 'uniform float strength; void main() { gl_FragColor = vec4(vec3(strength), 1.0); }',
+  uniforms: { strength: { value: 0.4 } },
+  transparent: true, depthTest: false, depthWrite: false,
+  blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneMinusDstColorFactor, blendDst: THREE.OneMinusSrcColorFactor,
+});
+const uvSeamMat = new THREE.LineBasicMaterial({ color: 0x2fd3ff, transparent: true, opacity: 0.95, depthTest: false, toneMapped: false });
+const uvBorderMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.85, depthTest: false, toneMapped: false });
+const uvQuadGeo = new THREE.BufferGeometry();
+uvQuadGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-3, -3, 0, 4, -3, 0, 4, 4, 0, -3, 4, 0]), 3));
+uvQuadGeo.setIndex([0, 1, 2, 0, 2, 3]);
+const uvBorderGeo = new THREE.BufferGeometry();
+uvBorderGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]), 3));
+const uvCam = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
+const uvEdgeCache = new WeakMap();
+const objIds = new WeakMap();
+let objSeq = 0;
+const objId = o => (o ? objIds.get(o) || (objIds.set(o, ++objSeq), objSeq) : 0);
+
+function makeUVPane(side) {
+  const scene = new THREE.Scene();
+  const quad = new THREE.Mesh(uvQuadGeo, new THREE.ShaderMaterial({
+    vertexShader: UV_TEX_VS, fragmentShader: UV_TEX_FS, depthTest: false, depthWrite: false,
+    uniforms: { map: { value: null }, uvTransform: { value: new THREE.Matrix3() }, hasMap: { value: false }, checkA: { value: new THREE.Color() }, checkB: { value: new THREE.Color() }, outside: { value: new THREE.Color() }, cell: { value: 8 } },
+  }));
+  const border = new THREE.LineLoop(uvBorderGeo, uvBorderMat);
+  const edges = new THREE.LineSegments(new THREE.BufferGeometry(), uvEdgeMaterial());
+  const seams = new THREE.LineSegments(new THREE.BufferGeometry(), uvSeamMat);
+  [quad, edges, seams, border].forEach((o, i) => { o.frustumCulled = false; o.renderOrder = i; scene.add(o); });
+  return { side, scene, quad, border, edges, seams, el: $(`uvPane${side}`), view: { zoom: 1, cx: 0.5, cy: 0.5 }, rect: null, key: '', texture: null, shown: false, triArea: 0 };
+}
+const uvView = { renderer: null, queued: false, mat: 0, slot: settings.uvSlot, panes: null, pointers: new Map() };
+
+// Edges of a mesh's layout for one material, cached per mesh.
+function layoutEdges(mesh, mi, triEnd) {
+  let byMesh = uvEdgeCache.get(mesh.index);
+  if (!byMesh) uvEdgeCache.set(mesh.index, (byMesh = new Map()));
+  const key = `${mi}|${triEnd}`;
+  if (!byMesh.has(key)) {
+    const nMat = Math.max(1, state.displayMats.length), vMat = mesh.vMat, idx = mesh.index, uv = mesh.uvs;
+    const keep = nMat > 1 ? t => Math.min(vMat[idx[t * 3]], nMat - 1) === mi : null;
+    let area = 0, n = 0;
+    for (let t = 0; t < triEnd; t++) {
+      if (keep && !keep(t)) continue;
+      const a = idx[t * 3] * 2, b = idx[t * 3 + 1] * 2, c = idx[t * 3 + 2] * 2;
+      area += Math.abs((uv[b] - uv[a]) * (uv[c + 1] - uv[a + 1]) - (uv[c] - uv[a]) * (uv[b + 1] - uv[a + 1])) / 2;
+      n++;
+    }
+    byMesh.set(key, { ...uvEdges(mesh, keep, triEnd), triArea: n ? area / n : 0 });
+  }
+  return byMesh.get(key);
+}
+const uvHint = () => (matchMedia('(pointer: coarse)').matches ? 'Pinch to zoom · drag to pan · double-tap to fit' : 'Scroll to zoom · drag to pan · double-click to fit');
+const loadedMap = (m, slot) => (m && m[slot] && m[slot].image && !m[slot].userData.pbMissing ? m[slot] : null);
+const pctOf = v => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`;
+
+// What one pane shows: { key, texture, mesh, triEnd, label, msg, busy }. key changes whenever the texture or the
+// layout does; labels and messages are cheap and always refreshed.
+function uvPaneContent(side) {
+  const w = state.welded;
+  if (!w) return { key: 'empty', label: '', msg: loading === doc || doc.saved ? 'Loading the model…' : 'No model in this tab.', busy: loading === doc || !!doc.saved };
+  if (!w.uvs) return { key: 'nouv', label: '', msg: 'This model has no UVs, so it has no texture layout.' };
+  const mi = uvView.mat, slot = uvView.slot, mat = state.displayMats[mi], base = `${side}|${objId(w.index)}|${mi}`;
+  const src = loadedMap(mat, slot), size = t => { const [x, y] = imageSize(t.image); return x === y ? `${x} px` : `${x} × ${y} px`; };
+  if (side === 'A') {
+    return { key: `${base}|${slot}|${objId(src)}`, texture: src, mesh: w, triEnd: w.triCount, label: `${fmt(w.uvIslands)} ${w.uvIslands === 1 ? 'island' : 'islands'}${src ? ` · ${size(src)}` : ' · no texture'}` };
+  }
+  const r = state.result, i = state.info;
+  if (!r || !i) return { key: `${base}|wait`, label: '', msg: 'Reducing…', busy: true };
+  if (r.uvLayout === 'pending') {
+    return { key: `${base}|pending|${objId(r)}`, label: 'new UVs', msg: state.texturing ? 'Making new UVs and baking the texture…' : 'New UVs not made yet for this result.', busy: !!state.texturing };
+  }
+  const triEnd = i.symmetry ? r.triCount / 2 : r.triCount;
+  if (r.uvLayout === 'new') {
+    const baked = state.bakedMats && state.bakedMats[mi] ? loadedMap(state.bakedMats[mi], slot) : null;
+    const a = i.atlas && (i.atlas.atlases || []).find(x => x.mat === mi);
+    const charts = a ? `${fmt(a.charts)} charts · ${pctOf(a.coverage)} filled` : i.atlas ? `${fmt(i.atlas.charts)} charts` : '';
+    return { key: `${base}|${objId(r)}|${slot}|${objId(baked)}`, texture: baked, mesh: r, triEnd, label: `new UVs · ${charts}${baked ? ` · baked ${size(baked)}` : src ? ' · not baked' : ''}` };
+  }
+  const fit = i.uvFit;
+  return { key: `${base}|${objId(r)}|${slot}|${objId(src)}`, texture: src, mesh: r, triEnd, label: `original UVs${!fit ? '' : fit.misplaced < 0.0005 ? ' · fits' : ` · ${pctOf(fit.misplaced)} off`}` };
+}
+
+function setPaneContent(pane, c) {
+  $(`uvLabel${pane.side}`).textContent = c.label ? ` ${c.label}` : '';
+  const msg = $(`uvMsg${pane.side}`);
+  msg.hidden = !c.msg;
+  msg.textContent = c.msg || '';
+  msg.classList.toggle('busy', !!c.busy);
+  pane.shown = !!c.mesh;
+  if (pane.key === c.key) return;
+  const sameLayout = pane.key.split('|').slice(0, 3).join('|') === c.key.split('|').slice(0, 3).join('|');
+  pane.key = c.key;
+  if (pane.texture) pane.texture.dispose();
+  pane.texture = null;
+  const u = pane.quad.material.uniforms;
+  if (c.texture) {
+    const t = c.texture.clone();
+    t.colorSpace = THREE.NoColorSpace;
+    t.magFilter = THREE.NearestFilter;
+    t.needsUpdate = true;
+    t.updateMatrix();
+    pane.texture = t;
+    u.uvTransform.value.copy(t.matrix);
+  }
+  u.map.value = pane.texture;
+  u.hasMap.value = !!pane.texture;
+  pane.edges.geometry.dispose();
+  pane.seams.geometry.dispose();
+  pane.edges.geometry = new THREE.BufferGeometry();
+  pane.seams.geometry = new THREE.BufferGeometry();
+  if (c.mesh) {
+    const { edges, seams, triArea } = layoutEdges(c.mesh, uvView.mat, c.triEnd);
+    pane.triArea = triArea;
+    const pos = new THREE.BufferAttribute(c.mesh.uvs, 2);
+    pane.edges.geometry.setAttribute('position', pos);
+    pane.edges.geometry.setIndex(new THREE.BufferAttribute(edges, 1));
+    pane.seams.geometry.setAttribute('position', pos);
+    pane.seams.geometry.setIndex(new THREE.BufferAttribute(seams, 1));
+  }
+  // A new result keeps the view where it was; a different model, material or map starts from the whole sheet.
+  if (!sameLayout) pane.view = { zoom: 1, cx: 0.5, cy: 0.5 };
+}
+
+function uvThemeChanged() {
+  if (!uvView.panes) return;
+  // The checker is written straight to the canvas, so it takes the tokens' sRGB values as they are.
+  const raw = name => new THREE.Color().setRGB(...new THREE.Color(cssVar(name)).getRGB(new THREE.Color(), THREE.SRGBColorSpace).toArray());
+  for (const pane of Object.values(uvView.panes)) {
+    const u = pane.quad.material.uniforms;
+    u.checkA.value.copy(raw('--check-a'));
+    u.checkB.value.copy(raw('--check-b'));
+    u.outside.value.copy(raw('--viewport'));
+    pane.scene.background = new THREE.Color(cssVar('--viewport'));
+  }
+  uvBorderMat.color.set(cssVar('--accent'));
+  requestUVRender();
+}
+
+function ensureUVRenderer() {
+  if (uvView.renderer) return true;
+  try {
+    uvView.renderer = new THREE.WebGLRenderer({ canvas: $('uvCanvas'), antialias: true });
+  } catch (err) {
+    console.error(err);
+    showError("Couldn't start the texture view: this browser won't give it a WebGL context.");
+    return false;
+  }
+  uvView.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  // Each pane draws in the order its objects were added; depth sorting would read the 2D UV positions as 3D.
+  uvView.renderer.sortObjects = false;
+  uvView.panes = { A: makeUVPane('A'), B: makeUVPane('B') };
+  $('uvFoot').firstChild.textContent = uvHint();
+  uvThemeChanged();
+  new ResizeObserver(() => {
+    const st = $('uvStage');
+    uvView.renderer.setSize(st.clientWidth, st.clientHeight, false);
+    layoutUV();
+    requestUVRender();
+  }).observe($('uvStage'));
+  bindUVPanes();
+  return true;
+}
+
+// Both panes side by side when the drawer is wide, stacked when it is tall; one pane fills it.
+function layoutUV() {
+  if (!uvView.panes) return;
+  const st = $('uvStage'), W = st.clientWidth, H = st.clientHeight, sep = $('uvSep');
+  const { A, B } = uvView.panes, mode = settings.uvPanes;
+  A.rect = B.rect = null;
+  sep.hidden = true;
+  if (mode === 'A') A.rect = { x: 0, y: 0, w: W, h: H };
+  else if (mode === 'B') B.rect = { x: 0, y: 0, w: W, h: H };
+  else if (W >= H * 1.15) {
+    const half = Math.floor(W / 2);
+    A.rect = { x: 0, y: 0, w: half, h: H };
+    B.rect = { x: half, y: 0, w: W - half, h: H };
+    Object.assign(sep.style, { left: `${half}px`, top: '0px', width: '1px', height: `${H}px` });
+    sep.hidden = false;
+  } else {
+    const half = Math.floor(H / 2);
+    A.rect = { x: 0, y: 0, w: W, h: half };
+    B.rect = { x: 0, y: half, w: W, h: H - half };
+    Object.assign(sep.style, { left: '0px', top: `${half}px`, width: `${W}px`, height: '1px' });
+    sep.hidden = false;
+  }
+  for (const pane of [A, B]) {
+    pane.el.hidden = !pane.rect;
+    if (pane.rect) Object.assign(pane.el.style, { left: `${pane.rect.x}px`, top: `${pane.rect.y}px`, width: `${pane.rect.w}px`, height: `${pane.rect.h}px` });
+  }
+}
+// Pixels per UV unit: zoom 1 fits the 0–1 square with a margin, clear of the pane label.
+function uvScale(pane) {
+  const r = pane.rect;
+  return Math.max(1, Math.min(r.w - 32, r.h - 76)) * pane.view.zoom;
+}
+function requestUVRender() {
+  if (uvView.queued || !settings.uvOpen) return;
+  uvView.queued = true;
+  requestAnimationFrame(renderUV);
+}
+function renderUV() {
+  uvView.queued = false;
+  const R = uvView.renderer;
+  if (!R || !settings.uvOpen) return;
+  const H = $('uvStage').clientHeight;
+  R.setScissorTest(true);
+  for (const pane of Object.values(uvView.panes)) {
+    const r = pane.rect;
+    if (!r || r.w < 2 || r.h < 2) continue;
+    const y = H - r.y - r.h, s = uvScale(pane), v = pane.view;
+    R.setViewport(r.x, y, r.w, r.h);
+    R.setScissor(r.x, y, r.w, r.h);
+    uvCam.left = v.cx - r.w / 2 / s;
+    uvCam.right = v.cx + r.w / 2 / s;
+    uvCam.top = v.cy + (r.h / 2 - 22) / s;
+    uvCam.bottom = v.cy - (r.h / 2 + 22) / s;
+    uvCam.updateProjectionMatrix();
+    pane.quad.material.uniforms.cell.value = 8 * R.getPixelRatio();
+    // Triangle edges fade in as the triangles grow on screen: none below ~1.5 px², full from ~14 px².
+    const px = pane.triArea * s * s, fade = Math.min(1, Math.max(0, (px - 1.5) / 12.5));
+    pane.edges.material.uniforms.strength.value = 0.4 * fade * fade * (3 - 2 * fade);
+    pane.edges.visible = pane.shown && settings.uvLines === 'all' && fade > 0;
+    pane.seams.visible = pane.shown && settings.uvLines !== 'none';
+    pane.border.visible = pane.shown;
+    pane.quad.visible = pane.shown;
+    R.render(pane.scene, uvCam);
+  }
+}
+// The UV point under a pane pixel.
+function uvAt(pane, x, y) {
+  const s = uvScale(pane), r = pane.rect;
+  return [pane.view.cx + (x - r.w / 2) / s, pane.view.cy - (y - r.h / 2 - 22) / s];
+}
+function zoomUV(pane, x, y, factor) {
+  const [u, v] = uvAt(pane, x, y);
+  pane.view.zoom = Math.min(128, Math.max(0.5, pane.view.zoom * factor));
+  const s = uvScale(pane), r = pane.rect;
+  pane.view.cx = u - (x - r.w / 2) / s;
+  pane.view.cy = v + (y - r.h / 2 - 22) / s;
+  requestUVRender();
+}
+function readUV(pane, x, y) {
+  const [u, v] = uvAt(pane, x, y), t = pane.texture;
+  let text = `u ${u.toFixed(4)}   v ${v.toFixed(4)}`;
+  if (t && pane.shown) {
+    const [w, h] = imageSize(t.image), st = new THREE.Vector3(u, v, 1).applyMatrix3(t.matrix);
+    // Pixel rows count from the top of the image file (baked maps are saved with v = 1 at the top).
+    const fy = t.flipY || t.userData.pbBaked ? 1 - st.y : st.y;
+    if (st.x >= 0 && st.x <= 1 && fy >= 0 && fy <= 1) text += `   ·   pixel ${Math.min(w - 1, Math.floor(st.x * w))}, ${Math.min(h - 1, Math.floor(fy * h))} of ${w} × ${h}`;
+  }
+  $('uvFoot').firstChild.textContent = text;
+}
+function bindUVPanes() {
+  const P = uvView.pointers;
+  for (const pane of Object.values(uvView.panes)) {
+    const node = pane.el, pos = e => { const b = node.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
+    node.addEventListener('wheel', e => {
+      e.preventDefault();
+      const [x, y] = pos(e);
+      zoomUV(pane, x, y, Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015)));
+    }, { passive: false });
+    node.addEventListener('pointerdown', e => {
+      if (e.button !== 0 && e.button !== 1) return;
+      try { node.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
+      P.set(e.pointerId, pos(e));
+      node.classList.add('drag');
+    });
+    node.addEventListener('pointermove', e => {
+      const [x, y] = pos(e);
+      if (!P.has(e.pointerId)) { readUV(pane, x, y); return; }
+      const [px, py] = P.get(e.pointerId);
+      if (P.size === 2) {
+        // Two fingers: zoom by the change in their distance, around their midpoint.
+        const [ox, oy] = [...P.entries()].find(([id]) => id !== e.pointerId)[1];
+        const d0 = Math.hypot(px - ox, py - oy), d1 = Math.hypot(x - ox, y - oy);
+        if (d0 > 0) zoomUV(pane, (x + ox) / 2, (y + oy) / 2, d1 / d0);
+      } else {
+        const s = uvScale(pane);
+        pane.view.cx -= (x - px) / s;
+        pane.view.cy += (y - py) / s;
+        requestUVRender();
+      }
+      P.set(e.pointerId, [x, y]);
+      readUV(pane, x, y);
+    });
+    const end = e => { P.delete(e.pointerId); if (!P.size) node.classList.remove('drag'); };
+    node.addEventListener('pointerup', end);
+    node.addEventListener('pointercancel', end);
+    node.addEventListener('pointerleave', () => { if (!P.size) $('uvFoot').firstChild.textContent = uvHint(); });
+    node.addEventListener('dblclick', () => { pane.view = { zoom: 1, cx: 0.5, cy: 0.5 }; requestUVRender(); });
+  }
+}
+
+// Material and map pickers: every material, and the maps the chosen one has loaded.
+function syncUVControls() {
+  const mats = state.displayMats, n = mats.length;
+  if (uvView.mat >= n) uvView.mat = 0;
+  const matSel = $('uvMat');
+  matSel.hidden = n < 2;
+  const matNames = mats.map((m, i) => m.name || `Material ${i + 1}`);
+  if (matSel.dataset.names !== matNames.join('\n')) {
+    matSel.replaceChildren(...matNames.map((name, i) => el('option', { value: String(i), textContent: name })));
+    matSel.dataset.names = matNames.join('\n');
+  }
+  matSel.value = String(uvView.mat);
+  const slots = MAP_SLOTS.filter(slot => loadedMap(mats[uvView.mat], slot));
+  if (!slots.includes(uvView.slot)) uvView.slot = slots.includes(settings.uvSlot) ? settings.uvSlot : slots[0] || 'map';
+  const slotSel = $('uvSlot');
+  const none = !state.welded ? 'No model' : !state.welded.uvs ? 'No UVs' : 'No texture · UVs only';
+  const opts = slots.length ? slots.map(slot => [slot, `${SLOT_NAMES[slot][0].toUpperCase()}${SLOT_NAMES[slot].slice(1)}`]) : [['', none]];
+  const optKey = opts.map(o => o.join(':')).join(',');
+  if (slotSel.dataset.slots !== optKey) {
+    slotSel.replaceChildren(...opts.map(([value, text]) => el('option', { value, textContent: text })));
+    slotSel.dataset.slots = optKey;
+  }
+  slotSel.disabled = !slots.length;
+  slotSel.value = slots.length ? uvView.slot : '';
+  pressSeg('uvLinesSeg', 'lines', settings.uvLines);
+  pressSeg('uvPanesSeg', 'panes', settings.uvPanes);
+}
+
+// Brings the open drawer up to date with the active tab; cheap when nothing it shows has changed.
+function refreshUVView() {
+  if (!settings.uvOpen || !uvView.panes) return;
+  syncUVControls();
+  for (const side of ['A', 'B']) setPaneContent(uvView.panes[side], uvPaneContent(side));
+  layoutUV();
+  requestUVRender();
+}
+function releaseUVPanes() {
+  if (!uvView.panes) return;
+  for (const pane of Object.values(uvView.panes)) {
+    if (pane.texture) pane.texture.dispose();
+    pane.texture = null;
+    pane.quad.material.uniforms.map.value = null;
+    pane.edges.geometry.dispose();
+    pane.seams.geometry.dispose();
+    pane.key = '';
+  }
+}
+function setUVOpen(open) {
+  settings.uvOpen = open;
+  saveSettings();
+  $('uvDrawer').hidden = !open;
+  $('uvBtn').setAttribute('aria-expanded', String(open));
+  if (open && ensureUVRenderer()) refreshUVView();
+  if (!open) releaseUVPanes();
+}
+// Dragging stops where the view would get too narrow; a narrower window only caps the width (CSS), so the drawer
+// comes back at its size when the window grows again.
+function setUVWidth(w, dragging = false) {
+  const max = dragging ? Math.max(300, $('stage').clientWidth - 260) : 2400;
+  settings.uvWidth = Math.round(Math.min(max, Math.max(280, w)));
+  $('uvDrawer').style.setProperty('--uvw', `${settings.uvWidth}px`);
+}
+
 // ---------- tab switching ----------
 let loading = null, queuedDoc = null;
 // Loading a model can't be interrupted, so a tab picked meanwhile is shown once it finishes.
@@ -7486,6 +8073,7 @@ function attachDoc() {
     showEmptyState(true);
     updatePlaneHelper();
     panels();
+    refreshUVView();
     return;
   }
   showEmptyState(false);
@@ -7750,6 +8338,35 @@ $('tabs').addEventListener('keydown', e => {
 $('tabNew').addEventListener('click', () => openTab(newDoc()));
 $('sampleBtn').addEventListener('click', loadSample);
 $('frameBtn').addEventListener('click', frameCamera);
+$('uvBtn').addEventListener('click', () => setUVOpen(!settings.uvOpen));
+$('uvViewLink').addEventListener('click', () => setUVOpen(true));
+$('uvClose').addEventListener('click', () => { setUVOpen(false); $('uvBtn').focus(); });
+$('uvMat').addEventListener('change', e => { uvView.mat = Number(e.target.value); refreshUVView(); });
+$('uvSlot').addEventListener('change', e => { if (!e.target.value) return; uvView.slot = settings.uvSlot = e.target.value; saveSettings(); refreshUVView(); });
+onSeg('uvLinesSeg', 'lines', v => { settings.uvLines = v; pressSeg('uvLinesSeg', 'lines', v); requestUVRender(); });
+onSeg('uvPanesSeg', 'panes', v => { settings.uvPanes = v; pressSeg('uvPanesSeg', 'panes', v); layoutUV(); requestUVRender(); });
+{
+  // Dragging the drawer's left edge resizes it; so do the arrow keys when the edge has focus.
+  const grip = $('uvGrip');
+  let drag = null;
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    try { grip.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
+    drag = { x: e.clientX, w: $('uvDrawer').offsetWidth };
+    grip.classList.add('drag');
+  });
+  grip.addEventListener('pointermove', e => { if (drag) setUVWidth(drag.w - (e.clientX - drag.x), true); });
+  const end = () => { if (!drag) return; drag = null; grip.classList.remove('drag'); saveSettings(); };
+  grip.addEventListener('pointerup', end);
+  grip.addEventListener('pointercancel', end);
+  grip.addEventListener('dblclick', () => { setUVWidth(DEFAULTS.uvWidth); saveSettings(); });
+  grip.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    setUVWidth($('uvDrawer').offsetWidth + (e.key === 'ArrowLeft' ? 24 : -24), true);
+    saveSettings();
+  });
+}
 $('exportBtn').addEventListener('click', exportModel);
 $('fileInput').addEventListener('change', e => { openFiles(e.target.files); e.target.value = ''; });
 $('addTexBtn').addEventListener('click', () => {
@@ -7811,6 +8428,7 @@ window.addEventListener('keydown', e => {
   if (tools[k]) settings.tool = tools[k];
   else if (k === 'f') settings.mode = settings.mode === 'fill' ? 'brush' : 'fill';
   else if (k === 'w') { settings.wire = !settings.wire; applyDisplaySettings(); }
+  else if (k === 'u') { setUVOpen(!settings.uvOpen); return; }
   else if (k === '1' || k === '2' || k === '3') { settings.view = ['split', 'original', 'reduced'][Number(k) - 1]; requestRender(); }
   else if (k === '[' || k === ']') settings.brush = Math.min(30, Math.max(0.5, settings.brush * (k === ']' ? 1.2 : 1 / 1.2)));
   else return;
@@ -7821,7 +8439,7 @@ window.addEventListener('keydown', e => {
 
 window.__polyBudget = {
   openFiles, setMaterialTexture, settings, exportModel, buildExport, engine, pick, camera, controls, requestRender, rects, viewport, undo, redo,
-  docs, activate, openTab, closeDoc, newDoc,
+  docs, activate, openTab, closeDoc, newDoc, uvView, renderUV, setUVOpen,
   get state() { return state; }, get doc() { return doc; },
 };
 
@@ -7832,6 +8450,8 @@ engine.start();
 renderer.setSize(viewport.clientWidth, viewport.clientHeight, false);
 renderTabs();
 updateHeader();
+setUVWidth(settings.uvWidth);
+setUVOpen(settings.uvOpen);
 // The last visit's tabs when there are any, otherwise the sample.
 restoreTabs()
   .catch(err => { console.error(err); return false; })

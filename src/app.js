@@ -12,7 +12,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
-import { LABEL, AUTO_UV_LIMIT, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
+import { LABEL, AUTO_UV_LIMIT, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
 
 const $ = id => document.getElementById(id);
@@ -34,6 +34,7 @@ const DEFAULTS = {
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, sections: {},
+  uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
 };
 const settings = { ...DEFAULTS };
 // Only settings the tool still has are read back, so options removed since they were saved drop out.
@@ -156,6 +157,7 @@ function applyTheme() {
   }
   if (state.labels) recolorAll();
   requestRender();
+  uvThemeChanged();
 }
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
 new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -906,6 +908,7 @@ function updateTexturePanel() {
     return el('li', {}, el('span', { className: 'mat-name', textContent: m.name || `Material ${i + 1}`, title: m.name || '' }), el('div', { className: 'tiles' }, ...tiles));
   });
   list.replaceChildren(...rows);
+  refreshUVView();
 }
 
 // ---------- texture bake for new UVs ----------
@@ -1424,6 +1427,7 @@ function buildReducedDisplay(res) {
   display.R.srcId = res.srcId;
   recolorReduced();
   applyDisplaySettings();
+  refreshUVView();
 }
 
 function applyDisplaySettings() {
@@ -2213,6 +2217,7 @@ function updateUVPanel() {
   $('uvHead').textContent = st[1];
   $('uvNote').textContent = st[2];
   $('uvNote').hidden = !st[2];
+  refreshUVView();
 }
 
 let busyTimer = 0;
@@ -2567,6 +2572,392 @@ function paintSample() {
   recolorAll();
 }
 
+// ---------- texture & UV panel ----------
+// A drawer beside the view shows one texture of the open tab with its UV layout drawn over it: the original model on
+// one pane, the reduced result on the other. It has its own small WebGL renderer and draws only when something changes.
+// Textures show their stored values (no tone mapping or colour conversion), magnified texels stay square.
+const UV_TEX_VS = /* glsl */'varying vec2 vUv; void main() { vUv = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy, 0.0, 1.0); }';
+const UV_TEX_FS = /* glsl */`
+uniform sampler2D map;
+uniform mat3 uvTransform;
+uniform bool hasMap;
+uniform vec3 checkA;
+uniform vec3 checkB;
+uniform vec3 outside;
+uniform float cell;
+varying vec2 vUv;
+void main() {
+  vec2 c = floor(gl_FragCoord.xy / cell);
+  vec3 col = mod(c.x + c.y, 2.0) < 1.0 ? checkA : checkB;
+  // Outside the 0-1 sheet the checker fades into the background, so UVs that stray off it stand out.
+  bool inside = vUv.x >= 0.0 && vUv.x <= 1.0 && vUv.y >= 0.0 && vUv.y <= 1.0;
+  if (hasMap && inside) {
+    vec4 t = texture2D(map, (uvTransform * vec3(vUv, 1.0)).xy);
+    col = mix(col, t.rgb, t.a);
+  }
+  gl_FragColor = vec4(inside ? col : mix(col, outside, 0.8), 1.0);
+}`;
+// Triangle edges partly invert what is under them, so they read on light and dark texels alike; seams (island borders)
+// are a solid colour that few textures share.
+const UV_LINE_VS = /* glsl */'void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy, 0.0, 1.0); }';
+const uvEdgeMaterial = () => new THREE.ShaderMaterial({
+  vertexShader: UV_LINE_VS,
+  fragmentShader: 'uniform float strength; void main() { gl_FragColor = vec4(vec3(strength), 1.0); }',
+  uniforms: { strength: { value: 0.4 } },
+  transparent: true, depthTest: false, depthWrite: false,
+  blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneMinusDstColorFactor, blendDst: THREE.OneMinusSrcColorFactor,
+});
+const uvSeamMat = new THREE.LineBasicMaterial({ color: 0x2fd3ff, transparent: true, opacity: 0.95, depthTest: false, toneMapped: false });
+const uvBorderMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.85, depthTest: false, toneMapped: false });
+const uvQuadGeo = new THREE.BufferGeometry();
+uvQuadGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-3, -3, 0, 4, -3, 0, 4, 4, 0, -3, 4, 0]), 3));
+uvQuadGeo.setIndex([0, 1, 2, 0, 2, 3]);
+const uvBorderGeo = new THREE.BufferGeometry();
+uvBorderGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]), 3));
+const uvCam = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
+const uvEdgeCache = new WeakMap();
+const objIds = new WeakMap();
+let objSeq = 0;
+const objId = o => (o ? objIds.get(o) || (objIds.set(o, ++objSeq), objSeq) : 0);
+
+function makeUVPane(side) {
+  const scene = new THREE.Scene();
+  const quad = new THREE.Mesh(uvQuadGeo, new THREE.ShaderMaterial({
+    vertexShader: UV_TEX_VS, fragmentShader: UV_TEX_FS, depthTest: false, depthWrite: false,
+    uniforms: { map: { value: null }, uvTransform: { value: new THREE.Matrix3() }, hasMap: { value: false }, checkA: { value: new THREE.Color() }, checkB: { value: new THREE.Color() }, outside: { value: new THREE.Color() }, cell: { value: 8 } },
+  }));
+  const border = new THREE.LineLoop(uvBorderGeo, uvBorderMat);
+  const edges = new THREE.LineSegments(new THREE.BufferGeometry(), uvEdgeMaterial());
+  const seams = new THREE.LineSegments(new THREE.BufferGeometry(), uvSeamMat);
+  [quad, edges, seams, border].forEach((o, i) => { o.frustumCulled = false; o.renderOrder = i; scene.add(o); });
+  return { side, scene, quad, border, edges, seams, el: $(`uvPane${side}`), view: { zoom: 1, cx: 0.5, cy: 0.5 }, rect: null, key: '', texture: null, shown: false, triArea: 0 };
+}
+const uvView = { renderer: null, queued: false, mat: 0, slot: settings.uvSlot, panes: null, pointers: new Map() };
+
+// Edges of a mesh's layout for one material, cached per mesh.
+function layoutEdges(mesh, mi, triEnd) {
+  let byMesh = uvEdgeCache.get(mesh.index);
+  if (!byMesh) uvEdgeCache.set(mesh.index, (byMesh = new Map()));
+  const key = `${mi}|${triEnd}`;
+  if (!byMesh.has(key)) {
+    const nMat = Math.max(1, state.displayMats.length), vMat = mesh.vMat, idx = mesh.index, uv = mesh.uvs;
+    const keep = nMat > 1 ? t => Math.min(vMat[idx[t * 3]], nMat - 1) === mi : null;
+    let area = 0, n = 0;
+    for (let t = 0; t < triEnd; t++) {
+      if (keep && !keep(t)) continue;
+      const a = idx[t * 3] * 2, b = idx[t * 3 + 1] * 2, c = idx[t * 3 + 2] * 2;
+      area += Math.abs((uv[b] - uv[a]) * (uv[c + 1] - uv[a + 1]) - (uv[c] - uv[a]) * (uv[b + 1] - uv[a + 1])) / 2;
+      n++;
+    }
+    byMesh.set(key, { ...uvEdges(mesh, keep, triEnd), triArea: n ? area / n : 0 });
+  }
+  return byMesh.get(key);
+}
+const uvHint = () => (matchMedia('(pointer: coarse)').matches ? 'Pinch to zoom · drag to pan · double-tap to fit' : 'Scroll to zoom · drag to pan · double-click to fit');
+const loadedMap = (m, slot) => (m && m[slot] && m[slot].image && !m[slot].userData.pbMissing ? m[slot] : null);
+const pctOf = v => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`;
+
+// What one pane shows: { key, texture, mesh, triEnd, label, msg, busy }. key changes whenever the texture or the
+// layout does; labels and messages are cheap and always refreshed.
+function uvPaneContent(side) {
+  const w = state.welded;
+  if (!w) return { key: 'empty', label: '', msg: loading === doc || doc.saved ? 'Loading the model…' : 'No model in this tab.', busy: loading === doc || !!doc.saved };
+  if (!w.uvs) return { key: 'nouv', label: '', msg: 'This model has no UVs, so it has no texture layout.' };
+  const mi = uvView.mat, slot = uvView.slot, mat = state.displayMats[mi], base = `${side}|${objId(w.index)}|${mi}`;
+  const src = loadedMap(mat, slot), size = t => { const [x, y] = imageSize(t.image); return x === y ? `${x} px` : `${x} × ${y} px`; };
+  if (side === 'A') {
+    return { key: `${base}|${slot}|${objId(src)}`, texture: src, mesh: w, triEnd: w.triCount, label: `${fmt(w.uvIslands)} ${w.uvIslands === 1 ? 'island' : 'islands'}${src ? ` · ${size(src)}` : ' · no texture'}` };
+  }
+  const r = state.result, i = state.info;
+  if (!r || !i) return { key: `${base}|wait`, label: '', msg: 'Reducing…', busy: true };
+  if (r.uvLayout === 'pending') {
+    return { key: `${base}|pending|${objId(r)}`, label: 'new UVs', msg: state.texturing ? 'Making new UVs and baking the texture…' : 'New UVs not made yet for this result.', busy: !!state.texturing };
+  }
+  const triEnd = i.symmetry ? r.triCount / 2 : r.triCount;
+  if (r.uvLayout === 'new') {
+    const baked = state.bakedMats && state.bakedMats[mi] ? loadedMap(state.bakedMats[mi], slot) : null;
+    const a = i.atlas && (i.atlas.atlases || []).find(x => x.mat === mi);
+    const charts = a ? `${fmt(a.charts)} charts · ${pctOf(a.coverage)} filled` : i.atlas ? `${fmt(i.atlas.charts)} charts` : '';
+    return { key: `${base}|${objId(r)}|${slot}|${objId(baked)}`, texture: baked, mesh: r, triEnd, label: `new UVs · ${charts}${baked ? ` · baked ${size(baked)}` : src ? ' · not baked' : ''}` };
+  }
+  const fit = i.uvFit;
+  return { key: `${base}|${objId(r)}|${slot}|${objId(src)}`, texture: src, mesh: r, triEnd, label: `original UVs${!fit ? '' : fit.misplaced < 0.0005 ? ' · fits' : ` · ${pctOf(fit.misplaced)} off`}` };
+}
+
+function setPaneContent(pane, c) {
+  $(`uvLabel${pane.side}`).textContent = c.label ? ` ${c.label}` : '';
+  const msg = $(`uvMsg${pane.side}`);
+  msg.hidden = !c.msg;
+  msg.textContent = c.msg || '';
+  msg.classList.toggle('busy', !!c.busy);
+  pane.shown = !!c.mesh;
+  if (pane.key === c.key) return;
+  const sameLayout = pane.key.split('|').slice(0, 3).join('|') === c.key.split('|').slice(0, 3).join('|');
+  pane.key = c.key;
+  if (pane.texture) pane.texture.dispose();
+  pane.texture = null;
+  const u = pane.quad.material.uniforms;
+  if (c.texture) {
+    const t = c.texture.clone();
+    t.colorSpace = THREE.NoColorSpace;
+    t.magFilter = THREE.NearestFilter;
+    t.needsUpdate = true;
+    t.updateMatrix();
+    pane.texture = t;
+    u.uvTransform.value.copy(t.matrix);
+  }
+  u.map.value = pane.texture;
+  u.hasMap.value = !!pane.texture;
+  pane.edges.geometry.dispose();
+  pane.seams.geometry.dispose();
+  pane.edges.geometry = new THREE.BufferGeometry();
+  pane.seams.geometry = new THREE.BufferGeometry();
+  if (c.mesh) {
+    const { edges, seams, triArea } = layoutEdges(c.mesh, uvView.mat, c.triEnd);
+    pane.triArea = triArea;
+    const pos = new THREE.BufferAttribute(c.mesh.uvs, 2);
+    pane.edges.geometry.setAttribute('position', pos);
+    pane.edges.geometry.setIndex(new THREE.BufferAttribute(edges, 1));
+    pane.seams.geometry.setAttribute('position', pos);
+    pane.seams.geometry.setIndex(new THREE.BufferAttribute(seams, 1));
+  }
+  // A new result keeps the view where it was; a different model, material or map starts from the whole sheet.
+  if (!sameLayout) pane.view = { zoom: 1, cx: 0.5, cy: 0.5 };
+}
+
+function uvThemeChanged() {
+  if (!uvView.panes) return;
+  // The checker is written straight to the canvas, so it takes the tokens' sRGB values as they are.
+  const raw = name => new THREE.Color().setRGB(...new THREE.Color(cssVar(name)).getRGB(new THREE.Color(), THREE.SRGBColorSpace).toArray());
+  for (const pane of Object.values(uvView.panes)) {
+    const u = pane.quad.material.uniforms;
+    u.checkA.value.copy(raw('--check-a'));
+    u.checkB.value.copy(raw('--check-b'));
+    u.outside.value.copy(raw('--viewport'));
+    pane.scene.background = new THREE.Color(cssVar('--viewport'));
+  }
+  uvBorderMat.color.set(cssVar('--accent'));
+  requestUVRender();
+}
+
+function ensureUVRenderer() {
+  if (uvView.renderer) return true;
+  try {
+    uvView.renderer = new THREE.WebGLRenderer({ canvas: $('uvCanvas'), antialias: true });
+  } catch (err) {
+    console.error(err);
+    showError("Couldn't start the texture view: this browser won't give it a WebGL context.");
+    return false;
+  }
+  uvView.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  // Each pane draws in the order its objects were added; depth sorting would read the 2D UV positions as 3D.
+  uvView.renderer.sortObjects = false;
+  uvView.panes = { A: makeUVPane('A'), B: makeUVPane('B') };
+  $('uvFoot').firstChild.textContent = uvHint();
+  uvThemeChanged();
+  new ResizeObserver(() => {
+    const st = $('uvStage');
+    uvView.renderer.setSize(st.clientWidth, st.clientHeight, false);
+    layoutUV();
+    requestUVRender();
+  }).observe($('uvStage'));
+  bindUVPanes();
+  return true;
+}
+
+// Both panes side by side when the drawer is wide, stacked when it is tall; one pane fills it.
+function layoutUV() {
+  if (!uvView.panes) return;
+  const st = $('uvStage'), W = st.clientWidth, H = st.clientHeight, sep = $('uvSep');
+  const { A, B } = uvView.panes, mode = settings.uvPanes;
+  A.rect = B.rect = null;
+  sep.hidden = true;
+  if (mode === 'A') A.rect = { x: 0, y: 0, w: W, h: H };
+  else if (mode === 'B') B.rect = { x: 0, y: 0, w: W, h: H };
+  else if (W >= H * 1.15) {
+    const half = Math.floor(W / 2);
+    A.rect = { x: 0, y: 0, w: half, h: H };
+    B.rect = { x: half, y: 0, w: W - half, h: H };
+    Object.assign(sep.style, { left: `${half}px`, top: '0px', width: '1px', height: `${H}px` });
+    sep.hidden = false;
+  } else {
+    const half = Math.floor(H / 2);
+    A.rect = { x: 0, y: 0, w: W, h: half };
+    B.rect = { x: 0, y: half, w: W, h: H - half };
+    Object.assign(sep.style, { left: '0px', top: `${half}px`, width: `${W}px`, height: '1px' });
+    sep.hidden = false;
+  }
+  for (const pane of [A, B]) {
+    pane.el.hidden = !pane.rect;
+    if (pane.rect) Object.assign(pane.el.style, { left: `${pane.rect.x}px`, top: `${pane.rect.y}px`, width: `${pane.rect.w}px`, height: `${pane.rect.h}px` });
+  }
+}
+// Pixels per UV unit: zoom 1 fits the 0–1 square with a margin, clear of the pane label.
+function uvScale(pane) {
+  const r = pane.rect;
+  return Math.max(1, Math.min(r.w - 32, r.h - 76)) * pane.view.zoom;
+}
+function requestUVRender() {
+  if (uvView.queued || !settings.uvOpen) return;
+  uvView.queued = true;
+  requestAnimationFrame(renderUV);
+}
+function renderUV() {
+  uvView.queued = false;
+  const R = uvView.renderer;
+  if (!R || !settings.uvOpen) return;
+  const H = $('uvStage').clientHeight;
+  R.setScissorTest(true);
+  for (const pane of Object.values(uvView.panes)) {
+    const r = pane.rect;
+    if (!r || r.w < 2 || r.h < 2) continue;
+    const y = H - r.y - r.h, s = uvScale(pane), v = pane.view;
+    R.setViewport(r.x, y, r.w, r.h);
+    R.setScissor(r.x, y, r.w, r.h);
+    uvCam.left = v.cx - r.w / 2 / s;
+    uvCam.right = v.cx + r.w / 2 / s;
+    uvCam.top = v.cy + (r.h / 2 - 22) / s;
+    uvCam.bottom = v.cy - (r.h / 2 + 22) / s;
+    uvCam.updateProjectionMatrix();
+    pane.quad.material.uniforms.cell.value = 8 * R.getPixelRatio();
+    // Triangle edges fade in as the triangles grow on screen: none below ~1.5 px², full from ~14 px².
+    const px = pane.triArea * s * s, fade = Math.min(1, Math.max(0, (px - 1.5) / 12.5));
+    pane.edges.material.uniforms.strength.value = 0.4 * fade * fade * (3 - 2 * fade);
+    pane.edges.visible = pane.shown && settings.uvLines === 'all' && fade > 0;
+    pane.seams.visible = pane.shown && settings.uvLines !== 'none';
+    pane.border.visible = pane.shown;
+    pane.quad.visible = pane.shown;
+    R.render(pane.scene, uvCam);
+  }
+}
+// The UV point under a pane pixel.
+function uvAt(pane, x, y) {
+  const s = uvScale(pane), r = pane.rect;
+  return [pane.view.cx + (x - r.w / 2) / s, pane.view.cy - (y - r.h / 2 - 22) / s];
+}
+function zoomUV(pane, x, y, factor) {
+  const [u, v] = uvAt(pane, x, y);
+  pane.view.zoom = Math.min(128, Math.max(0.5, pane.view.zoom * factor));
+  const s = uvScale(pane), r = pane.rect;
+  pane.view.cx = u - (x - r.w / 2) / s;
+  pane.view.cy = v + (y - r.h / 2 - 22) / s;
+  requestUVRender();
+}
+function readUV(pane, x, y) {
+  const [u, v] = uvAt(pane, x, y), t = pane.texture;
+  let text = `u ${u.toFixed(4)}   v ${v.toFixed(4)}`;
+  if (t && pane.shown) {
+    const [w, h] = imageSize(t.image), st = new THREE.Vector3(u, v, 1).applyMatrix3(t.matrix);
+    // Pixel rows count from the top of the image file (baked maps are saved with v = 1 at the top).
+    const fy = t.flipY || t.userData.pbBaked ? 1 - st.y : st.y;
+    if (st.x >= 0 && st.x <= 1 && fy >= 0 && fy <= 1) text += `   ·   pixel ${Math.min(w - 1, Math.floor(st.x * w))}, ${Math.min(h - 1, Math.floor(fy * h))} of ${w} × ${h}`;
+  }
+  $('uvFoot').firstChild.textContent = text;
+}
+function bindUVPanes() {
+  const P = uvView.pointers;
+  for (const pane of Object.values(uvView.panes)) {
+    const node = pane.el, pos = e => { const b = node.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
+    node.addEventListener('wheel', e => {
+      e.preventDefault();
+      const [x, y] = pos(e);
+      zoomUV(pane, x, y, Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015)));
+    }, { passive: false });
+    node.addEventListener('pointerdown', e => {
+      if (e.button !== 0 && e.button !== 1) return;
+      try { node.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
+      P.set(e.pointerId, pos(e));
+      node.classList.add('drag');
+    });
+    node.addEventListener('pointermove', e => {
+      const [x, y] = pos(e);
+      if (!P.has(e.pointerId)) { readUV(pane, x, y); return; }
+      const [px, py] = P.get(e.pointerId);
+      if (P.size === 2) {
+        // Two fingers: zoom by the change in their distance, around their midpoint.
+        const [ox, oy] = [...P.entries()].find(([id]) => id !== e.pointerId)[1];
+        const d0 = Math.hypot(px - ox, py - oy), d1 = Math.hypot(x - ox, y - oy);
+        if (d0 > 0) zoomUV(pane, (x + ox) / 2, (y + oy) / 2, d1 / d0);
+      } else {
+        const s = uvScale(pane);
+        pane.view.cx -= (x - px) / s;
+        pane.view.cy += (y - py) / s;
+        requestUVRender();
+      }
+      P.set(e.pointerId, [x, y]);
+      readUV(pane, x, y);
+    });
+    const end = e => { P.delete(e.pointerId); if (!P.size) node.classList.remove('drag'); };
+    node.addEventListener('pointerup', end);
+    node.addEventListener('pointercancel', end);
+    node.addEventListener('pointerleave', () => { if (!P.size) $('uvFoot').firstChild.textContent = uvHint(); });
+    node.addEventListener('dblclick', () => { pane.view = { zoom: 1, cx: 0.5, cy: 0.5 }; requestUVRender(); });
+  }
+}
+
+// Material and map pickers: every material, and the maps the chosen one has loaded.
+function syncUVControls() {
+  const mats = state.displayMats, n = mats.length;
+  if (uvView.mat >= n) uvView.mat = 0;
+  const matSel = $('uvMat');
+  matSel.hidden = n < 2;
+  const matNames = mats.map((m, i) => m.name || `Material ${i + 1}`);
+  if (matSel.dataset.names !== matNames.join('\n')) {
+    matSel.replaceChildren(...matNames.map((name, i) => el('option', { value: String(i), textContent: name })));
+    matSel.dataset.names = matNames.join('\n');
+  }
+  matSel.value = String(uvView.mat);
+  const slots = MAP_SLOTS.filter(slot => loadedMap(mats[uvView.mat], slot));
+  if (!slots.includes(uvView.slot)) uvView.slot = slots.includes(settings.uvSlot) ? settings.uvSlot : slots[0] || 'map';
+  const slotSel = $('uvSlot');
+  const none = !state.welded ? 'No model' : !state.welded.uvs ? 'No UVs' : 'No texture · UVs only';
+  const opts = slots.length ? slots.map(slot => [slot, `${SLOT_NAMES[slot][0].toUpperCase()}${SLOT_NAMES[slot].slice(1)}`]) : [['', none]];
+  const optKey = opts.map(o => o.join(':')).join(',');
+  if (slotSel.dataset.slots !== optKey) {
+    slotSel.replaceChildren(...opts.map(([value, text]) => el('option', { value, textContent: text })));
+    slotSel.dataset.slots = optKey;
+  }
+  slotSel.disabled = !slots.length;
+  slotSel.value = slots.length ? uvView.slot : '';
+  pressSeg('uvLinesSeg', 'lines', settings.uvLines);
+  pressSeg('uvPanesSeg', 'panes', settings.uvPanes);
+}
+
+// Brings the open drawer up to date with the active tab; cheap when nothing it shows has changed.
+function refreshUVView() {
+  if (!settings.uvOpen || !uvView.panes) return;
+  syncUVControls();
+  for (const side of ['A', 'B']) setPaneContent(uvView.panes[side], uvPaneContent(side));
+  layoutUV();
+  requestUVRender();
+}
+function releaseUVPanes() {
+  if (!uvView.panes) return;
+  for (const pane of Object.values(uvView.panes)) {
+    if (pane.texture) pane.texture.dispose();
+    pane.texture = null;
+    pane.quad.material.uniforms.map.value = null;
+    pane.edges.geometry.dispose();
+    pane.seams.geometry.dispose();
+    pane.key = '';
+  }
+}
+function setUVOpen(open) {
+  settings.uvOpen = open;
+  saveSettings();
+  $('uvDrawer').hidden = !open;
+  $('uvBtn').setAttribute('aria-expanded', String(open));
+  if (open && ensureUVRenderer()) refreshUVView();
+  if (!open) releaseUVPanes();
+}
+// Dragging stops where the view would get too narrow; a narrower window only caps the width (CSS), so the drawer
+// comes back at its size when the window grows again.
+function setUVWidth(w, dragging = false) {
+  const max = dragging ? Math.max(300, $('stage').clientWidth - 260) : 2400;
+  settings.uvWidth = Math.round(Math.min(max, Math.max(280, w)));
+  $('uvDrawer').style.setProperty('--uvw', `${settings.uvWidth}px`);
+}
+
 // ---------- tab switching ----------
 let loading = null, queuedDoc = null;
 // Loading a model can't be interrupted, so a tab picked meanwhile is shown once it finishes.
@@ -2641,6 +3032,7 @@ function attachDoc() {
     showEmptyState(true);
     updatePlaneHelper();
     panels();
+    refreshUVView();
     return;
   }
   showEmptyState(false);
@@ -2905,6 +3297,35 @@ $('tabs').addEventListener('keydown', e => {
 $('tabNew').addEventListener('click', () => openTab(newDoc()));
 $('sampleBtn').addEventListener('click', loadSample);
 $('frameBtn').addEventListener('click', frameCamera);
+$('uvBtn').addEventListener('click', () => setUVOpen(!settings.uvOpen));
+$('uvViewLink').addEventListener('click', () => setUVOpen(true));
+$('uvClose').addEventListener('click', () => { setUVOpen(false); $('uvBtn').focus(); });
+$('uvMat').addEventListener('change', e => { uvView.mat = Number(e.target.value); refreshUVView(); });
+$('uvSlot').addEventListener('change', e => { if (!e.target.value) return; uvView.slot = settings.uvSlot = e.target.value; saveSettings(); refreshUVView(); });
+onSeg('uvLinesSeg', 'lines', v => { settings.uvLines = v; pressSeg('uvLinesSeg', 'lines', v); requestUVRender(); });
+onSeg('uvPanesSeg', 'panes', v => { settings.uvPanes = v; pressSeg('uvPanesSeg', 'panes', v); layoutUV(); requestUVRender(); });
+{
+  // Dragging the drawer's left edge resizes it; so do the arrow keys when the edge has focus.
+  const grip = $('uvGrip');
+  let drag = null;
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    try { grip.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
+    drag = { x: e.clientX, w: $('uvDrawer').offsetWidth };
+    grip.classList.add('drag');
+  });
+  grip.addEventListener('pointermove', e => { if (drag) setUVWidth(drag.w - (e.clientX - drag.x), true); });
+  const end = () => { if (!drag) return; drag = null; grip.classList.remove('drag'); saveSettings(); };
+  grip.addEventListener('pointerup', end);
+  grip.addEventListener('pointercancel', end);
+  grip.addEventListener('dblclick', () => { setUVWidth(DEFAULTS.uvWidth); saveSettings(); });
+  grip.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    setUVWidth($('uvDrawer').offsetWidth + (e.key === 'ArrowLeft' ? 24 : -24), true);
+    saveSettings();
+  });
+}
 $('exportBtn').addEventListener('click', exportModel);
 $('fileInput').addEventListener('change', e => { openFiles(e.target.files); e.target.value = ''; });
 $('addTexBtn').addEventListener('click', () => {
@@ -2966,6 +3387,7 @@ window.addEventListener('keydown', e => {
   if (tools[k]) settings.tool = tools[k];
   else if (k === 'f') settings.mode = settings.mode === 'fill' ? 'brush' : 'fill';
   else if (k === 'w') { settings.wire = !settings.wire; applyDisplaySettings(); }
+  else if (k === 'u') { setUVOpen(!settings.uvOpen); return; }
   else if (k === '1' || k === '2' || k === '3') { settings.view = ['split', 'original', 'reduced'][Number(k) - 1]; requestRender(); }
   else if (k === '[' || k === ']') settings.brush = Math.min(30, Math.max(0.5, settings.brush * (k === ']' ? 1.2 : 1 / 1.2)));
   else return;
@@ -2976,7 +3398,7 @@ window.addEventListener('keydown', e => {
 
 window.__polyBudget = {
   openFiles, setMaterialTexture, settings, exportModel, buildExport, engine, pick, camera, controls, requestRender, rects, viewport, undo, redo,
-  docs, activate, openTab, closeDoc, newDoc,
+  docs, activate, openTab, closeDoc, newDoc, uvView, renderUV, setUVOpen,
   get state() { return state; }, get doc() { return doc; },
 };
 
@@ -2987,6 +3409,8 @@ engine.start();
 renderer.setSize(viewport.clientWidth, viewport.clientHeight, false);
 renderTabs();
 updateHeader();
+setUVWidth(settings.uvWidth);
+setUVOpen(settings.uvOpen);
 // The last visit's tabs when there are any, otherwise the sample.
 restoreTabs()
   .catch(err => { console.error(err); return false; })

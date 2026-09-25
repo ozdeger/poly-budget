@@ -959,6 +959,67 @@ function measureUVFit(ctx, result) {
   return { misplaced: Math.max(0, (m - ctx.ownBase) / Math.max(1e-6, 1 - ctx.ownBase)), raw: m, base: ctx.ownBase, ms: Date.now() - t0 };
 }
 
+// A mesh's layout in UV space, for drawing it: every edge once, and the seams (edges only one triangle uses: UV island
+// borders and open borders), as pairs of vertex indices into mesh.uvs. Vertices at the same place with the same UV
+// count as one, so an edge that is only split for its normals isn't taken for a seam, while islands that are stacked
+// in UV space (mirrored halves) keep their own borders. keep(t) picks triangles; triEnd stops early (a mirrored
+// result's own half).
+export function uvEdges(mesh, keep = null, triEnd = mesh.index.length / 3) {
+  const f32 = a => (a instanceof Float32Array ? a : Float32Array.from(a));
+  const P = f32(mesh.positions), UV = f32(mesh.uvs), idx = mesh.index, V = UV.length / 2;
+  const pb = new Int32Array(P.buffer, P.byteOffset, P.length), ub = new Int32Array(UV.buffer, UV.byteOffset, UV.length);
+  const { group, count: G } = groupBy(V, 5, (i, out) => {
+    out[0] = ub[i * 2]; out[1] = ub[i * 2 + 1]; out[2] = pb[i * 3]; out[3] = pb[i * 3 + 1]; out[4] = pb[i * 3 + 2];
+  });
+  const rep = new Int32Array(G).fill(-1);
+  for (let i = 0; i < V; i++) if (rep[group[i]] < 0) rep[group[i]] = i;
+  // Half-edges bucketed by their lower end, then sorted within each (small) bucket so equal edges sit together.
+  const start = new Uint32Array(G + 1);
+  const visit = fn => {
+    for (let t = 0; t < triEnd; t++) {
+      if (keep && !keep(t)) continue;
+      for (let k = 0; k < 3; k++) {
+        const a = group[idx[t * 3 + k]], b = group[idx[t * 3 + ((k + 1) % 3)]];
+        if (a !== b) fn(a < b ? a : b, a < b ? b : a);
+      }
+    }
+  };
+  visit(lo => { start[lo + 1]++; });
+  for (let g = 0; g < G; g++) start[g + 1] += start[g];
+  const hi = new Uint32Array(start[G]), fill = start.slice(0, G);
+  visit((lo, h) => { hi[fill[lo]++] = h; });
+  let edges = 0, seams = 0;
+  for (let g = 0; g < G; g++) {
+    const s = start[g], e = start[g + 1];
+    for (let i = s + 1; i < e; i++) {
+      const x = hi[i];
+      let j = i - 1;
+      while (j >= s && hi[j] > x) { hi[j + 1] = hi[j]; j--; }
+      hi[j + 1] = x;
+    }
+    for (let i = s; i < e;) {
+      let j = i + 1;
+      while (j < e && hi[j] === hi[i]) j++;
+      edges++;
+      if (j - i === 1) seams++;
+      i = j;
+    }
+  }
+  const E = new Uint32Array(edges * 2), S = new Uint32Array(seams * 2);
+  let ne = 0, ns = 0;
+  for (let g = 0; g < G; g++) {
+    const e = start[g + 1];
+    for (let i = start[g]; i < e;) {
+      let j = i + 1;
+      while (j < e && hi[j] === hi[i]) j++;
+      E[ne++] = rep[g]; E[ne++] = rep[hi[i]];
+      if (j - i === 1) { S[ns++] = rep[g]; S[ns++] = rep[hi[i]]; }
+      i = j;
+    }
+  }
+  return { edges: E, seams: S };
+}
+
 // Merges welded vertices that differ only by UV, so reduction can ignore the old UV seams.
 export function stripUVs(mesh, hardAngle = 30) {
   const P = mesh.positions, N = mesh.normals, V = mesh.vertexCount, idx = mesh.index;

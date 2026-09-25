@@ -437,8 +437,17 @@ details.more[open] > summary { margin-bottom: 8px; }
 .pair.bad b { color: var(--crit); }
 
 /* ---------- stage ---------- */
-.stage { grid-area: stage; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+.stage {
+  grid-area: stage;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "bar bar" "view uv";
+  min-width: 0;
+  min-height: 0;
+}
 .stagebar {
+  grid-area: bar;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -464,7 +473,44 @@ details.more[open] > summary { margin-bottom: 8px; }
 .tbtn:hover { border-color: var(--muted); }
 .tbtn[aria-pressed="true"], .tbtn[aria-expanded="true"] { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); }
 .tbtn kbd { margin-left: 1px; }
-.viewport { position: relative; min-height: 0; background: var(--viewport); overflow: hidden; }
+.viewport { grid-area: view; position: relative; min-height: 0; background: var(--viewport); overflow: hidden; }
+
+/* ---------- texture & UV drawer ---------- */
+.uvdrawer {
+  grid-area: uv;
+  position: relative;
+  width: var(--uvw, 420px);
+  max-width: calc(100vw - var(--side) - 260px);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+.uv-grip { position: absolute; left: -5px; top: 0; bottom: 0; width: 9px; z-index: 3; cursor: col-resize; touch-action: none; }
+.uv-grip::after { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px; background: transparent; transition: background 0.12s; }
+.uv-grip:hover::after, .uv-grip.drag::after, .uv-grip:focus-visible::after { background: var(--accent); width: 2px; left: 3px; }
+.uv-grip:focus-visible { outline: none; }
+.uv-head { display: flex; align-items: center; gap: 8px; padding: 10px 8px 0 14px; }
+.uv-head h2 { margin: 0; font: 600 11px/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
+.icon-btn { flex: none; display: grid; place-items: center; width: 28px; height: 28px; margin-left: auto; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.icon-btn:hover { background: var(--raise); color: var(--text); }
+.uv-bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px 12px; border-bottom: 1px solid var(--line); }
+.uv-bar select { flex: 1 1 130px; }
+.uv-bar .seg { flex: none; }
+.uv-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--viewport); }
+.uv-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.uv-pane { position: absolute; cursor: grab; touch-action: none; }
+.uv-pane.drag { cursor: grabbing; }
+.uv-pane .vlabel { top: 10px; left: 10px; }
+.uv-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; color: var(--muted); font-size: 12px; text-align: center; pointer-events: none; }
+.uv-msg.busy::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--accent); vertical-align: middle; animation: pulse 0.9s ease-in-out infinite; }
+.uv-sep { position: absolute; background: var(--line-strong); pointer-events: none; }
+.uv-foot { display: flex; gap: 12px; padding: 7px 14px; border-top: 1px solid var(--line); font: 11px/1.4 var(--font-num); color: var(--muted); white-space: nowrap; overflow: hidden; }
+.uv-foot span { overflow: hidden; text-overflow: ellipsis; }
+.linkbtn { margin-left: auto; padding: 0; border: 0; background: none; color: var(--accent); font: 500 12px/1.2 var(--font-ui); cursor: pointer; }
+.linkbtn:hover { text-decoration: underline; }
 .viewport canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .vlabel {
   position: absolute;
@@ -641,6 +687,9 @@ details.more[open] > summary { margin-bottom: 8px; }
   .stagebar { padding-inline: 12px; }
   .toolopts { left: 60px; right: 10px; transform: none; max-width: none; }
   .viewport { height: 58vh; min-height: 320px; }
+  .stage { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "view" "uv"; }
+  .uvdrawer { width: auto; max-width: none; height: min(170vw, 900px); border-left: 0; border-top: 1px solid var(--line); }
+  .uv-grip { display: none; }
   .side { border-right: 0; overflow: visible; }
 }
 @media (max-width: 600px) {
@@ -653,7 +702,7 @@ details.more[open] > summary { margin-bottom: 8px; }
   .open-label { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .pill.busy::before, .status-line.busy::before { animation: none; }
+  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .pill.busy::before, .status-line.busy::before, .uv-msg.busy::before { animation: none; }
   .hint { transition: none; }
 }
 </style>
@@ -728,7 +777,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       <ul class="mats" id="texList"></ul>
       <input type="file" id="texInput" multiple hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
       <input type="file" id="texOneInput" hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
-      <div class="field"><span>UV mapping</span>
+      <div class="field"><span>UV mapping<button type="button" class="linkbtn" id="uvViewLink" title="Show the textures with their UV layouts (U)">View the layout</button></span>
         <div class="seg fill" role="group" aria-label="UV mapping" id="uvModeSeg">
           <button type="button" data-uvmode="auto" title="Keep the original UVs while they still fit the texture, otherwise make new ones">Auto</button><button type="button" data-uvmode="keep" title="Always keep the original UVs">Original UVs</button><button type="button" data-uvmode="new" title="Always make new UVs and bake the texture onto them">New UVs</button>
         </div>
@@ -820,6 +869,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
       <button type="button" class="tbtn" id="wireBtn" aria-pressed="false" title="Show the triangle edges (W)" aria-label="Wireframe"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12h16M12 4v16M4 12l8-8M12 20l8-8"/></svg><span class="t-label">Wireframe</span><kbd>W</kbd></button>
       <span class="spacer"></span>
+      <button type="button" class="tbtn" id="uvBtn" aria-expanded="false" aria-controls="uvDrawer" title="Show the textures with their UV layouts (U)" aria-label="Texture and UVs"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M7.5 7.5h4v4h-4zM13.5 16.5l3-5 2 5z"/></svg><span class="t-label">Texture &amp; UVs</span><kbd>U</kbd></button>
       <button type="button" class="tbtn" id="frameBtn" title="Fit the model in the view" aria-label="Frame the model"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span class="t-label">Frame</span></button>
     </div>
     <div class="viewport" id="viewport">
@@ -864,6 +914,30 @@ details.more[open] > summary { margin-bottom: 8px; }
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <div class="drop" id="drop" hidden><div>Drop a model with its textures, or textures for the open model</div></div>
     </div>
+    <aside class="uvdrawer" id="uvDrawer" aria-labelledby="hUVView" hidden>
+      <div class="uv-grip" id="uvGrip" role="separator" aria-orientation="vertical" aria-label="Resize the texture panel" tabindex="0"></div>
+      <div class="uv-head">
+        <h2 id="hUVView">Texture &amp; UVs</h2>
+        <button type="button" class="icon-btn" id="uvClose" title="Close (U)" aria-label="Close the texture panel"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <div class="uv-bar">
+        <select class="input" id="uvMat" aria-label="Material"></select>
+        <select class="input" id="uvSlot" aria-label="Texture map"></select>
+        <div class="seg" role="group" aria-label="UV lines" id="uvLinesSeg">
+          <button type="button" data-lines="none" title="The texture alone">None</button><button type="button" data-lines="seams" title="Only the island borders">Seams</button><button type="button" data-lines="all" title="Every triangle edge, with the island borders stronger">All</button>
+        </div>
+        <div class="seg" role="group" aria-label="Panes" id="uvPanesSeg">
+          <button type="button" data-panes="both">Both</button><button type="button" data-panes="A">Original</button><button type="button" data-panes="B">Reduced</button>
+        </div>
+      </div>
+      <div class="uv-stage" id="uvStage">
+        <canvas id="uvCanvas" aria-label="Texture with its UV layout"></canvas>
+        <div class="uv-pane" id="uvPaneA" data-pane="A"><div class="vlabel"><b>Original</b><span id="uvLabelA"></span></div><div class="uv-msg" id="uvMsgA" hidden></div></div>
+        <div class="uv-pane" id="uvPaneB" data-pane="B"><div class="vlabel"><b>Reduced</b><span id="uvLabelB"></span></div><div class="uv-msg" id="uvMsgB" hidden></div></div>
+        <div class="uv-sep" id="uvSep" hidden></div>
+      </div>
+      <div class="uv-foot" id="uvFoot"><span>Scroll to zoom · drag to pan · double-click to fit</span></div>
+    </aside>
   </main>
 </div>
 
