@@ -2100,6 +2100,14 @@ function geometryOf(ctx) {
   return ctx.geo;
 }
 
+// A 32-bit FNV-1a hash of a float array's bits.
+function hashFloats(a) {
+  const u = new Uint32Array(a.buffer, a.byteOffset, a.length);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < u.length; i++) h = Math.imul(h ^ u[i], 16777619);
+  return (h >>> 0).toString(36);
+}
+
 // Density per vertex that gives each separate piece at least MIN_PIECE_QUADS quads, on top of the painted density.
 function pieceDensity(mesh, density, quads) {
   const V = mesh.vertexCount, idx = mesh.index, P = mesh.positions, uf = new UnionFind(V);
@@ -2124,8 +2132,9 @@ function pieceDensity(mesh, density, quads) {
     extra = 0;
     for (let k = 0; k < count; k++) {
       const share = (quads * weighted[k]) / total;
-      boost[k] = share > 0 && share < min ? min / share : 1;
-      if (boost[k] > 1) extra += min - share;
+      // In powers of two, so a small change of budget leaves the densities (and the remesher's cache) as they were.
+      boost[k] = share > 0 && share < min ? 2 ** Math.ceil(Math.log2(min / share)) : 1;
+      if (boost[k] > 1) extra += share * (boost[k] - 1);
     }
     if (extra <= quads * 0.2) break;
     min *= (quads * 0.2) / extra;
@@ -2268,8 +2277,12 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     if (!any) density = null;
   }
   density = pieceDensity({ positions: base.positions, index, vertexCount: V }, density, quads);
+  // The remesher keeps its working surface and direction field per variant (whole or kept half) between budgets.
+  const holder = sym ? halfFor(geo, sym) : geo;
+  if (!holder.quadCache) holder.quadCache = {};
   const rq = remeshQuads({ positions: base.positions, index, normals: smooth }, {
     targetFaces: quads, density, plane: sym ? { axis: sym.axis, offset: Math.fround(sym.offset) } : null, progress,
+    cache: holder.quadCache, cacheKey: `${st.prune ? 1 : 0}|${index.length}|${density ? hashFloats(density) : 'even'}`,
   });
   // Triangles the prune dropped don't exist for the lookups either.
   const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym);

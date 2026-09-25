@@ -1277,7 +1277,28 @@ function compatOrient(Qa, ia, Na, ja, Qb, ib, Nb, jb) {
   if (bi === 0) { R[3] = q1x * s; R[4] = q1y * s; R[5] = q1z * s; } else { R[3] = b1x * s; R[4] = b1y * s; R[5] = b1z * s; }
 }
 
-function optimizeOrientations(L, iterations) {
+// The intrinsic variant (compat_orientation_intrinsic_4): q1 is first turned into n0's plane, then the closest of its
+// quarter turns to q0 is taken; it only looks at the surface, not at how it bends.
+function compatOrientIntrinsic(Qa, ia, Na, ja, Qb, ib, Nb, jb) {
+  const q0x = Qa[ia], q0y = Qa[ia + 1], q0z = Qa[ia + 2], n0x = Na[ja], n0y = Na[ja + 1], n0z = Na[ja + 2];
+  let q1x = Qb[ib], q1y = Qb[ib + 1], q1z = Qb[ib + 2];
+  const n1x = Nb[jb], n1y = Nb[jb + 1], n1z = Nb[jb + 2];
+  const c = n1x * n0x + n1y * n0y + n1z * n0z;
+  if (c < 0.9999) {
+    const ax = n1y * n0z - n1z * n0y, ay = n1z * n0x - n1x * n0z, az = n1x * n0y - n1y * n0x, aa = ax * ax + ay * ay + az * az;
+    const f = aa > 0 ? (ax * q1x + ay * q1y + az * q1z) * (1 - c) / aa : 0;
+    const x = q1x * c + (ay * q1z - az * q1y) + ax * f, y = q1y * c + (az * q1x - ax * q1z) + ay * f, z = q1z * c + (ax * q1y - ay * q1x) + az * f;
+    q1x = x; q1y = y; q1z = z;
+  }
+  const tx = n0y * q1z - n0z * q1y, ty = n0z * q1x - n0x * q1z, tz = n0x * q1y - n0y * q1x;
+  const d0 = q1x * q0x + q1y * q0y + q1z * q0z, d1 = tx * q0x + ty * q0y + tz * q0z;
+  R[0] = q0x; R[1] = q0y; R[2] = q0z;
+  if (Math.abs(d0) > Math.abs(d1)) { const sg = d0 < 0 ? -1 : 1; R[3] = q1x * sg; R[4] = q1y * sg; R[5] = q1z * sg; }
+  else { const sg = d1 < 0 ? -1 : 1; R[3] = tx * sg; R[4] = ty * sg; R[5] = tz * sg; }
+}
+
+function optimizeOrientations(L, iterations, intrinsic = false) {
+  const compat = intrinsic ? compatOrientIntrinsic : compatOrient;
   const { n, start, id, w, N, Q } = L;
   const CQ = L.CQ, Cw = L.Cw;
   const S3 = new Float64Array(3);
@@ -1288,7 +1309,7 @@ function optimizeOrientations(L, iterations) {
       let wsum = 0;
       for (let l = start[i]; l < start[i + 1]; l++) {
         const j = id[l], wt = w[l];
-        compatOrient(S3, 0, N, i * 3, Q, j * 3, N, j * 3);
+        compat(S3, 0, N, i * 3, Q, j * 3, N, j * 3);
         let x = R[0] * wsum + R[3] * wt, y = R[1] * wsum + R[4] * wt, z = R[2] * wsum + R[5] * wt;
         const d = nx * x + ny * y + nz * z;
         x -= nx * d; y -= ny * d; z -= nz * d;
@@ -1426,7 +1447,41 @@ function orientationSingularities(L, index) {
   return count;
 }
 
-function solveFields(levels, seed, progress, iterations = 6) {
+// The direction field alone, from the coarsest level down (the position field follows in resolvePositions).
+function solveOrientations(levels, seed, progress, iterations = 6, intrinsic = false) {
+  const rand = random(seed), top = levels[levels.length - 1], T6 = new Float64Array(6);
+  for (const L of levels) { if (!L.Q) L.Q = new Float64Array(L.n * 3); if (!L.O) L.O = new Float64Array(L.n * 3); }
+  for (let i = 0; i < top.n; i++) {
+    tangents(top.N[i * 3], top.N[i * 3 + 1], top.N[i * 3 + 2], T6);
+    const a = rand() * 2 * Math.PI, c = Math.cos(a), s = Math.sin(a);
+    for (let d = 0; d < 3; d++) top.Q[i * 3 + d] = T6[d] * c + T6[3 + d] * s;
+  }
+  const total = levels.reduce((sum, L) => sum + L.n, 0);
+  let done = 0;
+  for (let l = levels.length - 1; l >= 0; l--) {
+    const L = levels[l];
+    optimizeOrientations(L, iterations, intrinsic);
+    done += L.n;
+    if (progress) progress('orientation', done / total);
+    if (l === 0) break;
+    const F = levels[l - 1];
+    for (let i = 0; i < L.n; i++) {
+      for (let h = 0; h < 2; h++) {
+        const c = L.up[i * 2 + h];
+        if (c < 0) continue;
+        const nx = F.N[c * 3], ny = F.N[c * 3 + 1], nz = F.N[c * 3 + 2];
+        let x = L.Q[i * 3], y = L.Q[i * 3 + 1], z = L.Q[i * 3 + 2];
+        const d = nx * x + ny * y + nz * z;
+        x -= nx * d; y -= ny * d; z -= nz * d;
+        const len = Math.hypot(x, y, z);
+        if (len > 1e-30) { x /= len; y /= len; z /= len; } else { tangents(nx, ny, nz, T6); x = T6[0]; y = T6[1]; z = T6[2]; }
+        F.Q[c * 3] = x; F.Q[c * 3 + 1] = y; F.Q[c * 3 + 2] = z;
+      }
+    }
+  }
+}
+
+function solveFields(levels, seed, progress, iterations = 6, intrinsic = false) {
   const rand = random(seed);
   const top = levels[levels.length - 1], T6 = new Float64Array(6);
   for (const L of levels) { L.Q = new Float64Array(L.n * 3); L.O = new Float64Array(L.n * 3); }
@@ -1443,7 +1498,7 @@ function solveFields(levels, seed, progress, iterations = 6) {
     done = 0;
     for (let l = levels.length - 1; l >= 0; l--) {
       const L = levels[l];
-      if (kind === 'orientation') optimizeOrientations(L, iterations); else optimizePositions(L, iterations);
+      if (kind === 'orientation') optimizeOrientations(L, iterations, intrinsic); else optimizePositions(L, iterations);
       done += L.n;
       if (progress) progress(kind, done / total);
       if (l === 0) break;
@@ -1471,9 +1526,11 @@ function solveFields(levels, seed, progress, iterations = 6) {
   }
 }
 
-// Re-solves only the position field (the direction field stays), after the grid size changed.
-function resolvePositions(levels, seed) {
+// Solves the position field (the direction field stays), from a fresh random start at the coarsest level.
+function resolvePositions(levels, seed, progress = null) {
   const rand = random(seed ^ 0x5bd1e995), top = levels[levels.length - 1], T6 = new Float64Array(6);
+  const total = levels.reduce((sum, L) => sum + L.n, 0);
+  let done = 0;
   for (let i = 0; i < top.n; i++) {
     tangents(top.N[i * 3], top.N[i * 3 + 1], top.N[i * 3 + 2], T6);
     const x = rand() * 2 - 1, y = rand() * 2 - 1;
@@ -1482,6 +1539,8 @@ function resolvePositions(levels, seed) {
   for (let l = levels.length - 1; l >= 0; l--) {
     const L = levels[l];
     optimizePositions(L, 6);
+    done += L.n;
+    if (progress) progress('position', done / total);
     if (l === 0) break;
     const F = levels[l - 1];
     for (let i = 0; i < L.n; i++) {
@@ -2159,30 +2218,47 @@ function repairFaces(faces, P, nv, keepOpen) {
     dropped += before - list.length;
     if (list.length === before) break;
   }
-  if (dropped) {
-    // Holes: loops of half-edges no face uses the other way, away from real open borders.
+  {
+    // Holes: loops of half-edges no face uses the other way, away from real open borders. A loop runs against the
+    // faces' direction, so it is walked from each unmatched half-edge a -> b back from b to a.
     const half = new Map();
     for (const p of list) for (let k = 0; k < p.length; k++) half.set(p[k] * nv + p[(k + 1) % p.length], 1);
     const next = new Map();
     for (const p of list) {
       for (let k = 0; k < p.length; k++) {
         const a = p[k], b = p[(k + 1) % p.length];
-        if (!half.has(b * nv + a)) next.set(b, a);
+        if (half.has(b * nv + a)) continue;
+        const l = next.get(b);
+        if (l) l.push(a); else next.set(b, [a]);
       }
     }
-    const done = new Set();
+    const usedHalf = new Set();
     const taken = (a, b) => half.has(a * nv + b) || half.has(b * nv + a);
     for (const start of next.keys()) {
-      if (done.has(start)) continue;
-      const loop = [];
-      let v = start;
-      while (v !== undefined && !done.has(v) && loop.length < 12) { done.add(v); loop.push(v); v = next.get(v); }
-      if (v !== start || loop.length < 3 || loop.every(x => keepOpen(x))) continue;
-      if (loop.length & 1) {
-        const q = loop.length > 3 ? evenToQuads(P, loop.slice(0, loop.length - 1), taken).quads : [];
-        list.push(...q, loop.length > 3 ? [loop[loop.length - 2], loop[loop.length - 1], loop[0]] : loop);
-      } else list.push(...evenToQuads(P, loop, taken).quads);
-      filled++;
+      for (const first of next.get(start)) {
+        if (usedHalf.has(start * nv + first)) continue;
+        const loop = [start];
+        const steps = [start * nv + first];
+        let v = first, prev = start, closed = false;
+        while (loop.length < 32) {
+          if (v === start) { closed = true; break; }
+          loop.push(v);
+          const options = (next.get(v) || []).filter(x => !usedHalf.has(v * nv + x) && !steps.includes(v * nv + x));
+          if (!options.length) break;
+          // At a vertex two holes share, keep to the one that closes this loop (prefer the start).
+          const w = options.includes(start) ? start : options[0];
+          steps.push(v * nv + w);
+          prev = v;
+          v = w;
+        }
+        if (!closed || loop.length < 3 || loop.every(x => keepOpen(x))) continue;
+        for (const st of steps) usedHalf.add(st);
+        if (loop.length & 1) {
+          const q = loop.length > 3 ? evenToQuads(P, loop.slice(0, loop.length - 1), taken).quads : [];
+          list.push(...q, loop.length > 3 ? [loop[loop.length - 2], loop[loop.length - 1], loop[0]] : loop);
+        } else list.push(...evenToQuads(P, loop, taken).quads);
+        filled++;
+      }
     }
   }
   return { faces: list, dropped, filled };
@@ -2420,35 +2496,13 @@ function normalsAndAreas(P, index) {
   return { N, A };
 }
 
-// ---------- the whole remesh ----------
-
-// mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
-// opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), boundary: align open borders (true),
-//        plane: { axis, offset } whose border is kept exactly on the plane, seed, relax: iterations, progress(stage, f) }
-// Returns { positions (Float32Array), faces (Uint32Array, 4 per face, NONE in the 4th for a triangle), faceCount,
-//           hit: { tri (Int32Array), bary (Float32Array, 3 per vertex) }: where each vertex sits on the input surface,
-//           faceTri (Int32Array): the input triangle under each face's middle, stats }.
-function remeshQuads(mesh, opt) {
-  const t0 = Date.now(), timings = {};
-  const mark = label => { timings[label] = Date.now() - t0 - Object.values(timings).reduce((s, v) => s + v, 0); };
-  const progress = opt.progress || null;
-  const srcP = mesh.positions, srcIdx = mesh.index instanceof Uint32Array ? mesh.index : Uint32Array.from(mesh.index), V0 = srcP.length / 3;
-  const target = Math.max(6, opt.targetFaces | 0);
-  const dens = opt.density || null;
-  const na = normalsAndAreas(srcP, srcIdx);
-  const srcN = mesh.normals || na.N, srcA = na.A;
-
-  // Surface area (weighted by density) sets the grid size: faces ≈ Σ area·density / size².
+// The working surface for the fields: a dense input clustered to about two and a half vertices per grid step, and
+// edges still longer than 0.7 of a step split so the grid can't step over a vertex; then its normals (smoothed a little,
+// keeping sharp edges), the open borders as constraints, and the hierarchy.
+function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress) {
   let weighted = 0;
-  for (let v = 0; v < V0; v++) weighted += srcA[v] * (dens ? dens[v] : 1);
-  // Extraction tends to give about a tenth more faces than area / size², so the first grid starts that much larger.
-  let scale = Math.sqrt(weighted / target) * 1.05;
-  const sizeAt = v => (dens ? scale / Math.sqrt(Math.max(1e-6, dens[v])) : scale);
-
-  // Working surface: a dense input is clustered to about two and a half vertices per grid step, and edges still longer
-  // than 0.7 of a step are split so the grid can't step over a vertex.
-  const cellFactor = opt.cellFactor ?? 2.5, splitFactor = opt.splitFactor ?? 0.7;
-  const expected = (cellFactor * cellFactor * weighted) / (scale * scale);
+  for (let v = 0; v < V0; v++) { const s = sizeAt(v); weighted += srcA[v] / (s * s); }
+  const expected = cellFactor * cellFactor * weighted;
   let wP, wN, wA, wIdx, wOf = null, wRep = null;
   if (V0 > expected * 1.5) {
     const cl = clusterSurface(srcP, srcIdx, srcN, srcA, v => sizeAt(v) / cellFactor);
@@ -2513,15 +2567,81 @@ function remeshQuads(mesh, opt) {
       borderEdges++;
     }
   }
+  // Smoother normals for the fields, so bumps smaller than a quad don't pull the directions around: each normal is
+  // averaged with its neighbours', weighted down fast as they turn away, so sharp edges keep their crease.
+  const creaseCos = Math.cos(((opt.smoothAngle ?? 60) * Math.PI) / 180);
+  for (let it = 0; it < (opt.normalSmooth ?? 10); it++) {
+    const Nn = new Float64Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const ax = L0.N[i * 3], ay = L0.N[i * 3 + 1], az = L0.N[i * 3 + 2];
+      let x = ax * L0.A[i], y = ay * L0.A[i], z = az * L0.A[i];
+      for (let l = L0.start[i]; l < L0.start[i + 1]; l++) {
+        const j = L0.id[l], bx = L0.N[j * 3], by = L0.N[j * 3 + 1], bz = L0.N[j * 3 + 2];
+        const u = (1 - (ax * bx + ay * by + az * bz)) / (1 - creaseCos), wt = L0.A[j] * Math.exp(-u * u);
+        x += bx * wt; y += by * wt; z += bz * wt;
+      }
+      const len = Math.hypot(x, y, z) || 1;
+      Nn[i * 3] = x / len; Nn[i * 3 + 1] = y / len; Nn[i * 3 + 2] = z / len;
+    }
+    L0.N.set(Nn);
+  }
   const levels = buildHierarchy(L0);
   if (borderEdges) propagateConstraints(levels);
   mark('hierarchy');
   if (progress) progress('prepare', 1);
+  return { levels, n, nC, WI };
+}
 
+// ---------- the whole remesh ----------
+
+// mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
+// opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), boundary: align open borders (true),
+//        plane: { axis, offset } whose border is kept exactly on the plane, seed, relax: iterations, progress(stage, f) }
+// Returns { positions (Float32Array), faces (Uint32Array, 4 per face, NONE in the 4th for a triangle), faceCount,
+//           hit: { tri (Int32Array), bary (Float32Array, 3 per vertex) }: where each vertex sits on the input surface,
+//           faceTri (Int32Array): the input triangle under each face's middle, stats }.
+function remeshQuads(mesh, opt) {
+  const t0 = Date.now(), timings = {};
+  const mark = label => { timings[label] = Date.now() - t0 - Object.values(timings).reduce((s, v) => s + v, 0); };
+  const progress = opt.progress || null;
+  const srcP = mesh.positions, srcIdx = mesh.index instanceof Uint32Array ? mesh.index : Uint32Array.from(mesh.index), V0 = srcP.length / 3;
+  const target = Math.max(6, opt.targetFaces | 0);
+  const dens = opt.density || null;
+  const na = normalsAndAreas(srcP, srcIdx);
+  const srcN = mesh.normals || na.N, srcA = na.A;
+
+  // Surface area (weighted by density) sets the grid size: faces ≈ Σ area·density / size².
+  let weighted = 0;
+  for (let v = 0; v < V0; v++) weighted += srcA[v] * (dens ? dens[v] : 1);
+  // Extraction tends to give a few percent more faces than area / size², so the first grid starts that much larger.
+  let scale = Math.sqrt(weighted / target) * 1.02;
+  const sizeAt = v => (dens ? scale / Math.sqrt(Math.max(1e-6, dens[v])) : scale);
+
+  // The working surface, its hierarchy and the direction field don't depend on the exact budget: they are kept in
+  // opt.cache and reused while the grid size stays within the same step of 2^(1/4) and nothing else changed.
+  const cellFactor = opt.cellFactor ?? 2.5, splitFactor = opt.splitFactor ?? 0.7;
   const seed = opt.seed ?? 12345;
-  solveFields(levels, seed, progress, opt.iterations);
-  mark('fields');
+  const bucket = Math.round(4 * Math.log2(scale / cellFactor));
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, opt.normalSmooth ?? 10, opt.smoothAngle ?? 60, opt.intrinsic ? 1 : 0, seed, cellFactor, splitFactor].join('|');
+  const cache = opt.cache || null;
+  let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
+  if (work) {
+    const ratio = scale / work.scale;
+    work.levels.forEach((L, l) => { const base = work.baseS[l]; for (let i = 0; i < L.n; i++) L.S[i] = base[i] * ratio; });
+    mark('cached');
+    if (progress) progress('orientation', 1);
+  } else {
+    work = buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress);
+    work.scale = scale;
+    work.baseS = work.levels.map(L => L.S.slice());
+    solveOrientations(work.levels, seed, progress, opt.iterations, opt.intrinsic);
+    mark('orientation');
+    if (cache) { cache.key = key; cache.work = work; }
+  }
+  const { levels, n, nC, WI } = work, L0 = levels[0];
   if (opt.debug === 'singularities') return { singularities: orientationSingularities(L0, WI), n };
+  resolvePositions(levels, seed, progress);
+  mark('positions');
 
   const grid = new SurfaceGrid(srcP, srcIdx, scale);
   const attempts = [];
@@ -2551,7 +2671,7 @@ function remeshQuads(mesh, opt) {
       : evenFaces(polys, G.P, G.nv);
     if (progress) progress('extract', 1);
     const count = even.faces.length;
-    result = { G, even, count };
+    result = { G, even, count, rawPolys: opt.debug === 'stages' ? polys.map(p => p.slice()) : null };
     attempts.push(count);
     if (opt.debug === 'even') return { positions: even.positions, polys: even.faces, rawPolys: polys, G, nv0: G.nv, stats: { scale, count } };
     mark(`extract${attempt}`);
@@ -2567,11 +2687,16 @@ function remeshQuads(mesh, opt) {
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
   const nv = even.nv, P = even.positions;
+  if (opt.debug === 'stages') {
+    const openOf = list => { const c = new Map(); for (const p of list) for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; c.set(key, (c.get(key) || 0) + 1); } let o = 0; for (const v of c.values()) if (v === 1) o++; return o; };
+    result.stageOpen = { extracted: openOf(result.rawPolys || []), even: openOf(even.faces) };
+  }
   const tidy = opt.valence === false ? { faces: even.faces, moves: 0 } : optimizeValence(even.faces, P);
+  if (result.stageOpen) result.stageOpen.valence = (() => { const c = new Map(); for (const p of tidy.faces) for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; c.set(key, (c.get(key) || 0) + 1); } let o = 0; for (const v of c.values()) if (v === 1) o++; return o; })();
   // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open.
   const keepOpen = v => v < result.G.nv && result.G.fixed[v] === 1;
   const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
-  const faces = repaired.dropped ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
+  const faces = repaired.dropped || repaired.filled ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
   mark('valence');
   const nbr = new Array(nv);
   for (let v = 0; v < nv; v++) nbr[v] = [];
@@ -2647,7 +2772,7 @@ function remeshQuads(mesh, opt) {
   });
   return {
     positions, faces: out, faceCount: faces.length, hit: { tri, bary: bc }, faceTri,
-    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
+    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, stageOpen: result.stageOpen, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
   };
 }
 
@@ -4757,6 +4882,14 @@ function geometryOf(ctx) {
   return ctx.geo;
 }
 
+// A 32-bit FNV-1a hash of a float array's bits.
+function hashFloats(a) {
+  const u = new Uint32Array(a.buffer, a.byteOffset, a.length);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < u.length; i++) h = Math.imul(h ^ u[i], 16777619);
+  return (h >>> 0).toString(36);
+}
+
 // Density per vertex that gives each separate piece at least MIN_PIECE_QUADS quads, on top of the painted density.
 function pieceDensity(mesh, density, quads) {
   const V = mesh.vertexCount, idx = mesh.index, P = mesh.positions, uf = new UnionFind(V);
@@ -4781,8 +4914,9 @@ function pieceDensity(mesh, density, quads) {
     extra = 0;
     for (let k = 0; k < count; k++) {
       const share = (quads * weighted[k]) / total;
-      boost[k] = share > 0 && share < min ? min / share : 1;
-      if (boost[k] > 1) extra += min - share;
+      // In powers of two, so a small change of budget leaves the densities (and the remesher's cache) as they were.
+      boost[k] = share > 0 && share < min ? 2 ** Math.ceil(Math.log2(min / share)) : 1;
+      if (boost[k] > 1) extra += share * (boost[k] - 1);
     }
     if (extra <= quads * 0.2) break;
     min *= (quads * 0.2) / extra;
@@ -4925,8 +5059,12 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     if (!any) density = null;
   }
   density = pieceDensity({ positions: base.positions, index, vertexCount: V }, density, quads);
+  // The remesher keeps its working surface and direction field per variant (whole or kept half) between budgets.
+  const holder = sym ? halfFor(geo, sym) : geo;
+  if (!holder.quadCache) holder.quadCache = {};
   const rq = remeshQuads({ positions: base.positions, index, normals: smooth }, {
     targetFaces: quads, density, plane: sym ? { axis: sym.axis, offset: Math.fround(sym.offset) } : null, progress,
+    cache: holder.quadCache, cacheKey: `${st.prune ? 1 : 0}|${index.length}|${density ? hashFloats(density) : 'even'}`,
   });
   // Triangles the prune dropped don't exist for the lookups either.
   const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym);
@@ -5380,7 +5518,28 @@ function compatOrient(Qa, ia, Na, ja, Qb, ib, Nb, jb) {
   if (bi === 0) { R[3] = q1x * s; R[4] = q1y * s; R[5] = q1z * s; } else { R[3] = b1x * s; R[4] = b1y * s; R[5] = b1z * s; }
 }
 
-function optimizeOrientations(L, iterations) {
+// The intrinsic variant (compat_orientation_intrinsic_4): q1 is first turned into n0's plane, then the closest of its
+// quarter turns to q0 is taken; it only looks at the surface, not at how it bends.
+function compatOrientIntrinsic(Qa, ia, Na, ja, Qb, ib, Nb, jb) {
+  const q0x = Qa[ia], q0y = Qa[ia + 1], q0z = Qa[ia + 2], n0x = Na[ja], n0y = Na[ja + 1], n0z = Na[ja + 2];
+  let q1x = Qb[ib], q1y = Qb[ib + 1], q1z = Qb[ib + 2];
+  const n1x = Nb[jb], n1y = Nb[jb + 1], n1z = Nb[jb + 2];
+  const c = n1x * n0x + n1y * n0y + n1z * n0z;
+  if (c < 0.9999) {
+    const ax = n1y * n0z - n1z * n0y, ay = n1z * n0x - n1x * n0z, az = n1x * n0y - n1y * n0x, aa = ax * ax + ay * ay + az * az;
+    const f = aa > 0 ? (ax * q1x + ay * q1y + az * q1z) * (1 - c) / aa : 0;
+    const x = q1x * c + (ay * q1z - az * q1y) + ax * f, y = q1y * c + (az * q1x - ax * q1z) + ay * f, z = q1z * c + (ax * q1y - ay * q1x) + az * f;
+    q1x = x; q1y = y; q1z = z;
+  }
+  const tx = n0y * q1z - n0z * q1y, ty = n0z * q1x - n0x * q1z, tz = n0x * q1y - n0y * q1x;
+  const d0 = q1x * q0x + q1y * q0y + q1z * q0z, d1 = tx * q0x + ty * q0y + tz * q0z;
+  R[0] = q0x; R[1] = q0y; R[2] = q0z;
+  if (Math.abs(d0) > Math.abs(d1)) { const sg = d0 < 0 ? -1 : 1; R[3] = q1x * sg; R[4] = q1y * sg; R[5] = q1z * sg; }
+  else { const sg = d1 < 0 ? -1 : 1; R[3] = tx * sg; R[4] = ty * sg; R[5] = tz * sg; }
+}
+
+function optimizeOrientations(L, iterations, intrinsic = false) {
+  const compat = intrinsic ? compatOrientIntrinsic : compatOrient;
   const { n, start, id, w, N, Q } = L;
   const CQ = L.CQ, Cw = L.Cw;
   const S3 = new Float64Array(3);
@@ -5391,7 +5550,7 @@ function optimizeOrientations(L, iterations) {
       let wsum = 0;
       for (let l = start[i]; l < start[i + 1]; l++) {
         const j = id[l], wt = w[l];
-        compatOrient(S3, 0, N, i * 3, Q, j * 3, N, j * 3);
+        compat(S3, 0, N, i * 3, Q, j * 3, N, j * 3);
         let x = R[0] * wsum + R[3] * wt, y = R[1] * wsum + R[4] * wt, z = R[2] * wsum + R[5] * wt;
         const d = nx * x + ny * y + nz * z;
         x -= nx * d; y -= ny * d; z -= nz * d;
@@ -5529,7 +5688,41 @@ function orientationSingularities(L, index) {
   return count;
 }
 
-function solveFields(levels, seed, progress, iterations = 6) {
+// The direction field alone, from the coarsest level down (the position field follows in resolvePositions).
+function solveOrientations(levels, seed, progress, iterations = 6, intrinsic = false) {
+  const rand = random(seed), top = levels[levels.length - 1], T6 = new Float64Array(6);
+  for (const L of levels) { if (!L.Q) L.Q = new Float64Array(L.n * 3); if (!L.O) L.O = new Float64Array(L.n * 3); }
+  for (let i = 0; i < top.n; i++) {
+    tangents(top.N[i * 3], top.N[i * 3 + 1], top.N[i * 3 + 2], T6);
+    const a = rand() * 2 * Math.PI, c = Math.cos(a), s = Math.sin(a);
+    for (let d = 0; d < 3; d++) top.Q[i * 3 + d] = T6[d] * c + T6[3 + d] * s;
+  }
+  const total = levels.reduce((sum, L) => sum + L.n, 0);
+  let done = 0;
+  for (let l = levels.length - 1; l >= 0; l--) {
+    const L = levels[l];
+    optimizeOrientations(L, iterations, intrinsic);
+    done += L.n;
+    if (progress) progress('orientation', done / total);
+    if (l === 0) break;
+    const F = levels[l - 1];
+    for (let i = 0; i < L.n; i++) {
+      for (let h = 0; h < 2; h++) {
+        const c = L.up[i * 2 + h];
+        if (c < 0) continue;
+        const nx = F.N[c * 3], ny = F.N[c * 3 + 1], nz = F.N[c * 3 + 2];
+        let x = L.Q[i * 3], y = L.Q[i * 3 + 1], z = L.Q[i * 3 + 2];
+        const d = nx * x + ny * y + nz * z;
+        x -= nx * d; y -= ny * d; z -= nz * d;
+        const len = Math.hypot(x, y, z);
+        if (len > 1e-30) { x /= len; y /= len; z /= len; } else { tangents(nx, ny, nz, T6); x = T6[0]; y = T6[1]; z = T6[2]; }
+        F.Q[c * 3] = x; F.Q[c * 3 + 1] = y; F.Q[c * 3 + 2] = z;
+      }
+    }
+  }
+}
+
+function solveFields(levels, seed, progress, iterations = 6, intrinsic = false) {
   const rand = random(seed);
   const top = levels[levels.length - 1], T6 = new Float64Array(6);
   for (const L of levels) { L.Q = new Float64Array(L.n * 3); L.O = new Float64Array(L.n * 3); }
@@ -5546,7 +5739,7 @@ function solveFields(levels, seed, progress, iterations = 6) {
     done = 0;
     for (let l = levels.length - 1; l >= 0; l--) {
       const L = levels[l];
-      if (kind === 'orientation') optimizeOrientations(L, iterations); else optimizePositions(L, iterations);
+      if (kind === 'orientation') optimizeOrientations(L, iterations, intrinsic); else optimizePositions(L, iterations);
       done += L.n;
       if (progress) progress(kind, done / total);
       if (l === 0) break;
@@ -5574,9 +5767,11 @@ function solveFields(levels, seed, progress, iterations = 6) {
   }
 }
 
-// Re-solves only the position field (the direction field stays), after the grid size changed.
-function resolvePositions(levels, seed) {
+// Solves the position field (the direction field stays), from a fresh random start at the coarsest level.
+function resolvePositions(levels, seed, progress = null) {
   const rand = random(seed ^ 0x5bd1e995), top = levels[levels.length - 1], T6 = new Float64Array(6);
+  const total = levels.reduce((sum, L) => sum + L.n, 0);
+  let done = 0;
   for (let i = 0; i < top.n; i++) {
     tangents(top.N[i * 3], top.N[i * 3 + 1], top.N[i * 3 + 2], T6);
     const x = rand() * 2 - 1, y = rand() * 2 - 1;
@@ -5585,6 +5780,8 @@ function resolvePositions(levels, seed) {
   for (let l = levels.length - 1; l >= 0; l--) {
     const L = levels[l];
     optimizePositions(L, 6);
+    done += L.n;
+    if (progress) progress('position', done / total);
     if (l === 0) break;
     const F = levels[l - 1];
     for (let i = 0; i < L.n; i++) {
@@ -6262,30 +6459,47 @@ function repairFaces(faces, P, nv, keepOpen) {
     dropped += before - list.length;
     if (list.length === before) break;
   }
-  if (dropped) {
-    // Holes: loops of half-edges no face uses the other way, away from real open borders.
+  {
+    // Holes: loops of half-edges no face uses the other way, away from real open borders. A loop runs against the
+    // faces' direction, so it is walked from each unmatched half-edge a -> b back from b to a.
     const half = new Map();
     for (const p of list) for (let k = 0; k < p.length; k++) half.set(p[k] * nv + p[(k + 1) % p.length], 1);
     const next = new Map();
     for (const p of list) {
       for (let k = 0; k < p.length; k++) {
         const a = p[k], b = p[(k + 1) % p.length];
-        if (!half.has(b * nv + a)) next.set(b, a);
+        if (half.has(b * nv + a)) continue;
+        const l = next.get(b);
+        if (l) l.push(a); else next.set(b, [a]);
       }
     }
-    const done = new Set();
+    const usedHalf = new Set();
     const taken = (a, b) => half.has(a * nv + b) || half.has(b * nv + a);
     for (const start of next.keys()) {
-      if (done.has(start)) continue;
-      const loop = [];
-      let v = start;
-      while (v !== undefined && !done.has(v) && loop.length < 12) { done.add(v); loop.push(v); v = next.get(v); }
-      if (v !== start || loop.length < 3 || loop.every(x => keepOpen(x))) continue;
-      if (loop.length & 1) {
-        const q = loop.length > 3 ? evenToQuads(P, loop.slice(0, loop.length - 1), taken).quads : [];
-        list.push(...q, loop.length > 3 ? [loop[loop.length - 2], loop[loop.length - 1], loop[0]] : loop);
-      } else list.push(...evenToQuads(P, loop, taken).quads);
-      filled++;
+      for (const first of next.get(start)) {
+        if (usedHalf.has(start * nv + first)) continue;
+        const loop = [start];
+        const steps = [start * nv + first];
+        let v = first, prev = start, closed = false;
+        while (loop.length < 32) {
+          if (v === start) { closed = true; break; }
+          loop.push(v);
+          const options = (next.get(v) || []).filter(x => !usedHalf.has(v * nv + x) && !steps.includes(v * nv + x));
+          if (!options.length) break;
+          // At a vertex two holes share, keep to the one that closes this loop (prefer the start).
+          const w = options.includes(start) ? start : options[0];
+          steps.push(v * nv + w);
+          prev = v;
+          v = w;
+        }
+        if (!closed || loop.length < 3 || loop.every(x => keepOpen(x))) continue;
+        for (const st of steps) usedHalf.add(st);
+        if (loop.length & 1) {
+          const q = loop.length > 3 ? evenToQuads(P, loop.slice(0, loop.length - 1), taken).quads : [];
+          list.push(...q, loop.length > 3 ? [loop[loop.length - 2], loop[loop.length - 1], loop[0]] : loop);
+        } else list.push(...evenToQuads(P, loop, taken).quads);
+        filled++;
+      }
     }
   }
   return { faces: list, dropped, filled };
@@ -6523,35 +6737,13 @@ function normalsAndAreas(P, index) {
   return { N, A };
 }
 
-// ---------- the whole remesh ----------
-
-// mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
-// opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), boundary: align open borders (true),
-//        plane: { axis, offset } whose border is kept exactly on the plane, seed, relax: iterations, progress(stage, f) }
-// Returns { positions (Float32Array), faces (Uint32Array, 4 per face, NONE in the 4th for a triangle), faceCount,
-//           hit: { tri (Int32Array), bary (Float32Array, 3 per vertex) }: where each vertex sits on the input surface,
-//           faceTri (Int32Array): the input triangle under each face's middle, stats }.
-function remeshQuads(mesh, opt) {
-  const t0 = Date.now(), timings = {};
-  const mark = label => { timings[label] = Date.now() - t0 - Object.values(timings).reduce((s, v) => s + v, 0); };
-  const progress = opt.progress || null;
-  const srcP = mesh.positions, srcIdx = mesh.index instanceof Uint32Array ? mesh.index : Uint32Array.from(mesh.index), V0 = srcP.length / 3;
-  const target = Math.max(6, opt.targetFaces | 0);
-  const dens = opt.density || null;
-  const na = normalsAndAreas(srcP, srcIdx);
-  const srcN = mesh.normals || na.N, srcA = na.A;
-
-  // Surface area (weighted by density) sets the grid size: faces ≈ Σ area·density / size².
+// The working surface for the fields: a dense input clustered to about two and a half vertices per grid step, and
+// edges still longer than 0.7 of a step split so the grid can't step over a vertex; then its normals (smoothed a little,
+// keeping sharp edges), the open borders as constraints, and the hierarchy.
+function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress) {
   let weighted = 0;
-  for (let v = 0; v < V0; v++) weighted += srcA[v] * (dens ? dens[v] : 1);
-  // Extraction tends to give about a tenth more faces than area / size², so the first grid starts that much larger.
-  let scale = Math.sqrt(weighted / target) * 1.05;
-  const sizeAt = v => (dens ? scale / Math.sqrt(Math.max(1e-6, dens[v])) : scale);
-
-  // Working surface: a dense input is clustered to about two and a half vertices per grid step, and edges still longer
-  // than 0.7 of a step are split so the grid can't step over a vertex.
-  const cellFactor = opt.cellFactor ?? 2.5, splitFactor = opt.splitFactor ?? 0.7;
-  const expected = (cellFactor * cellFactor * weighted) / (scale * scale);
+  for (let v = 0; v < V0; v++) { const s = sizeAt(v); weighted += srcA[v] / (s * s); }
+  const expected = cellFactor * cellFactor * weighted;
   let wP, wN, wA, wIdx, wOf = null, wRep = null;
   if (V0 > expected * 1.5) {
     const cl = clusterSurface(srcP, srcIdx, srcN, srcA, v => sizeAt(v) / cellFactor);
@@ -6616,15 +6808,81 @@ function remeshQuads(mesh, opt) {
       borderEdges++;
     }
   }
+  // Smoother normals for the fields, so bumps smaller than a quad don't pull the directions around: each normal is
+  // averaged with its neighbours', weighted down fast as they turn away, so sharp edges keep their crease.
+  const creaseCos = Math.cos(((opt.smoothAngle ?? 60) * Math.PI) / 180);
+  for (let it = 0; it < (opt.normalSmooth ?? 10); it++) {
+    const Nn = new Float64Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const ax = L0.N[i * 3], ay = L0.N[i * 3 + 1], az = L0.N[i * 3 + 2];
+      let x = ax * L0.A[i], y = ay * L0.A[i], z = az * L0.A[i];
+      for (let l = L0.start[i]; l < L0.start[i + 1]; l++) {
+        const j = L0.id[l], bx = L0.N[j * 3], by = L0.N[j * 3 + 1], bz = L0.N[j * 3 + 2];
+        const u = (1 - (ax * bx + ay * by + az * bz)) / (1 - creaseCos), wt = L0.A[j] * Math.exp(-u * u);
+        x += bx * wt; y += by * wt; z += bz * wt;
+      }
+      const len = Math.hypot(x, y, z) || 1;
+      Nn[i * 3] = x / len; Nn[i * 3 + 1] = y / len; Nn[i * 3 + 2] = z / len;
+    }
+    L0.N.set(Nn);
+  }
   const levels = buildHierarchy(L0);
   if (borderEdges) propagateConstraints(levels);
   mark('hierarchy');
   if (progress) progress('prepare', 1);
+  return { levels, n, nC, WI };
+}
 
+// ---------- the whole remesh ----------
+
+// mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
+// opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), boundary: align open borders (true),
+//        plane: { axis, offset } whose border is kept exactly on the plane, seed, relax: iterations, progress(stage, f) }
+// Returns { positions (Float32Array), faces (Uint32Array, 4 per face, NONE in the 4th for a triangle), faceCount,
+//           hit: { tri (Int32Array), bary (Float32Array, 3 per vertex) }: where each vertex sits on the input surface,
+//           faceTri (Int32Array): the input triangle under each face's middle, stats }.
+function remeshQuads(mesh, opt) {
+  const t0 = Date.now(), timings = {};
+  const mark = label => { timings[label] = Date.now() - t0 - Object.values(timings).reduce((s, v) => s + v, 0); };
+  const progress = opt.progress || null;
+  const srcP = mesh.positions, srcIdx = mesh.index instanceof Uint32Array ? mesh.index : Uint32Array.from(mesh.index), V0 = srcP.length / 3;
+  const target = Math.max(6, opt.targetFaces | 0);
+  const dens = opt.density || null;
+  const na = normalsAndAreas(srcP, srcIdx);
+  const srcN = mesh.normals || na.N, srcA = na.A;
+
+  // Surface area (weighted by density) sets the grid size: faces ≈ Σ area·density / size².
+  let weighted = 0;
+  for (let v = 0; v < V0; v++) weighted += srcA[v] * (dens ? dens[v] : 1);
+  // Extraction tends to give a few percent more faces than area / size², so the first grid starts that much larger.
+  let scale = Math.sqrt(weighted / target) * 1.02;
+  const sizeAt = v => (dens ? scale / Math.sqrt(Math.max(1e-6, dens[v])) : scale);
+
+  // The working surface, its hierarchy and the direction field don't depend on the exact budget: they are kept in
+  // opt.cache and reused while the grid size stays within the same step of 2^(1/4) and nothing else changed.
+  const cellFactor = opt.cellFactor ?? 2.5, splitFactor = opt.splitFactor ?? 0.7;
   const seed = opt.seed ?? 12345;
-  solveFields(levels, seed, progress, opt.iterations);
-  mark('fields');
+  const bucket = Math.round(4 * Math.log2(scale / cellFactor));
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, opt.normalSmooth ?? 10, opt.smoothAngle ?? 60, opt.intrinsic ? 1 : 0, seed, cellFactor, splitFactor].join('|');
+  const cache = opt.cache || null;
+  let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
+  if (work) {
+    const ratio = scale / work.scale;
+    work.levels.forEach((L, l) => { const base = work.baseS[l]; for (let i = 0; i < L.n; i++) L.S[i] = base[i] * ratio; });
+    mark('cached');
+    if (progress) progress('orientation', 1);
+  } else {
+    work = buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress);
+    work.scale = scale;
+    work.baseS = work.levels.map(L => L.S.slice());
+    solveOrientations(work.levels, seed, progress, opt.iterations, opt.intrinsic);
+    mark('orientation');
+    if (cache) { cache.key = key; cache.work = work; }
+  }
+  const { levels, n, nC, WI } = work, L0 = levels[0];
   if (opt.debug === 'singularities') return { singularities: orientationSingularities(L0, WI), n };
+  resolvePositions(levels, seed, progress);
+  mark('positions');
 
   const grid = new SurfaceGrid(srcP, srcIdx, scale);
   const attempts = [];
@@ -6654,7 +6912,7 @@ function remeshQuads(mesh, opt) {
       : evenFaces(polys, G.P, G.nv);
     if (progress) progress('extract', 1);
     const count = even.faces.length;
-    result = { G, even, count };
+    result = { G, even, count, rawPolys: opt.debug === 'stages' ? polys.map(p => p.slice()) : null };
     attempts.push(count);
     if (opt.debug === 'even') return { positions: even.positions, polys: even.faces, rawPolys: polys, G, nv0: G.nv, stats: { scale, count } };
     mark(`extract${attempt}`);
@@ -6670,11 +6928,16 @@ function remeshQuads(mesh, opt) {
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
   const nv = even.nv, P = even.positions;
+  if (opt.debug === 'stages') {
+    const openOf = list => { const c = new Map(); for (const p of list) for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; c.set(key, (c.get(key) || 0) + 1); } let o = 0; for (const v of c.values()) if (v === 1) o++; return o; };
+    result.stageOpen = { extracted: openOf(result.rawPolys || []), even: openOf(even.faces) };
+  }
   const tidy = opt.valence === false ? { faces: even.faces, moves: 0 } : optimizeValence(even.faces, P);
+  if (result.stageOpen) result.stageOpen.valence = (() => { const c = new Map(); for (const p of tidy.faces) for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; c.set(key, (c.get(key) || 0) + 1); } let o = 0; for (const v of c.values()) if (v === 1) o++; return o; })();
   // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open.
   const keepOpen = v => v < result.G.nv && result.G.fixed[v] === 1;
   const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
-  const faces = repaired.dropped ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
+  const faces = repaired.dropped || repaired.filled ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
   mark('valence');
   const nbr = new Array(nv);
   for (let v = 0; v < nv; v++) nbr[v] = [];
@@ -6750,7 +7013,7 @@ function remeshQuads(mesh, opt) {
   });
   return {
     positions, faces: out, faceCount: faces.length, hit: { tri, bary: bc }, faceTri,
-    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
+    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, stageOpen: result.stageOpen, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
   };
 }
 
@@ -8860,6 +9123,14 @@ function geometryOf(ctx) {
   return ctx.geo;
 }
 
+// A 32-bit FNV-1a hash of a float array's bits.
+function hashFloats(a) {
+  const u = new Uint32Array(a.buffer, a.byteOffset, a.length);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < u.length; i++) h = Math.imul(h ^ u[i], 16777619);
+  return (h >>> 0).toString(36);
+}
+
 // Density per vertex that gives each separate piece at least MIN_PIECE_QUADS quads, on top of the painted density.
 function pieceDensity(mesh, density, quads) {
   const V = mesh.vertexCount, idx = mesh.index, P = mesh.positions, uf = new UnionFind(V);
@@ -8884,8 +9155,9 @@ function pieceDensity(mesh, density, quads) {
     extra = 0;
     for (let k = 0; k < count; k++) {
       const share = (quads * weighted[k]) / total;
-      boost[k] = share > 0 && share < min ? min / share : 1;
-      if (boost[k] > 1) extra += min - share;
+      // In powers of two, so a small change of budget leaves the densities (and the remesher's cache) as they were.
+      boost[k] = share > 0 && share < min ? 2 ** Math.ceil(Math.log2(min / share)) : 1;
+      if (boost[k] > 1) extra += share * (boost[k] - 1);
     }
     if (extra <= quads * 0.2) break;
     min *= (quads * 0.2) / extra;
@@ -9028,8 +9300,12 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     if (!any) density = null;
   }
   density = pieceDensity({ positions: base.positions, index, vertexCount: V }, density, quads);
+  // The remesher keeps its working surface and direction field per variant (whole or kept half) between budgets.
+  const holder = sym ? halfFor(geo, sym) : geo;
+  if (!holder.quadCache) holder.quadCache = {};
   const rq = remeshQuads({ positions: base.positions, index, normals: smooth }, {
     targetFaces: quads, density, plane: sym ? { axis: sym.axis, offset: Math.fround(sym.offset) } : null, progress,
+    cache: holder.quadCache, cacheKey: `${st.prune ? 1 : 0}|${index.length}|${density ? hashFloats(density) : 'even'}`,
   });
   // Triangles the prune dropped don't exist for the lookups either.
   const surf = quadSurface(rq, { ...base, index }, smooth, triMat, welded, fopt, sym);
