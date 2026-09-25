@@ -12,7 +12,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
-import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
+import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, cornerTangents, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
 import { computeVisibility } from './visibility.js';
 
@@ -26,13 +26,20 @@ const nextFrame = () => new Promise(resolve => {
   setTimeout(go, 60);
 });
 const MESHOPT_URL = 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_simplifier.js';
+const TANGENTS_URL = 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_tangents.js';
+let tangentsLib = null;
+// meshoptimizer's tangent module, loaded the first time a result needs tangents.
+function loadTangents() {
+  if (!tangentsLib) tangentsLib = import(TANGENTS_URL).then(async m => { await m.MeshoptTangents.ready; return m.MeshoptTangents; });
+  return tangentsLib;
+}
 
 // ---------- settings ----------
 const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
   targetPct: 10, topology: 'tris', quadSharp: true, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
-  normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024,
+  normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024, bakeNormals: true, normalFormat: 'opengl',
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
@@ -53,7 +60,7 @@ function saveSettings() {
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
 const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
-  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
+  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'bakeNormals', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
 const newDocId = () => `t${Date.now().toString(36)}${(docSeq++).toString(36)}`;
@@ -1105,18 +1112,24 @@ uniform sampler2D srcUV;
 uniform sampler2D srcNormal;
 varying vec3 vPos;
 varying vec3 vNrm;
+varying vec4 vTan;
 `;
+// bakeTangent: the result's MikkTSpace tangent at each triangle corner (xyz, and the bitangent's sign in w).
 const UV_SPACE_VS = /* glsl */`
+attribute vec4 bakeTangent;
 varying vec3 vPos;
 varying vec3 vNrm;
+varying vec4 vTan;
 void main() {
   vPos = position;
   vNrm = normal;
+  vTan = bakeTangent;
   gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }`;
 const QUAD_VS = /* glsl */'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }';
 
-// Output: original UV, original UV area per texel (for the mip level), and 1 + the matched triangle (0 = empty texel).
+// Output: where on the matched triangle (barycentric weights of its second and third corner), original UV area per texel
+// (for the mip level), and 1 + the matched triangle (0 = empty texel).
 const CORR_FS = /* glsl */`${BAKE_GLSL}
 uniform float maxDist;
 uniform float cage;
@@ -1175,16 +1188,15 @@ void main() {
     d = bvhClosestPointToPoint(bvh, vPos, maxDist * 4.0, fi, hn, bc, side, op);
     if (d >= maxDist * 4.0) { gl_FragColor = vec4(0.0); return; }
   }
-  vec2 uv0 = textureSampleBarycoord(srcUV, bc, fi.xyz).xy;
   vec3 a = texelFetch1D(bvh.position, fi.x).xyz, b = texelFetch1D(bvh.position, fi.y).xyz, c = texelFetch1D(bvh.position, fi.z).xyz;
   vec2 ta = texelFetch1D(srcUV, fi.x).xy, tb = texelFetch1D(srcUV, fi.y).xy, tc = texelFetch1D(srcUV, fi.z).xy;
   float a3 = length(cross(b - a, c - a));
   float auv = abs((tb.x - ta.x) * (tc.y - ta.y) - (tc.x - ta.x) * (tb.y - ta.y));
-  gl_FragColor = vec4(uv0, texelArea * auv / max(a3, 1e-30), float(fi.w) + 1.0);
+  gl_FragColor = vec4(bc.y, bc.z, texelArea * auv / max(a3, 1e-30), float(fi.w) + 1.0);
 }`;
 
-// Samples one source map at the matched UVs. mode 0: data as is, 1: colour (stored sRGB), 2: tangent-space normals,
-// re-expressed from the original triangle's tangent frame in the reduced mesh's frame.
+// Samples one source map at the matched point. mode 0: data as is, 1: colour (stored sRGB), 2: the normal map: the
+// original's surface normal there, bent by its own normal map when it has one (hasSrcMap), in the result's tangent space.
 const MAP_FS = /* glsl */`${BAKE_GLSL}
 uniform sampler2D corr;
 uniform sampler2D srcMap;
@@ -1192,6 +1204,8 @@ uniform mat3 srcMatrix;
 uniform vec2 srcSize;
 uniform vec2 normalScale;
 uniform int mode;
+uniform bool hasSrcMap;
+uniform bool hasTangents;
 
 vec3 toSRGB(vec3 c) {
   c = clamp(c, 0.0, 1.0);
@@ -1202,30 +1216,44 @@ void main() {
   vec3 tr = dFdx(vPos), br = dFdy(vPos);
   vec4 c = texelFetch(corr, ivec2(gl_FragCoord.xy), 0);
   if (c.a < 0.5) discard;
-  vec2 uv = (srcMatrix * vec3(c.xy, 1.0)).xy;
-  vec4 s = textureLod(srcMap, uv, 0.5 * log2(max(c.z * srcSize.x * srcSize.y, 1.0)));
+  uvec3 ind = uTexelFetch1D(bvh.index, uint(c.a - 0.5)).xyz;
+  vec3 bc = vec3(1.0 - c.x - c.y, c.x, c.y);
+  vec2 ta = texelFetch1D(srcUV, ind.x).xy, tb = texelFetch1D(srcUV, ind.y).xy, tc = texelFetch1D(srcUV, ind.z).xy;
+  vec2 uv = (srcMatrix * vec3(bc.x * ta + bc.y * tb + bc.z * tc, 1.0)).xy;
+  vec4 s = hasSrcMap ? textureLod(srcMap, uv, 0.5 * log2(max(c.z * srcSize.x * srcSize.y, 1.0))) : vec4(0.5, 0.5, 1.0, 1.0);
   if (mode == 2) {
-    uvec3 ind = uTexelFetch1D(bvh.index, uint(c.a - 0.5)).xyz;
-    vec3 pa = texelFetch1D(bvh.position, ind.x).xyz, pb = texelFetch1D(bvh.position, ind.y).xyz, pc = texelFetch1D(bvh.position, ind.z).xyz;
-    vec2 ta = texelFetch1D(srcUV, ind.x).xy, tb = texelFetch1D(srcUV, ind.y).xy, tc = texelFetch1D(srcUV, ind.z).xy;
-    vec2 e0 = tb - ta, e1 = tc - ta, ep = c.xy - ta;
-    float den = e0.x * e1.y - e1.x * e0.y;
-    if (abs(den) > 1e-20) {
-      float wb = (ep.x * e1.y - e1.x * ep.y) / den, wc = (e0.x * ep.y - ep.x * e0.y) / den;
-      vec3 no = normalize((1.0 - wb - wc) * texelFetch1D(srcNormal, ind.x).xyz + wb * texelFetch1D(srcNormal, ind.y).xyz + wc * texelFetch1D(srcNormal, ind.z).xyz);
-      vec3 q0 = pb - pa, q1 = pc - pa;
-      vec3 to = (q0 * e1.y - q1 * e0.y) / den, bo = (q1 * e0.x - q0 * e1.x) / den;
-      to = normalize(to - no * dot(no, to));
-      vec3 bo2 = cross(no, to) * (dot(cross(no, to), bo) < 0.0 ? -1.0 : 1.0);
-      // Read as three.js shows it: the material's scale, whose sign also carries the green direction (flipped for glTF).
-      vec3 nt = s.xyz * 2.0 - 1.0;
-      nt.xy *= normalScale;
-      vec3 obj = normalize(to * nt.x + bo2 * nt.y + no * nt.z);
-      vec3 nr = normalize(vNrm);
-      vec3 tn = normalize(tr - nr * dot(nr, tr));
-      vec3 bn = cross(nr, tn) * (dot(cross(nr, tn), br) < 0.0 ? -1.0 : 1.0);
-      s.xyz = vec3(dot(obj, tn), dot(obj, bn), dot(obj, nr)) * 0.5 + 0.5;
+    vec3 no = normalize(bc.x * texelFetch1D(srcNormal, ind.x).xyz + bc.y * texelFetch1D(srcNormal, ind.y).xyz + bc.z * texelFetch1D(srcNormal, ind.z).xyz);
+    vec3 n = no;
+    if (hasSrcMap) {
+      vec3 pa = texelFetch1D(bvh.position, ind.x).xyz, pb = texelFetch1D(bvh.position, ind.y).xyz, pc = texelFetch1D(bvh.position, ind.z).xyz;
+      vec2 e0 = tb - ta, e1 = tc - ta;
+      float den = e0.x * e1.y - e1.x * e0.y;
+      if (abs(den) > 1e-20) {
+        vec3 q0 = pb - pa, q1 = pc - pa;
+        vec3 to = (q0 * e1.y - q1 * e0.y) / den, bo = (q1 * e0.x - q0 * e1.x) / den;
+        to = normalize(to - no * dot(no, to));
+        vec3 bo2 = cross(no, to) * (dot(cross(no, to), bo) < 0.0 ? -1.0 : 1.0);
+        // Read as three.js shows it: the material's scale, whose sign also carries the green direction (flipped for glTF).
+        vec3 nt = s.xyz * 2.0 - 1.0;
+        nt.xy *= normalScale;
+        n = normalize(to * nt.x + bo2 * nt.y + no * nt.z);
+      }
     }
+    // The exact inverse of how a renderer rebuilds the normal from a MikkTSpace normal map: the interpolated normal and
+    // tangent as they come, and the bitangent from their cross product (mikktspace.h). Without tangents, a frame from
+    // the UV derivatives.
+    vec3 vN = vNrm, vT, vB;
+    if (hasTangents) {
+      vT = vTan.xyz;
+      vB = vTan.w * cross(vN, vT);
+    } else {
+      vN = normalize(vNrm);
+      vT = normalize(tr - vN * dot(vN, tr));
+      vB = cross(vN, vT) * (dot(cross(vN, vT), br) < 0.0 ? -1.0 : 1.0);
+    }
+    vec3 r0 = cross(vB, vN), r1 = cross(vN, vT), r2 = cross(vT, vB);
+    float sgn = dot(vT, r0) < 0.0 ? -1.0 : 1.0;
+    s = vec4(normalize(sgn * vec3(dot(n, r0), dot(n, r1), dot(n, r2))) * 0.5 + 0.5, 1.0);
   }
   gl_FragColor = vec4(mode == 1 ? toSRGB(s.rgb) : s.rgb, mode == 2 ? 1.0 : s.a);
 }`;
@@ -1272,7 +1300,11 @@ const corrMat = bakeMaterial(UV_SPACE_VS, CORR_FS, { bvh: { value: null }, srcUV
 const mapMat = bakeMaterial(UV_SPACE_VS, MAP_FS, {
   bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, corr: { value: null }, srcMap: { value: null },
   srcMatrix: { value: new THREE.Matrix3() }, srcSize: { value: new THREE.Vector2() }, normalScale: { value: new THREE.Vector2(1, 1) }, mode: { value: 0 },
+  hasSrcMap: { value: true }, hasTangents: { value: false },
 });
+// Bound to srcMap for a normal map baked from the surface alone.
+const flatNormalTex = new THREE.DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1);
+flatNormalTex.needsUpdate = true;
 const jfaInitMat = bakeMaterial(QUAD_VS, JFA_INIT_FS, { corr: { value: null } });
 const jfaStepMat = bakeMaterial(QUAD_VS, JFA_STEP_FS, { seeds: { value: null }, stepSize: { value: 1 } });
 const fillMat = bakeMaterial(QUAD_VS, FILL_FS, { corr: { value: null }, seeds: { value: null }, img: { value: null } });
@@ -1346,17 +1378,43 @@ function bakePass(material, target, mesh, band) {
   renderer.setClearColor(clearColor, clearAlpha);
 }
 const imageSize = img => [img.naturalWidth || img.width || 1, img.naturalHeight || img.height || 1];
-const texturedMaterials = () => state.displayMats.map((m, mi) => ({ mi, slots: MAP_SLOTS.filter(slot => m[slot] && m[slot].image && !m[slot].userData.pbMissing) })).filter(j => j.slots.length);
+// What each material gets baked: its loaded maps, and a normal map from the original's surface when that's on (not for
+// unlit materials, which have no normal map). normalsOnly: a result that kept the original UVs keeps its maps and only
+// gets the normal map.
+const bakeJobs = (normalsOnly = false) => state.displayMats.map((m, mi) => {
+  const slots = normalsOnly ? [] : MAP_SLOTS.filter(slot => loadedMap(m, slot));
+  if (settings.bakeNormals && 'normalMap' in m && !slots.includes('normalMap')) slots.push('normalMap');
+  return { mi, slots };
+}).filter(j => j.slots.length);
 function prewarmBakeSources() {
   if (!state.welded || !state.welded.uvs || !state.orig.bvh) return;
-  for (const { mi } of texturedMaterials()) bakeSource(mi);
+  for (const { mi } of bakeJobs()) bakeSource(mi);
+}
+// The result's triangles tris, unshared, with the tangent of each corner when the result has them.
+function bakeGeometry(res, tris) {
+  const n = tris.length * 3, P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = new Float32Array(n * 2), TG = new Float32Array(n * 4);
+  const idx = res.index, tan = res.tangents;
+  for (let i = 0; i < tris.length; i++) {
+    for (let k = 0; k < 3; k++) {
+      const c = tris[i] * 3 + k, v = idx[c], o = i * 3 + k;
+      for (let j = 0; j < 3; j++) { P[o * 3 + j] = res.positions[v * 3 + j]; N[o * 3 + j] = res.normals[v * 3 + j]; }
+      UV[o * 2] = res.uvs[v * 2]; UV[o * 2 + 1] = res.uvs[v * 2 + 1];
+      if (tan) for (let j = 0; j < 4; j++) TG[o * 4 + j] = tan[c * 4 + j];
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(P, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(N, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(UV, 2));
+  geo.setAttribute('bakeTangent', new THREE.BufferAttribute(TG, 4));
+  return geo;
 }
 
 // Bakes every loaded map of every textured material onto the result's new UVs, 256 rows of the heavy pass per frame
 // so the view keeps rendering. Returns { size, maps: [{ mi, slot, data, colorSpace }] } with RGBA rows from v = 0
 // (colour maps hold sRGB), or null when there is nothing to bake or current() turns false on the way.
-async function bakeResultAsync(res, info, current) {
-  const jobs = texturedMaterials();
+async function bakeResultAsync(res, info, current, normalsOnly = false) {
+  const jobs = bakeJobs(normalsOnly);
   if (!jobs.length || !res.uvs || !state.welded.uvs || !state.orig.bvh) return null;
   if (!renderer.extensions.has('EXT_color_buffer_float')) throw new Error('this browser cannot render float textures');
   const size = settings.bakeSize, rows = 256;
@@ -1365,14 +1423,10 @@ async function bakeResultAsync(res, info, current) {
   const nMat = state.displayMats.length, idx = res.index;
   const out = { size, maps: [] };
   for (const job of jobs) {
-    const sub = [];
-    for (let t = 0; t < triEnd; t++) if (Math.min(res.vMat[idx[t * 3]], nMat - 1) === job.mi) sub.push(idx[t * 3], idx[t * 3 + 1], idx[t * 3 + 2]);
-    if (!sub.length) continue;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(res.positions, 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(res.normals, 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(res.uvs, 2));
-    geo.setIndex(new THREE.BufferAttribute(Uint32Array.from(sub), 1));
+    const tris = [];
+    for (let t = 0; t < triEnd; t++) if (Math.min(res.vMat[idx[t * 3]], nMat - 1) === job.mi) tris.push(t);
+    if (!tris.length) continue;
+    const geo = bakeGeometry(res, tris);
     const mesh = new THREE.Mesh(geo, corrMat);
     try {
       const src = bakeSource(job.mi);
@@ -1398,12 +1452,14 @@ async function bakeResultAsync(res, info, current) {
         [a, b] = [b, a];
       }
       for (const slot of job.slots) {
-        const tex = state.displayMats[job.mi][slot];
-        tex.updateMatrix();
+        const tex = loadedMap(state.displayMats[job.mi], slot);
+        if (tex) tex.updateMatrix();
         mapMat.uniforms.corr.value = bake.corr.texture;
-        mapMat.uniforms.srcMap.value = tex;
-        mapMat.uniforms.srcMatrix.value.copy(tex.matrix);
-        mapMat.uniforms.srcSize.value.set(...imageSize(tex.image));
+        mapMat.uniforms.srcMap.value = tex || flatNormalTex;
+        mapMat.uniforms.hasSrcMap.value = !!tex;
+        mapMat.uniforms.hasTangents.value = !!res.tangents;
+        mapMat.uniforms.srcMatrix.value.copy(tex ? tex.matrix : new THREE.Matrix3());
+        mapMat.uniforms.srcSize.value.set(...(tex ? imageSize(tex.image) : [1, 1]));
         mapMat.uniforms.normalScale.value.copy(state.displayMats[job.mi].normalScale || new THREE.Vector2(1, 1));
         mapMat.uniforms.mode.value = slot === 'normalMap' ? 2 : tex.colorSpace === THREE.SRGBColorSpace ? 1 : 0;
         bakePass(mapMat, bake.scratch, mesh);
@@ -1413,7 +1469,7 @@ async function bakeResultAsync(res, info, current) {
         bakePass(fillMat, bake.out);
         const data = await renderer.readRenderTargetPixelsAsync(bake.out, 0, 0, size, size, new Uint8Array(size * size * 4));
         if (!current()) return null;
-        out.maps.push({ mi: job.mi, slot, data, colorSpace: tex.colorSpace === THREE.SRGBColorSpace ? THREE.SRGBColorSpace : THREE.NoColorSpace });
+        out.maps.push({ mi: job.mi, slot, data, colorSpace: tex && tex.colorSpace === THREE.SRGBColorSpace ? THREE.SRGBColorSpace : THREE.NoColorSpace });
       }
     } finally {
       geo.dispose();
@@ -1423,11 +1479,12 @@ async function bakeResultAsync(res, info, current) {
 }
 
 // Display materials for a result with new UVs: the original materials with their maps swapped for the baked ones.
-function bakedMaterials(bk) {
+// keepMaps: the result kept the original UVs, so the original maps stay and only a baked normal map replaces its own.
+function bakedMaterials(bk, keepMaps = false) {
   return state.displayMats.map((m, mi) => {
     const maps = bk ? bk.maps.filter(x => x.mi === mi) : [];
     const c = m.clone();
-    for (const slot of MAP_SLOTS) if (c[slot]) c[slot] = null;
+    if (!keepMaps) for (const slot of MAP_SLOTS) if (c[slot]) c[slot] = null;
     for (const x of maps) {
       const t = new THREE.DataTexture(x.data, bk.size, bk.size, THREE.RGBAFormat, THREE.UnsignedByteType);
       t.colorSpace = x.colorSpace;
@@ -1440,7 +1497,7 @@ function bakedMaterials(bk) {
       c[x.slot] = t;
     }
     // A baked normal map already carries the source's strength and green direction.
-    if (c.normalScale) c.normalScale.set(1, 1);
+    if (c.normalScale && (!keepMaps || maps.length)) c.normalScale.set(1, 1);
     c.needsUpdate = true;
     return c;
   });
@@ -1470,7 +1527,8 @@ function startTextureJob(rebakeOnly = false) {
   const current = () => seq === textureSeq && state.geo === geo;
   const job = (async () => {
     let res = state.result, info = state.info;
-    if (!(rebakeOnly && res && res.uvLayout === 'new')) {
+    const kept = res.uvLayout === 'original';
+    if (!kept && !(rebakeOnly && res && res.uvLayout === 'new')) {
       const unwrapped = texEngine.run({ type: 'unwrap', mesh: geo.result, plane: geo.plane, labels: geo.labels, size: settings.bakeSize });
       prewarmBakeSources();
       const u = await unwrapped;
@@ -1478,13 +1536,18 @@ function startTextureJob(rebakeOnly = false) {
       res = u.result;
       info = { ...geo.info, atlas: u.atlas, verts: res.vertexCount, symmetry: u.symmetry || geo.info.symmetry };
     }
-    const baked = await bakeResultAsync(res, info, current);
+    // MikkTSpace tangents, which engines work out the same way on import, for the normal map bake and the view.
+    if (res.uvs && !res.tangents) {
+      try { res.tangents = cornerTangents(await loadTangents(), res); } catch (err) { console.error(err); tangentsLib = null; }
+      if (!current()) return;
+    }
+    const baked = await bakeResultAsync(res, info, current, kept);
     if (!current()) return;
     disposeBakedMaterials();
     state.result = res;
     state.info = info;
     state.bake = baked;
-    state.bakedMats = bakedMaterials(baked);
+    state.bakedMats = bakedMaterials(baked, kept);
     buildReducedDisplay(res);
   })().catch(err => {
     if (err && err.message === 'cancelled') return;
@@ -1500,11 +1563,16 @@ function startTextureJob(rebakeOnly = false) {
   updateResultUI();
   updateUVPanel();
 }
-// Textures changed: the UVs stay, the bake runs again.
+// Textures or the normal map setting changed: the UVs stay, the bake runs again. A result that kept the original UVs
+// gets its job here if it had none.
 function refreshBake() {
+  const r = state.result;
+  if (!state.geo && r && needsTextureJob(r, settings.bakeNormals)) state.geo = { result: r, info: state.info, labels: null, plane: null };
   if (state.geo) startTextureJob(true);
 }
 
+// New UVs need unwrapping and baking; kept original UVs only a bake of the normal map, when that's on.
+const needsTextureJob = (res, bakeNormals) => res.uvLayout === 'pending' || (res.uvLayout === 'original' && bakeNormals && !!res.uvs);
 // A result that arrives after its tab was left waits for the tab to be shown again.
 function keepResult(d, res, info, labels, st) {
   const s = d.state;
@@ -1513,7 +1581,7 @@ function keepResult(d, res, info, labels, st) {
   s.bake = null;
   s.result = res;
   s.info = info;
-  s.geo = res.uvLayout === 'pending' ? { result: res, info, labels, plane: st.symmetry } : null;
+  s.geo = needsTextureJob(res, d.settings.bakeNormals) ? { result: res, info, labels, plane: st.symmetry } : null;
 }
 
 // Puts a reduction result on screen; New-UV results show untextured until their texture job finishes.
@@ -1523,7 +1591,7 @@ function showResult(res, info, labels, st) {
   state.bake = null;
   state.result = res;
   state.info = info;
-  state.geo = res.uvLayout === 'pending' ? { result: res, info, labels, plane: st.symmetry } : null;
+  state.geo = needsTextureJob(res, settings.bakeNormals) ? { result: res, info, labels, plane: st.symmetry } : null;
   buildReducedDisplay(res);
   $('resErr').textContent = '…';
   updateResultUI();
@@ -1544,15 +1612,47 @@ function buildSurfaceGeometry(P, N, UV, COL, index, vMat) {
   const counts = new Uint32Array(nMat + 1);
   for (let t = 0; t < T; t++) counts[Math.min(vMat[index[t * 3]], nMat - 1) + 1]++;
   for (let m = 0; m < nMat; m++) counts[m + 1] += counts[m];
-  const sorted = new Uint32Array(index.length), fill = counts.slice();
+  const sorted = new Uint32Array(index.length), order = new Uint32Array(T), fill = counts.slice();
   for (let t = 0; t < T; t++) {
-    const m = Math.min(vMat[index[t * 3]], nMat - 1);
-    const o = fill[m]++ * 3;
+    const m = Math.min(vMat[index[t * 3]], nMat - 1), slot = fill[m]++, o = slot * 3;
+    order[slot] = t;
     sorted[o] = index[t * 3]; sorted[o + 1] = index[t * 3 + 1]; sorted[o + 2] = index[t * 3 + 2];
   }
   for (let m = 0; m < nMat; m++) if (counts[m + 1] > counts[m]) g.addGroup(counts[m] * 3, (counts[m + 1] - counts[m]) * 3, m);
   g.setIndex(new THREE.BufferAttribute(sorted, 1));
   g.computeBoundingSphere();
+  g.userData.order = order;
+  return g;
+}
+
+// A result's surface unshared, with the MikkTSpace tangent of each corner, so a baked normal map shows as an engine will
+// shade it. cornerVertex maps each corner back to its vertex, for picking.
+function tangentSurface(res, geo) {
+  const order = geo.userData.order, n = order.length * 3, idx = res.index, tan = res.tangents;
+  const P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = new Float32Array(n * 2), TG = new Float32Array(n * 4);
+  const COL = res.colors ? new Float32Array(n * 3) : null, cornerVertex = new Uint32Array(n);
+  for (let s = 0; s < order.length; s++) {
+    for (let k = 0; k < 3; k++) {
+      const c = order[s] * 3 + k, v = idx[c], o = s * 3 + k;
+      cornerVertex[o] = v;
+      for (let j = 0; j < 3; j++) {
+        P[o * 3 + j] = res.positions[v * 3 + j];
+        N[o * 3 + j] = res.normals[v * 3 + j];
+        if (COL) COL[o * 3 + j] = res.colors[v * 3 + j];
+      }
+      UV[o * 2] = res.uvs[v * 2]; UV[o * 2 + 1] = res.uvs[v * 2 + 1];
+      for (let j = 0; j < 4; j++) TG[o * 4 + j] = tan[c * 4 + j];
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(P, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(N, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(UV, 2));
+  g.setAttribute('tangent', new THREE.BufferAttribute(TG, 4));
+  if (COL) g.setAttribute('color', new THREE.BufferAttribute(COL, 3));
+  for (const gr of geo.groups) g.addGroup(gr.start, gr.count, gr.materialIndex);
+  g.computeBoundingSphere();
+  g.userData.cornerVertex = cornerVertex;
   return g;
 }
 
@@ -1564,9 +1664,10 @@ function surfaceMaterials(side) {
   return state.displayMats.map(() => m);
 }
 
-// edges: vertex pairs to draw as the wireframe instead of every triangle edge (a quad result's edges).
-function makeDisplay(scene, geo, side, edges = null) {
-  const surface = new THREE.Mesh(geo, surfaceMaterials(side));
+// edges: vertex pairs to draw as the wireframe instead of every triangle edge (a quad result's edges). surfGeo: the
+// surface's own geometry when it differs from the one the paint, wireframe and tint share.
+function makeDisplay(scene, geo, side, edges = null, surfGeo = geo) {
+  const surface = new THREE.Mesh(surfGeo, surfaceMaterials(side));
   const paintGeo = new THREE.BufferGeometry();
   paintGeo.setAttribute('position', geo.attributes.position);
   paintGeo.setIndex(geo.index);
@@ -1583,13 +1684,14 @@ function makeDisplay(scene, geo, side, edges = null) {
   const tint = new THREE.Mesh(geo, tintMat);
   for (const m of [surface, paint, wire, tint]) m.frustumCulled = false;
   scene.add(surface, paint, wire, tint);
-  return { surface, paint, wire, wireGeo, tint, colors, geo, paintGeo, tris: geo.index.count / 3 };
+  return { surface, paint, wire, wireGeo, tint, colors, geo, surfGeo, paintGeo, tris: geo.index.count / 3 };
 }
 
 function disposeDisplay(d, scene) {
   if (!d) return;
   scene.remove(d.surface, d.paint, d.wire, d.tint);
   d.geo.dispose();
+  if (d.surfGeo !== d.geo) d.surfGeo.dispose();
   d.paintGeo.dispose();
   if (d.wireGeo) d.wireGeo.dispose();
 }
@@ -1630,7 +1732,8 @@ function setLeftSurface(surf) {
 
 function buildReducedDisplay(res) {
   disposeDisplay(display.R, sceneR);
-  display.R = makeDisplay(sceneR, buildSurfaceGeometry(res.positions, res.normals, res.uvs, res.colors, res.index, res.vMat), 'R', res.quad ? quadEdges(res) : null);
+  const geo = buildSurfaceGeometry(res.positions, res.normals, res.uvs, res.colors, res.index, res.vMat);
+  display.R = makeDisplay(sceneR, geo, 'R', res.quad ? quadEdges(res) : null, res.tangents && res.uvs ? tangentSurface(res, geo) : geo);
   display.R.srcId = res.srcId;
   recolorReduced();
   applyDisplaySettings();
@@ -1760,7 +1863,8 @@ function pick(clientX, clientY) {
   const hits = raycaster.intersectObject(display.R.surface, false);
   if (!hits.length) return null;
   const h = hits[0];
-  return { side: 'R', point: h.point.clone(), normal: h.face.normal.clone(), vertex: display.R.srcId[h.face.a] };
+  const corner = display.R.surfGeo.userData.cornerVertex;
+  return { side: 'R', point: h.point.clone(), normal: h.face.normal.clone(), vertex: display.R.srcId[corner ? corner[h.face.a] : h.face.a] };
 }
 
 function brushRadius() { return (state.diag * settings.brush) / 100; }
@@ -2469,10 +2573,10 @@ function textureSummary() {
   if (!state.welded || !state.welded.uvs) return ['', 'none, the model has no UVs'];
   if (!r || !i) return ['', '—'];
   if (r.uvLayout === 'pending') return state.texturing ? ['busy', 'new UVs · baking…'] : ['warn', 'new UVs not made yet'];
-  const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
-  if (r.uvLayout === 'new') return state.bake ? ['', `new UVs · baked at ${state.bake.size} px`] : textured ? ['warn', 'new UVs · not baked'] : ['', 'new UVs'];
-  const fit = i.uvFit, bad = fit && fit.misplaced > AUTO_UV_LIMIT;
-  return bad ? ['warn', `original UVs · ${(fit.misplaced * 100).toFixed(0)}% misplaced`] : ['', 'original UVs · fits'];
+  const textured = bakeJobs().length > 0, normal = state.bake && state.bake.maps.some(x => x.slot === 'normalMap');
+  if (r.uvLayout === 'new') return state.bake ? ['', `new UVs · baked at ${state.bake.size} px${normal ? ' · normal map' : ''}`] : textured ? ['warn', 'new UVs · not baked'] : ['', 'new UVs'];
+  const fit = i.uvFit, bad = fit && fit.misplaced > AUTO_UV_LIMIT, nm = normal ? ' · normal map' : '';
+  return bad ? ['warn', `original UVs · ${(fit.misplaced * 100).toFixed(0)}% misplaced${nm}`] : ['', `original UVs · fits${nm}`];
 }
 // [tone, headline, detail] for the Texture section, or null without a model.
 function uvStatus() {
@@ -2482,7 +2586,7 @@ function uvStatus() {
   if (!r || !i) return ['busy', 'Reducing…', ''];
   const pct = v => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`;
   const fit = i.uvFit;
-  const textured = state.displayMats.some(m => MAP_SLOTS.some(slot => m[slot]));
+  const textured = bakeJobs().length > 0;
   const why = r.quad ? 'Quads always get new UVs.' : i.uvDecision === 'rebuilt' && fit ? `The original UVs would put ${fit.estimated ? 'over ' : ''}${pct(fit.misplaced)} of the texture in the wrong place at this budget.` : '';
   if (r.uvLayout === 'pending') {
     if (!state.texturing) return ['warn', 'New UVs not made yet', why];
@@ -2490,15 +2594,18 @@ function uvStatus() {
   }
   if (r.uvLayout === 'new') {
     const a = i.atlas;
-    const baked = state.bake ? `The texture is baked onto them from the original at ${state.bake.size} px.` : textured ? 'The texture could not be baked.' : 'There is no texture to bake.';
+    const normal = state.bake && state.bake.maps.some(x => x.slot === 'normalMap');
+    const baked = state.bake ? `${normal ? 'The textures and a normal map of the original\'s surface are' : 'The texture is'} baked onto them from the original at ${state.bake.size} px.` : textured ? 'The texture could not be baked.' : 'There is no texture to bake.';
     return [state.bake || !textured ? 'ok' : 'warn', `New UVs · ${fmt(a.charts)} charts · ${pct(a.coverage)} of the sheet`, [why, baked].filter(Boolean).join(' ')];
   }
-  if (!fit) return ['ok', 'Original UVs', ''];
+  const nm = state.bake && state.bake.maps.some(x => x.slot === 'normalMap') ? ` A normal map of the original's surface is baked into them at ${state.bake.size} px.`
+    : state.texturing ? ' Baking a normal map of the original\'s surface into them…' : '';
+  if (!fit) return [state.texturing ? 'busy' : 'ok', 'Original UVs', nm.trim()];
   if (settings.uvMode === 'keep') {
     const bad = fit.misplaced > AUTO_UV_LIMIT;
-    return [bad ? 'warn' : 'ok', 'Original UVs', `${pct(fit.misplaced)} of the texture lands in the wrong place at this budget.${bad ? ' Auto or New UVs would bake the texture to fit.' : ''}`];
+    return [bad ? 'warn' : state.texturing ? 'busy' : 'ok', 'Original UVs', `${pct(fit.misplaced)} of the texture lands in the wrong place at this budget.${bad ? ' Auto or New UVs would bake the texture to fit.' : ''}${nm}`];
   }
-  return ['ok', 'Original UVs still fit', fit.misplaced < 0.0005 ? 'The texture lands where it should, so it is used as it is.' : `Only ${pct(fit.misplaced)} of the texture is off, so it is used as it is.`];
+  return [state.texturing ? 'busy' : 'ok', 'Original UVs still fit', `${fit.misplaced < 0.0005 ? 'The texture lands where it should, so it is used as it is.' : `Only ${pct(fit.misplaced)} of the texture is off, so it is used as it is.`}${nm}`];
 }
 function updateUVPanel() {
   $('keepUVOpts').hidden = quadMode() || settings.uvMode === 'new';
@@ -2564,11 +2671,13 @@ async function imageToPng(image) {
 const MAP_FILE = { map: 'basecolor', normalMap: 'normal', roughnessMap: 'roughness', metalnessMap: 'metallic', aoMap: 'occlusion', emissiveMap: 'emissive', specularMap: 'specular', bumpMap: 'height', alphaMap: 'alpha' };
 
 // PNG of a baked map, rows flipped so the top row is v = 1 as FBX and OBJ expect.
-async function bakedPng(data, size) {
+// flipGreen: a normal map for DirectX conventions (Unreal), whose green points down.
+async function bakedPng(data, size, flipGreen = false) {
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const img = new ImageData(size, size), row = size * 4;
   for (let y = 0; y < size; y++) img.data.set(data.subarray((size - 1 - y) * row, (size - y) * row), y * row);
+  if (flipGreen) for (let i = 1; i < img.data.length; i += 4) img.data[i] = 255 - img.data[i];
   c.getContext('2d').putImageData(img, 0, 0);
   const blob = await new Promise(r => c.toBlob(r, 'image/png'));
   return new Uint8Array(await blob.arrayBuffer());
@@ -2591,6 +2700,8 @@ function sourceFileOf(img) {
   return (known && state.meta.files.get(known.toLowerCase())) || null;
 }
 
+// GLB follows glTF, whose normal maps always use the OpenGL direction.
+const directXNormals = () => settings.normalFormat === 'directx' && settings.format !== 'glb';
 async function materialInfos(stem) {
   const out = [], names = materialNames();
   const baked = state.result && state.result.uvLayout === 'new';
@@ -2603,14 +2714,20 @@ async function materialInfos(stem) {
     if (baked) {
       for (const x of state.bake ? state.bake.maps.filter(b => b.mi === i) : []) {
         const file = `${stem}_${name}_${MAP_FILE[x.slot] || x.slot}.png`;
-        const png = await bakedPng(x.data, state.bake.size);
+        const png = await bakedPng(x.data, state.bake.size, x.slot === 'normalMap' && directXNormals());
         if (x.slot === 'map') { texture = file; bytes = png; } else extra.push({ file, bytes: png });
         if (x.slot === 'normalMap') normal = file;
       }
     } else if (m) {
+      // With the original UVs kept, a normal map baked from the original's surface takes the place of the file's own.
+      const bakedNormal = state.bake ? state.bake.maps.find(b => b.mi === i && b.slot === 'normalMap') : null;
+      if (bakedNormal) {
+        normal = `${stem}_${name}_normal.png`;
+        extra.push({ file: normal, bytes: await bakedPng(bakedNormal.data, state.bake.size, directXNormals()) });
+      }
       for (const slot of MAP_SLOTS) {
         const img = m[slot] && m[slot].image;
-        if (!img) continue;
+        if (!img || (slot === 'normalMap' && bakedNormal)) continue;
         const file = sourceFileOf(img);
         let fileName, data;
         if (file) { fileName = file.name; data = new Uint8Array(await file.arrayBuffer()); }
@@ -2620,7 +2737,7 @@ async function materialInfos(stem) {
         if (slot === 'normalMap') normal = fileName;
       }
     }
-    out.push({ name, color: [rgb.r, rgb.g, rgb.b], texture, bytes, normal, extra, source: baked && state.bakedMats ? state.bakedMats[i] : m });
+    out.push({ name, color: [rgb.r, rgb.g, rgb.b], texture, bytes, normal, extra, source: state.bakedMats && (baked || state.bake) ? state.bakedMats[i] : m });
   }
   return out;
 }
@@ -2702,14 +2819,17 @@ function exportPlan() {
   const names = materialNames(), seen = new Set(), textures = [];
   const add = (name, note, pending = false) => { if (!seen.has(name)) { seen.add(name); textures.push({ name, note, pending }); } };
   if (res.uvLayout === 'new' && state.bake) {
-    for (const x of state.bake.maps) add(`${stem}_${names[x.mi]}_${MAP_FILE[x.slot] || x.slot}.png`, `${SLOT_NAMES[x.slot]} · baked at ${state.bake.size} px`);
+    for (const x of state.bake.maps) add(`${stem}_${names[x.mi]}_${MAP_FILE[x.slot] || x.slot}.png`, `${SLOT_NAMES[x.slot]} · baked at ${state.bake.size} px${x.slot === 'normalMap' ? ` · ${directXNormals() ? 'DirectX' : 'OpenGL'}` : ''}`);
   } else if (res.uvLayout === 'pending') {
-    if (texturedMaterials().length) add('Baked textures', 'still being made; the export waits for them', true);
+    if (bakeJobs().length) add('Baked textures', 'still being made; the export waits for them', true);
   } else if (res.uvLayout !== 'new') {
     state.displayMats.forEach((m, i) => {
+      const bakedNormal = state.bake && state.bake.maps.some(b => b.mi === i && b.slot === 'normalMap');
+      if (bakedNormal) add(`${stem}_${names[i]}_normal.png`, `normal · baked at ${state.bake.size} px · ${directXNormals() ? 'DirectX' : 'OpenGL'}`);
+      else if (state.texturing && settings.bakeNormals && 'normalMap' in m) add(`${stem}_${names[i]}_normal.png`, 'normal · still being baked; the export waits for it', true);
       for (const slot of MAP_SLOTS) {
         const img = m[slot] && m[slot].image;
-        if (!img) continue;
+        if (!img || (slot === 'normalMap' && (bakedNormal || state.texturing))) continue;
         const file = sourceFileOf(img);
         if (file) add(file.name, `${SLOT_NAMES[slot]} · the original file`);
         else if (slot === 'map') add(`${names[i]}_basecolor.png`, `${SLOT_NAMES[slot]} · written from the model`);
@@ -2731,6 +2851,9 @@ function updateExportPanel() {
   if (!exportIsOpen) return;
   const plan = exportPlan();
   $('exportBtn').disabled = !plan;
+  // The normal map direction only matters for FBX and OBJ, and only when one is baked.
+  const normalBaked = !!state.result && (state.bake ? state.bake.maps.some(x => x.slot === 'normalMap') : bakeJobs().some(j => j.slots.includes('normalMap')));
+  $('normalFormatField').hidden = !normalBaked || settings.format === 'glb';
   const nq = quadCount(state.result);
   $('exportMeta').textContent = plan ? `${nq ? `${fmt(nq)} quads · ` : ''}${fmt(state.result.triCount)} tris · ${fmt(state.result.vertexCount)} verts` : '';
   if (!plan) {
@@ -3359,7 +3482,7 @@ function attachDoc() {
   flashHint();
   $('resErr').textContent = '…';
   if (state.result) setTimeout(() => measureDeviation(state.result), 30);
-  if (state.result && state.result.uvLayout === 'pending' && state.geo) startTextureJob();
+  if (state.geo && state.result && (state.result.uvLayout === 'pending' || (state.result.uvLayout === 'original' && !state.bake))) startTextureJob();
   if (settings.hidden && !state.vis) startVisibility();
   if (doc.dirty || !state.result) { doc.dirty = false; scheduleReduce(0); }
   requestRender();
@@ -3473,6 +3596,8 @@ function syncControls() {
   pressSeg('uvModeSeg', 'uvmode', q ? 'new' : settings.uvMode);
   for (const b of $('uvModeSeg').querySelectorAll('button')) b.disabled = q && b.dataset.uvmode !== 'new';
   pressSeg('bakeSeg', 'bake', settings.bakeSize);
+  $('bakeNormals').checked = settings.bakeNormals;
+  pressSeg('normalFormatSeg', 'nformat', settings.normalFormat);
   $('keepUVOpts').hidden = q || settings.uvMode === 'new';
   syncSymmetryUI();
   updateHiddenUI();
@@ -3571,6 +3696,8 @@ bindCheck('lockBorder', 'lockBorder', () => scheduleReduce());
 bindCheck('prune', 'prune', () => scheduleReduce());
 bindCheck('prune2', 'prune', () => scheduleReduce());
 bindCheck('quadSharp', 'quadSharp', () => scheduleReduce());
+bindCheck('bakeNormals', 'bakeNormals', () => { refreshBake(); updateUVPanel(); updateExportPanel(); });
+onSeg('normalFormatSeg', 'nformat', v => { settings.normalFormat = v; updateExportPanel(); });
 bindCheck('tintMirror', 'tintMirror', applyDisplaySettings);
 bindCheck('showPlane', 'showPlane', updatePlaneHelper);
 $('symOn').addEventListener('change', async e => {

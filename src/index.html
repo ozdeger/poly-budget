@@ -758,6 +758,11 @@ details.more[open] > summary { margin-bottom: 8px; }
         <option value="cm">Centimetres</option>
       </select>
     </label>
+    <div class="field" id="normalFormatField"><span>Normal maps</span>
+      <div class="seg fill" role="group" aria-label="Normal map format" id="normalFormatSeg">
+        <button type="button" data-nformat="opengl" title="Green points up: Unity, Blender, Godot and glTF">OpenGL</button><button type="button" data-nformat="directx" title="Green points down: Unreal">DirectX</button>
+      </div>
+    </div>
     <div class="field"><span>In the zip</span><ul class="files" id="exportFiles"></ul></div>
     <button type="button" class="btn primary wide" id="exportBtn">Download .zip</button>
     <p class="note" id="exportNote"></p>
@@ -816,6 +821,7 @@ details.more[open] > summary { margin-bottom: 8px; }
           <button type="button" data-bake="512">512 px</button><button type="button" data-bake="1024">1024 px</button><button type="button" data-bake="2048">2048 px</button>
         </div>
       </div>
+      <label class="check"><input type="checkbox" id="bakeNormals"><span>Normal map from the original<small>Bakes the original's surface detail into a normal map, in the tangent space Unity, Unreal, Blender and Godot use. With the original UVs kept, it takes the place of the model's own normal map</small></span></label>
       <details class="sub" id="keepUVOpts" data-sec="uvopts"><summary>Original UV options</summary>
         <div class="subbody">
           <label class="check"><input type="checkbox" id="permissive"><span>Allow collapsing across seams<small>Reaches lower counts with the original UVs, but the texture can smear at seams</small></span></label>

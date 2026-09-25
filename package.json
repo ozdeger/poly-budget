@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node build.js",
     "serve": "node serve.mjs",
-    "test": "node test/test_core.js && node test/test_symmetry.js && node test/test_unwrap.js && node test/test_uvedges.js && node test/test_normals.js && node test/test_quads.js && node test/test_hidden.js"
+    "test": "node test/test_core.js && node test/test_symmetry.js && node test/test_unwrap.js && node test/test_uvedges.js && node test/test_normals.js && node test/test_quads.js && node test/test_hidden.js && node test/test_tangents.js"
   },
   "devDependencies": {
     "assimpjs": "0.0.10",

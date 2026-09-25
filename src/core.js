@@ -1201,6 +1201,14 @@ export function stripUVs(mesh, hardAngle = 30) {
   return { mesh: { positions, normals, uvs: null, colors, index: tmp.slice(0, n), vPart, vMat, vertexCount: C }, rep, of };
 }
 
+// ---------- tangents ----------
+// MikkTSpace tangents at each triangle corner (xyz, and w: the bitangent is cross(normal, tangent) * w), from
+// meshoptimizer's tangent module (MT) in its MikkTSpace-compatible mode. Unity, Unreal, Blender and Godot work out the same
+// tangents on import, so a normal map baked against these shades there as it does here. mesh needs normals and UVs.
+export function cornerTangents(MT, mesh) {
+  return MT.generateTangents(mesh.index, mesh.positions, 3, mesh.normals, 3, mesh.uvs, 2, ['Compatible']);
+}
+
 // ---------- new UVs ----------
 // Linear texel density per painted label, so More ×2/×4/×8 areas also get 2/4/8× the texels.
 const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2, 50: 1, '-100': 0.5 * Math.SQRT1_2 };
