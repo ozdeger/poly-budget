@@ -1330,13 +1330,29 @@ void main() {
 const ISLAND_FS = /* glsl */`
 varying float vIsland;
 void main() { gl_FragColor = vec4(vIsland + 1.0, 0.0, 0.0, 1.0); }`;
-// Luminance of the base colour (as stored, sRGB), lightly smoothed within the island to calm compression grain.
+// Island ids pulled back from the island edges: a texel keeps its id only when every texel within 2 of it has the same.
+// Edge texels mix in the padding around the island once the colour is read at this size, and their small brightness
+// step would emboss every island outline as a dotted ridge.
+const ERODE_FS = /* glsl */`
+uniform sampler2D islands;
+uniform vec2 texel;
+void main() {
+  vec2 st = gl_FragCoord.xy * texel;
+  float id = texture2D(islands, st).r;
+  for (int y = -2; y <= 2; y++) for (int x = -2; x <= 2; x++) {
+    if (abs(texture2D(islands, st + vec2(float(x), float(y)) * texel).r - id) > 0.5) { id = 0.0; break; }
+  }
+  gl_FragColor = vec4(id, 0.0, 0.0, 1.0);
+}`;
+// Luminance of the base colour (as stored, sRGB) read at the detail map's size (baseLod), lightly smoothed within the
+// island to calm compression grain.
 const HEIGHT_FS = /* glsl */`
 uniform sampler2D base;
 uniform sampler2D islands;
 uniform vec2 texel;
+uniform float baseLod;
 float luma(vec2 st) {
-  vec3 c = clamp(texture2D(base, st).rgb, 0.0, 1.0);
+  vec3 c = clamp(textureLod(base, st, baseLod).rgb, 0.0, 1.0);
   c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
   return dot(c, vec3(0.299, 0.587, 0.114));
 }
@@ -1419,7 +1435,8 @@ const flatNormalTex = new THREE.DataTexture(new Uint8Array([128, 128, 255, 255])
 flatNormalTex.needsUpdate = true;
 const jfaInitMat = bakeMaterial(QUAD_VS, JFA_INIT_FS, { corr: { value: null } });
 const islandMat = new THREE.ShaderMaterial({ vertexShader: ISLAND_VS, fragmentShader: ISLAND_FS, uniforms: { texMatrix: { value: new THREE.Matrix3() } }, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
-const heightMat = bakeMaterial(QUAD_VS, HEIGHT_FS, { base: { value: null }, islands: { value: null }, texel: { value: new THREE.Vector2() } });
+const erodeMat = bakeMaterial(QUAD_VS, ERODE_FS, { islands: { value: null }, texel: { value: new THREE.Vector2() } });
+const heightMat = bakeMaterial(QUAD_VS, HEIGHT_FS, { base: { value: null }, islands: { value: null }, texel: { value: new THREE.Vector2() }, baseLod: { value: 0 } });
 const islandBlurMat = bakeMaterial(QUAD_VS, ISLAND_BLUR_FS, { heights: { value: null }, islands: { value: null }, texel: { value: new THREE.Vector2() }, dir: { value: new THREE.Vector2(1, 0) }, sigma: { value: 3 } });
 const detailMat = bakeMaterial(QUAD_VS, DETAIL_FS, { heights: { value: null }, blurred: { value: null }, islands: { value: null }, texel: { value: new THREE.Vector2() }, strength: { value: 1 } });
 const jfaStepMat = bakeMaterial(QUAD_VS, JFA_STEP_FS, { seeds: { value: null }, stepSize: { value: 1 } });
@@ -1554,7 +1571,7 @@ async function detailNormalMap(mi, current) {
   const had = detailMaps.get(mi);
   if (had && had.key === key) return had.texture;
   const target = (type, format, mip = false) => new THREE.WebGLRenderTarget(W, H, { type, format, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: mip });
-  const isl = target(THREE.FloatType, THREE.RedFormat), hgt = target(THREE.FloatType, THREE.RedFormat), tmp = target(THREE.FloatType, THREE.RedFormat);
+  const raw = target(THREE.FloatType, THREE.RedFormat), isl = target(THREE.FloatType, THREE.RedFormat), hgt = target(THREE.FloatType, THREE.RedFormat), tmp = target(THREE.FloatType, THREE.RedFormat);
   const blr = target(THREE.FloatType, THREE.RedFormat), out = target(THREE.UnsignedByteType, THREE.RGBAFormat);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(w.positions, 3));
@@ -1569,10 +1586,15 @@ async function detailNormalMap(mi, current) {
   try {
     base.updateMatrix();
     islandMat.uniforms.texMatrix.value.copy(base.matrix);
-    bakePass(islandMat, isl, new THREE.Mesh(geo, islandMat));
+    bakePass(islandMat, raw, new THREE.Mesh(geo, islandMat));
+    erodeMat.uniforms.islands.value = raw.texture;
+    erodeMat.uniforms.texel.value.set(1 / W, 1 / H);
+    bakePass(erodeMat, isl);
     heightMat.uniforms.base.value = base;
     heightMat.uniforms.islands.value = isl.texture;
     heightMat.uniforms.texel.value.set(1 / W, 1 / H);
+    // The mip level whose bilinear footprint covers one detail texel (a 4K colour read for 2K detail uses level 0).
+    heightMat.uniforms.baseLod.value = Math.max(0, Math.log2(iw / W) - 1);
     bakePass(heightMat, hgt);
     // Detail about 3 texels wide at 2048 px, the same size in UV space at any resolution.
     islandBlurMat.uniforms.islands.value = isl.texture;
@@ -1604,7 +1626,7 @@ async function detailNormalMap(mi, current) {
     detailMaps.set(mi, { key, texture: tex });
     return tex;
   } finally {
-    isl.dispose(); hgt.dispose(); tmp.dispose(); blr.dispose(); out.dispose(); geo.dispose();
+    raw.dispose(); isl.dispose(); hgt.dispose(); tmp.dispose(); blr.dispose(); out.dispose(); geo.dispose();
   }
 }
 function clearDetailMaps(s = state) {
