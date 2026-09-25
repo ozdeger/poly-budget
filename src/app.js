@@ -603,12 +603,15 @@ async function openFiles(fileList, restore = null) {
         loader.setMaterials(mtl);
       }
       root = loader.parse(text);
+      // OBJLoader makes up flat per-triangle normals for a file without vn. Flat normals split every vertex on a noisy
+      // surface into hard edges, which blocks the reduction, so they're dropped and smooth ones worked out instead.
+      if (!/^vn\s/m.test(text)) root.traverse(o => { if (o.isMesh) o.geometry.deleteAttribute('normal'); });
     } else {
       const buf = await main.arrayBuffer();
       const geo = ext === 'stl' ? new STLLoader().parse(buf) : new PLYLoader().parse(buf);
-      // STL files often store zero facet normals; shade from the geometry instead.
+      // STL stores one flat normal per triangle, often zero, so smooth ones are worked out, as for PLY without normals.
       const n = geo.attributes.normal;
-      if (!n || !n.array.some(v => v !== 0)) geo.computeVertexNormals();
+      if (ext === 'stl' || !n || !n.array.some(v => v !== 0)) geo.deleteAttribute('normal');
       root = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc8c2b8, vertexColors: !!geo.attributes.color, roughness: 0.7 }));
       root.name = main.name.replace(/\.[^.]+$/, '');
     }
@@ -638,9 +641,12 @@ async function openFiles(fileList, restore = null) {
   }
 }
 
+const NORMAL_FILE = /normal|nrm|[_\-.]n\./i;
 async function prepareModel(root, meta) {
   setStatus('Collecting meshes…');
   await nextFrame();
+  // collectScene works out smooth normals for any mesh that has none.
+  root.traverse(o => { if (o.isMesh && o.geometry && !o.geometry.attributes.normal) meta.normalsMade = true; });
   const collected = collectScene(root);
   if (!collected.index.length) throw new Error('the file has no triangle meshes');
   state.meta = meta;
@@ -654,6 +660,13 @@ async function prepareModel(root, meta) {
     // Loaders turn on flat shading for a GLB without normals or an OBJ with smoothing off. Here the vertex normals
     // come from the file or are worked out, and the Normals setting decides the result's, so the views follow them.
     mat.flatShading = false;
+    // OBJ exporters list normal maps under map_Bump, which MTLLoader loads as a bump map.
+    const bump = mat.bumpMap && ((mat.bumpMap.userData && mat.bumpMap.userData.pbFile) || mat.bumpMap.name || '');
+    if (bump && 'normalMap' in mat && !mat.normalMap && NORMAL_FILE.test(bump)) {
+      mat.normalMap = mat.bumpMap;
+      mat.bumpMap = null;
+      meta.bumpAsNormal = true;
+    }
     mat.polygonOffset = true;
     mat.polygonOffsetFactor = 1;
     mat.polygonOffsetUnits = 1;
@@ -2047,6 +2060,8 @@ function updateModelPanel() {
   const ratio = s.storedRenderVertices / Math.max(1, s.uniquePositions);
   if (ratio >= 2.5) checks.push(['ok', 'Split vertices merged', `${fmt(s.storedRenderVertices)} stored copies of ${fmt(s.uniquePositions)} points. This is why other tools could not reduce it.`]);
   if (!s.hasUVs) checks.push(['info', 'No UVs', "Textures can't map onto this model."]);
+  if (state.meta.normalsMade && !state.meta.sample) checks.push(['info', 'Smooth normals worked out', 'The file has no vertex normals, so they were made from its surface.']);
+  if (state.meta.bumpAsNormal) checks.push(['info', 'Normal map from map_Bump', 'The material lists its normal map as a bump map, so it is used as a normal map.']);
   if (s.hasColors) checks.push(['info', 'Vertex colours', 'Kept through reduction.']);
   if (w.componentCount > 1) checks.push(['info', `${fmt(w.componentCount)} separate pieces`, 'Fill part paints one piece at a time.']);
   if (state.meta.sample) checks.unshift(['info', 'Sample model', 'The head and the knurled base band are painted More detail, the underside Less detail.']);
@@ -2172,6 +2187,9 @@ function updateResultUI() {
     else if (w.stats.keptUVs && w.uvIslands > 100 && !settings.permissive && layout === 'original') {
       why = `UV seams stop it at ${fmt(i.tris)} triangles.`;
       action = settings.uvMode === 'keep' ? ['Switch to Auto', () => setUVMode('auto')] : ['Use new UVs', () => setUVMode('new')];
+    } else if (settings.weldTol > DEFAULTS.weldTol + 25) {
+      why = 'A large merge distance joins nearby surfaces, and the joins block the reduction.';
+      action = ['Reset the merge distance', () => { settings.weldTol = DEFAULTS.weldTol; syncControls(); saveSettings(); reweld(); }];
     } else why = "Locked or protected areas can't collapse any further.";
   }
   let whyTone = tone;

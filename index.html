@@ -873,7 +873,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 
     <details class="sec" id="secWeld" data-sec="weld" data-needs-model>
       <summary><h2>Welding</h2></summary>
-      <p class="note">Files often store a separate copy of each vertex per triangle corner. Decimators can't collapse those, so they're merged first. Normals further apart than the hard edge angle stay split.</p>
+      <p class="note">Files often store a separate copy of each vertex per triangle corner. Decimators can't collapse those, so they're merged first. Normals further apart than the hard edge angle stay split. Keep the merge distance low: a large one joins separate surfaces that come close, which blocks the reduction and shows as seams.</p>
       <label class="field"><span>Hard edge angle <output id="hardOut"></output></span><input type="range" id="hardAngle" min="0" max="90" step="1"></label>
       <label class="field"><span>Merge distance <output id="tolOut"></output></span><input type="range" id="weldTol" min="0" max="100" step="1"></label>
     </details>
@@ -1279,7 +1279,6 @@ function simplifierFlags(st) {
   if (st.regularize === 2) flags.push('Regularize');
   if (st.lockBorder) flags.push('LockBorder');
   if (st.permissive) flags.push('Permissive');
-  if (st.prune) flags.push('Prune');
   return flags;
 }
 
@@ -1289,6 +1288,9 @@ function concatIndex(a, b) {
   out.set(b, a.length);
   return out;
 }
+
+// Remove tiny floating parts: pieces smaller than this share of the model's size.
+const PRUNE_SIZE = 0.01;
 
 // Region-aware reduction. labels: Int8Array per vertex (LABEL values).
 // st.seam (under symmetry): vertices on the mirror plane. They are the cut half's border but not a real one, so they stay
@@ -1310,6 +1312,9 @@ function reduce(S, mesh, packed, labels, st) {
   if (packed.uvOff > 0) weights.push(st.uvWeight, st.uvWeight);
   if (packed.colOff > 0) weights.push(st.uvWeight, st.uvWeight, st.uvWeight);
   let index = mesh.index;
+  // Tiny floating parts go first, by their size alone. The simplifier's own Prune option cuts at the error limit, and
+  // with no limit it removes whole pieces, the model itself included, when it can't otherwise reach the budget.
+  if (st.prune) index = S.simplifyPrune(index, positions, 3, PRUNE_SIZE);
   const present = new Set();
   if (labels) for (let i = 0; i < V; i++) if (labels[i]) present.add(labels[i]);
   const regionTris = {};
@@ -1441,6 +1446,35 @@ function creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, ang
   return { positions: P, normals: N, uvs: UV, colors: COL, srcId: SRC, index: idx, vPart: pP, vMat: pM };
 }
 
+// Normals for a reduced mesh from the smooth normals of the dense surface it came from (srcId: the source vertex of each
+// vertex), so shading follows the original rather than the reduced triangles. Where the reduced surface turns far from
+// that normal, in very coarse areas, the normal leans back toward the reduced surface's own.
+function surfaceNormals(smooth, srcId, positions, index) {
+  const V = srcId.length, out = new Float32Array(V * 3), own = computeSmoothNormals(positions, index);
+  const cosLimit = Math.cos((75 * Math.PI) / 180);
+  for (let v = 0; v < V; v++) {
+    const s = srcId[v] * 3, o = v * 3;
+    let x = smooth[s], y = smooth[s + 1], z = smooth[s + 2];
+    const d = x * own[o] + y * own[o + 1] + z * own[o + 2];
+    if (d < cosLimit) {
+      const t = Math.min(1, (cosLimit - d) / (cosLimit + 1));
+      x += (own[o] - x) * t; y += (own[o + 1] - y) * t; z += (own[o + 2] - z) * t;
+    }
+    const l = Math.hypot(x, y, z) || 1;
+    out[o] = x / l; out[o + 1] = y / l; out[o + 2] = z / l;
+  }
+  return out;
+}
+
+// Smooth normals of a mesh's own surface, worked out once per mesh.
+const smoothCache = new WeakMap();
+function smoothNormalsOf(mesh) {
+  let n = smoothCache.get(mesh);
+  if (!n) smoothCache.set(mesh, (n = computeSmoothNormals(mesh.positions, mesh.index)));
+  return n;
+}
+
+// opt.smooth: smooth normals of `mesh`'s dense surface, per vertex of `mesh`, for the 'smooth' mode.
 function finalize(mesh, red, opt = {}) {
   const src = red.index, pos = red.positions, attrs = red.attrs, stride = red.stride, uvOff = red.uvOff, colOff = red.colOff;
   const V = pos.length / 3;
@@ -1467,7 +1501,7 @@ function finalize(mesh, red, opt = {}) {
   let index = new Uint32Array(src.length);
   for (let k = 0; k < src.length; k++) index[k] = remap[src[k]];
   if (opt.normals === 'smooth') {
-    normals = computeSmoothNormals(positions, index);
+    normals = opt.smooth ? surfaceNormals(opt.smooth, srcId, positions, index) : computeSmoothNormals(positions, index);
   } else if (opt.normals === 'crease') {
     ({ positions, normals, uvs, colors, srcId, index, vPart, vMat } = creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, opt.creaseAngle ?? 60));
   }
@@ -2835,7 +2869,7 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   };
   if (!sym) {
     const red = reduce(S, c.mesh, c.packed, labels, st);
-    const u = flatten(finalize(c.mesh, red, fopt));
+    const u = flatten(finalize(c.mesh, red, { ...fopt, smooth: fopt.normals === 'smooth' ? smoothNormalsOf(c.mesh) : null }));
     return { result: u.mesh, info: { error: red.error, ms: Date.now() - t0, target: red.target, tris: u.mesh.triCount, verts: u.mesh.vertexCount, keepCount: red.keepCount, cat: categorize(red.index, labels), symmetry: null, atlas: u.info } };
   }
   const H = halfFor(c, sym);
@@ -2849,7 +2883,13 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, seam: H.onPlane, border: st.lockBorder ? H.border : null });
   const axis = sym.axis, off32 = Math.fround(sym.offset);
   for (let v = 0; v < H.onPlane.length; v++) if (H.onPlane[v]) red.positions[v * 3 + axis] = off32;
-  const fin = finalize(H.mesh, red, fopt);
+  // The half's smooth normals come from the whole surface, so vertices on the plane see both sides.
+  if (fopt.normals === 'smooth' && !H.smooth) {
+    const full = smoothNormalsOf(c.mesh);
+    H.smooth = new Float32Array(H.mesh.vertexCount * 3);
+    for (let v = 0; v < H.mesh.vertexCount; v++) for (let k = 0; k < 3; k++) H.smooth[v * 3 + k] = full[H.origOf[v] * 3 + k];
+  }
+  const fin = finalize(H.mesh, red, { ...fopt, smooth: fopt.normals === 'smooth' ? H.smooth : null });
   for (let v = 0; v < fin.srcId.length; v++) fin.srcId[v] = H.origOf[fin.srcId[v]];
   const u = flatten(fin);
   const full = mirrorMerge(u.mesh, sym);
@@ -3312,7 +3352,6 @@ function simplifierFlags(st) {
   if (st.regularize === 2) flags.push('Regularize');
   if (st.lockBorder) flags.push('LockBorder');
   if (st.permissive) flags.push('Permissive');
-  if (st.prune) flags.push('Prune');
   return flags;
 }
 
@@ -3322,6 +3361,9 @@ function concatIndex(a, b) {
   out.set(b, a.length);
   return out;
 }
+
+// Remove tiny floating parts: pieces smaller than this share of the model's size.
+const PRUNE_SIZE = 0.01;
 
 // Region-aware reduction. labels: Int8Array per vertex (LABEL values).
 // st.seam (under symmetry): vertices on the mirror plane. They are the cut half's border but not a real one, so they stay
@@ -3343,6 +3385,9 @@ function reduce(S, mesh, packed, labels, st) {
   if (packed.uvOff > 0) weights.push(st.uvWeight, st.uvWeight);
   if (packed.colOff > 0) weights.push(st.uvWeight, st.uvWeight, st.uvWeight);
   let index = mesh.index;
+  // Tiny floating parts go first, by their size alone. The simplifier's own Prune option cuts at the error limit, and
+  // with no limit it removes whole pieces, the model itself included, when it can't otherwise reach the budget.
+  if (st.prune) index = S.simplifyPrune(index, positions, 3, PRUNE_SIZE);
   const present = new Set();
   if (labels) for (let i = 0; i < V; i++) if (labels[i]) present.add(labels[i]);
   const regionTris = {};
@@ -3474,6 +3519,35 @@ function creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, ang
   return { positions: P, normals: N, uvs: UV, colors: COL, srcId: SRC, index: idx, vPart: pP, vMat: pM };
 }
 
+// Normals for a reduced mesh from the smooth normals of the dense surface it came from (srcId: the source vertex of each
+// vertex), so shading follows the original rather than the reduced triangles. Where the reduced surface turns far from
+// that normal, in very coarse areas, the normal leans back toward the reduced surface's own.
+function surfaceNormals(smooth, srcId, positions, index) {
+  const V = srcId.length, out = new Float32Array(V * 3), own = computeSmoothNormals(positions, index);
+  const cosLimit = Math.cos((75 * Math.PI) / 180);
+  for (let v = 0; v < V; v++) {
+    const s = srcId[v] * 3, o = v * 3;
+    let x = smooth[s], y = smooth[s + 1], z = smooth[s + 2];
+    const d = x * own[o] + y * own[o + 1] + z * own[o + 2];
+    if (d < cosLimit) {
+      const t = Math.min(1, (cosLimit - d) / (cosLimit + 1));
+      x += (own[o] - x) * t; y += (own[o + 1] - y) * t; z += (own[o + 2] - z) * t;
+    }
+    const l = Math.hypot(x, y, z) || 1;
+    out[o] = x / l; out[o + 1] = y / l; out[o + 2] = z / l;
+  }
+  return out;
+}
+
+// Smooth normals of a mesh's own surface, worked out once per mesh.
+const smoothCache = new WeakMap();
+function smoothNormalsOf(mesh) {
+  let n = smoothCache.get(mesh);
+  if (!n) smoothCache.set(mesh, (n = computeSmoothNormals(mesh.positions, mesh.index)));
+  return n;
+}
+
+// opt.smooth: smooth normals of `mesh`'s dense surface, per vertex of `mesh`, for the 'smooth' mode.
 function finalize(mesh, red, opt = {}) {
   const src = red.index, pos = red.positions, attrs = red.attrs, stride = red.stride, uvOff = red.uvOff, colOff = red.colOff;
   const V = pos.length / 3;
@@ -3500,7 +3574,7 @@ function finalize(mesh, red, opt = {}) {
   let index = new Uint32Array(src.length);
   for (let k = 0; k < src.length; k++) index[k] = remap[src[k]];
   if (opt.normals === 'smooth') {
-    normals = computeSmoothNormals(positions, index);
+    normals = opt.smooth ? surfaceNormals(opt.smooth, srcId, positions, index) : computeSmoothNormals(positions, index);
   } else if (opt.normals === 'crease') {
     ({ positions, normals, uvs, colors, srcId, index, vPart, vMat } = creased(positions, normals, uvs, colors, srcId, index, vPart, vMat, opt.creaseAngle ?? 60));
   }
@@ -4868,7 +4942,7 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   };
   if (!sym) {
     const red = reduce(S, c.mesh, c.packed, labels, st);
-    const u = flatten(finalize(c.mesh, red, fopt));
+    const u = flatten(finalize(c.mesh, red, { ...fopt, smooth: fopt.normals === 'smooth' ? smoothNormalsOf(c.mesh) : null }));
     return { result: u.mesh, info: { error: red.error, ms: Date.now() - t0, target: red.target, tris: u.mesh.triCount, verts: u.mesh.vertexCount, keepCount: red.keepCount, cat: categorize(red.index, labels), symmetry: null, atlas: u.info } };
   }
   const H = halfFor(c, sym);
@@ -4882,7 +4956,13 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
   const red = reduce(S, H.mesh, H.packed, halfLabels, { ...st, targetTris: halfTarget, seam: H.onPlane, border: st.lockBorder ? H.border : null });
   const axis = sym.axis, off32 = Math.fround(sym.offset);
   for (let v = 0; v < H.onPlane.length; v++) if (H.onPlane[v]) red.positions[v * 3 + axis] = off32;
-  const fin = finalize(H.mesh, red, fopt);
+  // The half's smooth normals come from the whole surface, so vertices on the plane see both sides.
+  if (fopt.normals === 'smooth' && !H.smooth) {
+    const full = smoothNormalsOf(c.mesh);
+    H.smooth = new Float32Array(H.mesh.vertexCount * 3);
+    for (let v = 0; v < H.mesh.vertexCount; v++) for (let k = 0; k < 3; k++) H.smooth[v * 3 + k] = full[H.origOf[v] * 3 + k];
+  }
+  const fin = finalize(H.mesh, red, { ...fopt, smooth: fopt.normals === 'smooth' ? H.smooth : null });
   for (let v = 0; v < fin.srcId.length; v++) fin.srcId[v] = H.origOf[fin.srcId[v]];
   const u = flatten(fin);
   const full = mirrorMerge(u.mesh, sym);
@@ -5653,12 +5733,15 @@ async function openFiles(fileList, restore = null) {
         loader.setMaterials(mtl);
       }
       root = loader.parse(text);
+      // OBJLoader makes up flat per-triangle normals for a file without vn. Flat normals split every vertex on a noisy
+      // surface into hard edges, which blocks the reduction, so they're dropped and smooth ones worked out instead.
+      if (!/^vn\s/m.test(text)) root.traverse(o => { if (o.isMesh) o.geometry.deleteAttribute('normal'); });
     } else {
       const buf = await main.arrayBuffer();
       const geo = ext === 'stl' ? new STLLoader().parse(buf) : new PLYLoader().parse(buf);
-      // STL files often store zero facet normals; shade from the geometry instead.
+      // STL stores one flat normal per triangle, often zero, so smooth ones are worked out, as for PLY without normals.
       const n = geo.attributes.normal;
-      if (!n || !n.array.some(v => v !== 0)) geo.computeVertexNormals();
+      if (ext === 'stl' || !n || !n.array.some(v => v !== 0)) geo.deleteAttribute('normal');
       root = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc8c2b8, vertexColors: !!geo.attributes.color, roughness: 0.7 }));
       root.name = main.name.replace(/\.[^.]+$/, '');
     }
@@ -5688,9 +5771,12 @@ async function openFiles(fileList, restore = null) {
   }
 }
 
+const NORMAL_FILE = /normal|nrm|[_\-.]n\./i;
 async function prepareModel(root, meta) {
   setStatus('Collecting meshes…');
   await nextFrame();
+  // collectScene works out smooth normals for any mesh that has none.
+  root.traverse(o => { if (o.isMesh && o.geometry && !o.geometry.attributes.normal) meta.normalsMade = true; });
   const collected = collectScene(root);
   if (!collected.index.length) throw new Error('the file has no triangle meshes');
   state.meta = meta;
@@ -5704,6 +5790,13 @@ async function prepareModel(root, meta) {
     // Loaders turn on flat shading for a GLB without normals or an OBJ with smoothing off. Here the vertex normals
     // come from the file or are worked out, and the Normals setting decides the result's, so the views follow them.
     mat.flatShading = false;
+    // OBJ exporters list normal maps under map_Bump, which MTLLoader loads as a bump map.
+    const bump = mat.bumpMap && ((mat.bumpMap.userData && mat.bumpMap.userData.pbFile) || mat.bumpMap.name || '');
+    if (bump && 'normalMap' in mat && !mat.normalMap && NORMAL_FILE.test(bump)) {
+      mat.normalMap = mat.bumpMap;
+      mat.bumpMap = null;
+      meta.bumpAsNormal = true;
+    }
     mat.polygonOffset = true;
     mat.polygonOffsetFactor = 1;
     mat.polygonOffsetUnits = 1;
@@ -7097,6 +7190,8 @@ function updateModelPanel() {
   const ratio = s.storedRenderVertices / Math.max(1, s.uniquePositions);
   if (ratio >= 2.5) checks.push(['ok', 'Split vertices merged', `${fmt(s.storedRenderVertices)} stored copies of ${fmt(s.uniquePositions)} points. This is why other tools could not reduce it.`]);
   if (!s.hasUVs) checks.push(['info', 'No UVs', "Textures can't map onto this model."]);
+  if (state.meta.normalsMade && !state.meta.sample) checks.push(['info', 'Smooth normals worked out', 'The file has no vertex normals, so they were made from its surface.']);
+  if (state.meta.bumpAsNormal) checks.push(['info', 'Normal map from map_Bump', 'The material lists its normal map as a bump map, so it is used as a normal map.']);
   if (s.hasColors) checks.push(['info', 'Vertex colours', 'Kept through reduction.']);
   if (w.componentCount > 1) checks.push(['info', `${fmt(w.componentCount)} separate pieces`, 'Fill part paints one piece at a time.']);
   if (state.meta.sample) checks.unshift(['info', 'Sample model', 'The head and the knurled base band are painted More detail, the underside Less detail.']);
@@ -7222,6 +7317,9 @@ function updateResultUI() {
     else if (w.stats.keptUVs && w.uvIslands > 100 && !settings.permissive && layout === 'original') {
       why = `UV seams stop it at ${fmt(i.tris)} triangles.`;
       action = settings.uvMode === 'keep' ? ['Switch to Auto', () => setUVMode('auto')] : ['Use new UVs', () => setUVMode('new')];
+    } else if (settings.weldTol > DEFAULTS.weldTol + 25) {
+      why = 'A large merge distance joins nearby surfaces, and the joins block the reduction.';
+      action = ['Reset the merge distance', () => { settings.weldTol = DEFAULTS.weldTol; syncControls(); saveSettings(); reweld(); }];
     } else why = "Locked or protected areas can't collapse any further.";
   }
   let whyTone = tone;

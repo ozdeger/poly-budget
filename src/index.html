@@ -862,7 +862,7 @@ details.more[open] > summary { margin-bottom: 8px; }
 
     <details class="sec" id="secWeld" data-sec="weld" data-needs-model>
       <summary><h2>Welding</h2></summary>
-      <p class="note">Files often store a separate copy of each vertex per triangle corner. Decimators can't collapse those, so they're merged first. Normals further apart than the hard edge angle stay split.</p>
+      <p class="note">Files often store a separate copy of each vertex per triangle corner. Decimators can't collapse those, so they're merged first. Normals further apart than the hard edge angle stay split. Keep the merge distance low: a large one joins separate surfaces that come close, which blocks the reduction and shows as seams.</p>
       <label class="field"><span>Hard edge angle <output id="hardOut"></output></span><input type="range" id="hardAngle" min="0" max="90" step="1"></label>
       <label class="field"><span>Merge distance <output id="tolOut"></output></span><input type="range" id="weldTol" min="0" max="100" step="1"></label>
     </details>
