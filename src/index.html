@@ -822,6 +822,7 @@ details.more[open] > summary { margin-bottom: 8px; }
         </div>
       </div>
       <label class="check"><input type="checkbox" id="bakeNormals"><span>Normal map from the original<small>Bakes the original's surface detail into a normal map, in the tangent space Unity, Unreal, Blender and Godot use. With the original UVs kept, it takes the place of the model's own normal map</small></span></label>
+      <label class="field" id="colorDetailField"><span>Detail from the base colour <output id="colorDetailOut"></output></span><input type="range" id="colorDetail" min="0" max="1" step="0.05" aria-label="Detail from the base colour" title="For materials that come without a normal map: embosses the base colour's fine painted detail into the baked normal map"></label>
       <details class="sub" id="keepUVOpts" data-sec="uvopts"><summary>Original UV options</summary>
         <div class="subbody">
           <label class="check"><input type="checkbox" id="permissive"><span>Allow collapsing across seams<small>Reaches lower counts with the original UVs, but the texture can smear at seams</small></span></label>

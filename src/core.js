@@ -1209,6 +1209,22 @@ export function cornerTangents(MT, mesh) {
   return MT.generateTangents(mesh.index, mesh.positions, 3, mesh.normals, 3, mesh.uvs, 2, ['Compatible']);
 }
 
+// Per vertex, the normals of every vertex at its position (bit-identical, as the weld leaves copies) averaged: a direction
+// that doesn't split at hard edges or UV seams, which the texture bake casts its rays along.
+export function positionNormals(mesh) {
+  const V = mesh.vertexCount, P = mesh.positions, N = mesh.normals;
+  const bits = new Int32Array(P.buffer, P.byteOffset, V * 3);
+  const { group, count } = groupBy(V, 3, (i, o) => { o[0] = bits[i * 3]; o[1] = bits[i * 3 + 1]; o[2] = bits[i * 3 + 2]; });
+  const sum = new Float64Array(count * 3);
+  for (let v = 0; v < V; v++) for (let k = 0; k < 3; k++) sum[group[v] * 3 + k] += N[v * 3 + k];
+  const out = new Float32Array(V * 3);
+  for (let v = 0; v < V; v++) {
+    const g = group[v], l = Math.hypot(sum[g * 3], sum[g * 3 + 1], sum[g * 3 + 2]) || 1;
+    for (let k = 0; k < 3; k++) out[v * 3 + k] = sum[g * 3 + k] / l;
+  }
+  return out;
+}
+
 // ---------- new UVs ----------
 // Linear texel density per painted label, so More ×2/×4/×8 areas also get 2/4/8× the texels.
 const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2, 50: 1, '-100': 0.5 * Math.SQRT1_2 };

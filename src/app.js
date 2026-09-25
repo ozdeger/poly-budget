@@ -12,7 +12,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
-import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, cornerTangents, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
+import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, cornerTangents, positionNormals, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
 import { computeVisibility } from './visibility.js';
 
@@ -39,7 +39,7 @@ const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
   targetPct: 10, topology: 'tris', quadSharp: true, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
-  normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024, bakeNormals: true, normalFormat: 'opengl',
+  normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, normalFormat: 'opengl',
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
@@ -60,7 +60,7 @@ function saveSettings() {
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
 const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
-  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'bakeNormals', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
+  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'bakeNormals', 'colorDetail', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
 const newDocId = () => `t${Date.now().toString(36)}${(docSeq++).toString(36)}`;
@@ -73,7 +73,7 @@ function newDoc(saved = null) {
       meta: null, collected: null, welded: null, labels: null, result: null, info: null, engineMesh: null,
       orig: { bvh: null, index: null }, left: null, diag: 1, size: 1, undo: [], redo: [], strokeSnapshot: null, strokeChanged: false,
       painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
-      vis: null, visStats: null, visJob: null, visFrac: 0, auto: null,
+      vis: null, visStats: null, visJob: null, visFrac: 0, auto: null, detailMaps: new Map(),
     },
     symPlane: { axis: 0, offset: 0, fit: null, ready: false },
     session: { model: null, files: new Map(), ready: false },
@@ -879,6 +879,7 @@ async function rebuildWeld(resetLabels) {
   state.orig = { bvh: null, index: null };
   cancelTexture();
   resetBakeSources();
+  clearDetailMaps();
   setLeftSurface(originalSurface());
   setStatus('Indexing surface for the brush…');
   await nextFrame();
@@ -1113,17 +1114,22 @@ uniform sampler2D srcNormal;
 varying vec3 vPos;
 varying vec3 vNrm;
 varying vec4 vTan;
+varying vec3 vRay;
 `;
-// bakeTangent: the result's MikkTSpace tangent at each triangle corner (xyz, and the bitangent's sign in w).
+// bakeTangent: the result's MikkTSpace tangent at each triangle corner (xyz, and the bitangent's sign in w). bakeRay:
+// the direction rays look for the original along, the normals at one position averaged, so hard edges don't split it.
 const UV_SPACE_VS = /* glsl */`
 attribute vec4 bakeTangent;
+attribute vec3 bakeRay;
 varying vec3 vPos;
 varying vec3 vNrm;
 varying vec4 vTan;
+varying vec3 vRay;
 void main() {
   vPos = position;
   vNrm = normal;
   vTan = bakeTangent;
+  vRay = bakeRay;
   gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }`;
 const QUAD_VS = /* glsl */'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }';
@@ -1175,13 +1181,21 @@ float closestFacing(vec3 p, vec3 n, float maxD, inout uvec4 faceIndices, inout v
 
 void main() {
   float texelArea = length(cross(dFdx(vPos), dFdy(vPos)));
-  vec3 n = normalize(vNrm);
-  uvec4 fi = uvec4(0u);
-  vec3 bc = vec3(1.0, 0.0, 0.0);
+  vec3 n = normalize(vRay);
+  uvec4 fi = uvec4(0u), fo = uvec4(0u);
+  vec3 bc = vec3(1.0, 0.0, 0.0), bo = bc;
   vec3 hn = vec3(0.0);
-  float side = 0.0, dist = 0.0;
-  // The outermost surface along the normal is what shows from outside, even where strands were merged into the head.
+  float side = 0.0, dist = 0.0, so = 0.0, dOut = 0.0;
+  // Along the smoothed normal, within a cage sized to how far this result strays from the original: the outermost surface
+  // facing out, which is what shows from outside (and stays the same surface along an overhang); failing that, the
+  // nearest surface on either side.
   bool hit = bvhIntersectFirstHit(bvh, vPos + n * cage, -n, fi, hn, bc, side, dist) && side > 0.0 && dist < 2.0 * cage;
+  if (!hit) {
+    bool hitIn = bvhIntersectFirstHit(bvh, vPos, -n, fi, hn, bc, side, dist) && dist < cage;
+    bool hitOut = bvhIntersectFirstHit(bvh, vPos, n, fo, hn, bo, so, dOut) && dOut < cage;
+    if (hitOut && (!hitIn || dOut < dist)) { fi = fo; bc = bo; }
+    hit = hitIn || hitOut;
+  }
   float d = hit ? 0.0 : closestFacing(vPos, n, maxDist, fi, bc);
   if (d >= maxDist) {
     vec3 op = vec3(0.0);
@@ -1282,17 +1296,115 @@ void main() {
   }
   gl_FragColor = best;
 }`;
+// padLimit > 0: gutters repeat the chart edge only this many texels out, then hold the neutral value (normal maps, whose
+// charts shouldn't bleed into each other at low mip levels).
 const FILL_FS = /* glsl */`
 uniform sampler2D corr;
 uniform sampler2D seeds;
 uniform sampler2D img;
+uniform float padLimit;
+uniform vec4 neutral;
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy), q = p;
   if (texelFetch(corr, p, 0).a < 0.5) {
     vec4 s = texelFetch(seeds, p, 0);
+    if (padLimit > 0.0 && (s.a < 0.5 || distance(s.xy, vec2(p)) > padLimit)) { gl_FragColor = neutral; return; }
     if (s.a > 0.5) q = ivec2(s.xy + 0.5);
   }
   gl_FragColor = texelFetch(img, q, 0);
+}`;
+
+// ---------- detail from the base colour ----------
+// For materials that come without a normal map: the base colour's fine detail as a normal map in its own texture space,
+// which the bake then treats as the original's normal map. Heights are the colour's luminance; gradients only look at
+// texels of the same UV island, so island borders don't emboss.
+// Island ids of the original's triangles drawn in the texture's space (0 = no island).
+const ISLAND_VS = /* glsl */`
+attribute float island;
+uniform mat3 texMatrix;
+varying float vIsland;
+void main() {
+  vIsland = island;
+  gl_Position = vec4((texMatrix * vec3(uv, 1.0)).xy * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const ISLAND_FS = /* glsl */`
+varying float vIsland;
+void main() { gl_FragColor = vec4(vIsland + 1.0, 0.0, 0.0, 1.0); }`;
+// Luminance of the base colour (as stored, sRGB), lightly smoothed within the island to calm compression grain.
+const HEIGHT_FS = /* glsl */`
+uniform sampler2D base;
+uniform sampler2D islands;
+uniform vec2 texel;
+float luma(vec2 st) {
+  vec3 c = clamp(texture2D(base, st).rgb, 0.0, 1.0);
+  c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+  return dot(c, vec3(0.299, 0.587, 0.114));
+}
+void main() {
+  vec2 st = gl_FragCoord.xy * texel;
+  float id = texture2D(islands, st).r;
+  if (id < 0.5) { gl_FragColor = vec4(0.0); return; }
+  float sum = 0.0, wsum = 0.0;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 q = st + vec2(float(x), float(y)) * texel;
+    if (abs(texture2D(islands, q).r - id) > 0.5) continue;
+    float w = (x == 0 && y == 0) ? 4.0 : (x == 0 || y == 0) ? 2.0 : 1.0;
+    sum += w * luma(q);
+    wsum += w;
+  }
+  gl_FragColor = vec4(sum / wsum, 0.0, 0.0, 1.0);
+}`;
+// A Gaussian blur along dir that only mixes texels of the same island; heights minus their blur keep the fine detail
+// (strokes, seams, weave) and drop broad colour areas, which would otherwise emboss as soft blobs.
+const ISLAND_BLUR_FS = /* glsl */`
+uniform sampler2D heights;
+uniform sampler2D islands;
+uniform vec2 texel;
+uniform vec2 dir;
+uniform float sigma;
+void main() {
+  vec2 st = gl_FragCoord.xy * texel;
+  float id = texture2D(islands, st).r;
+  if (id < 0.5) { gl_FragColor = vec4(0.0); return; }
+  float sum = 0.0, wsum = 0.0;
+  for (int i = -12; i <= 12; i++) {
+    float f = float(i);
+    if (abs(f) > 3.0 * sigma) continue;
+    vec2 q = st + dir * f * texel;
+    if (abs(texture2D(islands, q).r - id) > 0.5) continue;
+    float w = exp(-0.5 * f * f / (sigma * sigma));
+    sum += w * texture2D(heights, q).r;
+    wsum += w;
+  }
+  gl_FragColor = vec4(sum / max(wsum, 1e-6), 0.0, 0.0, 1.0);
+}`;
+// Gradients of the fine detail (heights minus their blur) from same-island neighbours (a neighbour elsewhere counts as
+// level), gently limited so hard colour boundaries don't become deep grooves, as a tangent-space normal map (+x along u,
+// +y along v).
+const DETAIL_FS = /* glsl */`
+uniform sampler2D heights;
+uniform sampler2D blurred;
+uniform sampler2D islands;
+uniform vec2 texel;
+uniform float strength;
+float fine(vec2 q) { return texture2D(heights, q).r - texture2D(blurred, q).r; }
+void main() {
+  vec2 st = gl_FragCoord.xy * texel;
+  float id = texture2D(islands, st).r;
+  if (id < 0.5) { gl_FragColor = vec4(0.5, 0.5, 1.0, 1.0); return; }
+  float h0 = fine(st);
+  float hs[8];
+  int k = 0;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    if (x == 0 && y == 0) continue;
+    vec2 q = st + vec2(float(x), float(y)) * texel;
+    hs[k++] = abs(texture2D(islands, q).r - id) > 0.5 ? h0 : fine(q);
+  }
+  // Sobel: hs holds (-1,-1) (0,-1) (1,-1) (-1,0) (1,0) (-1,1) (0,1) (1,1).
+  vec2 g = vec2((hs[2] + 2.0 * hs[4] + hs[7]) - (hs[0] + 2.0 * hs[3] + hs[5]), (hs[5] + 2.0 * hs[6] + hs[7]) - (hs[0] + 2.0 * hs[1] + hs[2])) / 8.0;
+  g *= strength;
+  g /= 1.0 + length(g) / 0.6;
+  gl_FragColor = vec4(normalize(vec3(-g, 1.0)) * 0.5 + 0.5, 1.0);
 }`;
 
 const bakeMaterial = (vertexShader, fragmentShader, uniforms) => new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
@@ -1306,8 +1418,12 @@ const mapMat = bakeMaterial(UV_SPACE_VS, MAP_FS, {
 const flatNormalTex = new THREE.DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1);
 flatNormalTex.needsUpdate = true;
 const jfaInitMat = bakeMaterial(QUAD_VS, JFA_INIT_FS, { corr: { value: null } });
+const islandMat = new THREE.ShaderMaterial({ vertexShader: ISLAND_VS, fragmentShader: ISLAND_FS, uniforms: { texMatrix: { value: new THREE.Matrix3() } }, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
+const heightMat = bakeMaterial(QUAD_VS, HEIGHT_FS, { base: { value: null }, islands: { value: null }, texel: { value: new THREE.Vector2() } });
+const islandBlurMat = bakeMaterial(QUAD_VS, ISLAND_BLUR_FS, { heights: { value: null }, islands: { value: null }, texel: { value: new THREE.Vector2() }, dir: { value: new THREE.Vector2(1, 0) }, sigma: { value: 3 } });
+const detailMat = bakeMaterial(QUAD_VS, DETAIL_FS, { heights: { value: null }, blurred: { value: null }, islands: { value: null }, texel: { value: new THREE.Vector2() }, strength: { value: 1 } });
 const jfaStepMat = bakeMaterial(QUAD_VS, JFA_STEP_FS, { seeds: { value: null }, stepSize: { value: 1 } });
-const fillMat = bakeMaterial(QUAD_VS, FILL_FS, { corr: { value: null }, seeds: { value: null }, img: { value: null } });
+const fillMat = bakeMaterial(QUAD_VS, FILL_FS, { corr: { value: null }, seeds: { value: null }, img: { value: null }, padLimit: { value: 0 }, neutral: { value: new THREE.Vector4(0.5, 0.5, 1, 1) } });
 const quadGeo = new THREE.BufferGeometry();
 quadGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
 const bakeScene = new THREE.Scene(), bakeCam = new THREE.Camera();
@@ -1390,14 +1506,14 @@ function prewarmBakeSources() {
   if (!state.welded || !state.welded.uvs || !state.orig.bvh) return;
   for (const { mi } of bakeJobs()) bakeSource(mi);
 }
-// The result's triangles tris, unshared, with the tangent of each corner when the result has them.
-function bakeGeometry(res, tris) {
-  const n = tris.length * 3, P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = new Float32Array(n * 2), TG = new Float32Array(n * 4);
+// The result's triangles tris, unshared, with the tangent of each corner when the result has them and the ray direction.
+function bakeGeometry(res, tris, rays) {
+  const n = tris.length * 3, P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = new Float32Array(n * 2), TG = new Float32Array(n * 4), R = new Float32Array(n * 3);
   const idx = res.index, tan = res.tangents;
   for (let i = 0; i < tris.length; i++) {
     for (let k = 0; k < 3; k++) {
       const c = tris[i] * 3 + k, v = idx[c], o = i * 3 + k;
-      for (let j = 0; j < 3; j++) { P[o * 3 + j] = res.positions[v * 3 + j]; N[o * 3 + j] = res.normals[v * 3 + j]; }
+      for (let j = 0; j < 3; j++) { P[o * 3 + j] = res.positions[v * 3 + j]; N[o * 3 + j] = res.normals[v * 3 + j]; R[o * 3 + j] = rays[v * 3 + j]; }
       UV[o * 2] = res.uvs[v * 2]; UV[o * 2 + 1] = res.uvs[v * 2 + 1];
       if (tan) for (let j = 0; j < 4; j++) TG[o * 4 + j] = tan[c * 4 + j];
     }
@@ -1407,7 +1523,94 @@ function bakeGeometry(res, tris) {
   geo.setAttribute('normal', new THREE.BufferAttribute(N, 3));
   geo.setAttribute('uv', new THREE.BufferAttribute(UV, 2));
   geo.setAttribute('bakeTangent', new THREE.BufferAttribute(TG, 4));
+  geo.setAttribute('bakeRay', new THREE.BufferAttribute(R, 3));
   return geo;
+}
+// How far rays look for the original: past nearly all of how far this result strays from it (the 98th percentile of
+// sampled distances, with room), between 0.4% and 5% of the model's size.
+function bakeCage(res) {
+  const bvh = state.orig.bvh, P = res.positions, V = res.vertexCount, n = Math.min(3000, V), step = V / n, d = [], p = new THREE.Vector3(), hit = {};
+  if (!bvh) return 0.01 * state.size;
+  for (let i = 0; i < n; i++) {
+    const v = Math.floor(i * step);
+    p.set(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]);
+    const h = bvh.closestPointToPoint(p, hit);
+    if (h) d.push(h.distance);
+  }
+  d.sort((a, b) => a - b);
+  const far = d.length ? d[Math.floor(d.length * 0.98)] : 0;
+  return Math.min(0.05 * state.size, Math.max(0.004 * state.size, 2.5 * far));
+}
+// The detail normal map made from material mi's base colour, when it has no normal map of its own and detail is on:
+// a DataTexture in the base colour's texture space (its offset and repeat copied), kept with the tab until the colour,
+// the size or the strength changes.
+async function detailNormalMap(mi, current) {
+  const detailMaps = state.detailMaps;
+  const m = state.displayMats[mi], base = loadedMap(m, 'map'), w = state.welded;
+  if (!base || !(settings.colorDetail > 0) || loadedMap(m, 'normalMap') || !('normalMap' in m) || !w.uvs) return null;
+  const [iw, ih] = imageSize(base.image), k = Math.min(1, 2048 / Math.max(iw, ih));
+  const W = Math.max(64, Math.round(iw * k)), H = Math.max(64, Math.round(ih * k));
+  const key = `${objId(w.index)}|${base.uuid}|${W}x${H}|${settings.colorDetail}`;
+  const had = detailMaps.get(mi);
+  if (had && had.key === key) return had.texture;
+  const target = (type, format, mip = false) => new THREE.WebGLRenderTarget(W, H, { type, format, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: mip });
+  const isl = target(THREE.FloatType, THREE.RedFormat), hgt = target(THREE.FloatType, THREE.RedFormat), tmp = target(THREE.FloatType, THREE.RedFormat);
+  const blr = target(THREE.FloatType, THREE.RedFormat), out = target(THREE.UnsignedByteType, THREE.RGBAFormat);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(w.positions, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(w.uvs, 2));
+  geo.setAttribute('island', new THREE.BufferAttribute(w.uvIsland ? Float32Array.from(w.uvIsland) : new Float32Array(w.vertexCount), 1));
+  const nMat = state.displayMats.length;
+  if (nMat > 1) {
+    const keep = [];
+    for (let t = 0; t < w.index.length; t += 3) if (Math.min(w.vMat[w.index[t]], nMat - 1) === mi) keep.push(w.index[t], w.index[t + 1], w.index[t + 2]);
+    geo.setIndex(new THREE.BufferAttribute(Uint32Array.from(keep), 1));
+  } else geo.setIndex(new THREE.BufferAttribute(w.index, 1));
+  try {
+    base.updateMatrix();
+    islandMat.uniforms.texMatrix.value.copy(base.matrix);
+    bakePass(islandMat, isl, new THREE.Mesh(geo, islandMat));
+    heightMat.uniforms.base.value = base;
+    heightMat.uniforms.islands.value = isl.texture;
+    heightMat.uniforms.texel.value.set(1 / W, 1 / H);
+    bakePass(heightMat, hgt);
+    // Detail about 3 texels wide at 2048 px, the same size in UV space at any resolution.
+    islandBlurMat.uniforms.islands.value = isl.texture;
+    islandBlurMat.uniforms.texel.value.set(1 / W, 1 / H);
+    islandBlurMat.uniforms.sigma.value = Math.max(1, (3 * Math.max(W, H)) / 2048);
+    islandBlurMat.uniforms.heights.value = hgt.texture;
+    islandBlurMat.uniforms.dir.value.set(1, 0);
+    bakePass(islandBlurMat, tmp);
+    islandBlurMat.uniforms.heights.value = tmp.texture;
+    islandBlurMat.uniforms.dir.value.set(0, 1);
+    bakePass(islandBlurMat, blr);
+    detailMat.uniforms.heights.value = hgt.texture;
+    detailMat.uniforms.blurred.value = blr.texture;
+    detailMat.uniforms.islands.value = isl.texture;
+    detailMat.uniforms.texel.value.set(1 / W, 1 / H);
+    // 50% leans fine strokes about as far as generators' own detail maps do (5° at the 95th percentile).
+    detailMat.uniforms.strength.value = 8.5 * settings.colorDetail;
+    bakePass(detailMat, out);
+    const data = await renderer.readRenderTargetPixelsAsync(out, 0, 0, W, H, new Uint8Array(W * H * 4));
+    if (current && !current()) return null;
+    const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, THREE.UnsignedByteType);
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.offset.copy(base.offset); tex.repeat.copy(base.repeat); tex.rotation = base.rotation; tex.center.copy(base.center);
+    tex.userData.pbDetail = true;
+    tex.needsUpdate = true;
+    if (had) had.texture.dispose();
+    detailMaps.set(mi, { key, texture: tex });
+    return tex;
+  } finally {
+    isl.dispose(); hgt.dispose(); tmp.dispose(); blr.dispose(); out.dispose(); geo.dispose();
+  }
+}
+function clearDetailMaps(s = state) {
+  if (!s || !s.detailMaps) return;
+  for (const d of s.detailMaps.values()) d.texture.dispose();
+  s.detailMaps.clear();
 }
 
 // Bakes every loaded map of every textured material onto the result's new UVs, 256 rows of the heavy pass per frame
@@ -1421,12 +1624,12 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
   ensureBakeTargets(size);
   const triEnd = info && info.symmetry ? res.triCount / 2 : res.triCount;
   const nMat = state.displayMats.length, idx = res.index;
-  const out = { size, maps: [] };
+  const out = { size, maps: [] }, rays = positionNormals(res), cage = bakeCage(res);
   for (const job of jobs) {
     const tris = [];
     for (let t = 0; t < triEnd; t++) if (Math.min(res.vMat[idx[t * 3]], nMat - 1) === job.mi) tris.push(t);
     if (!tris.length) continue;
-    const geo = bakeGeometry(res, tris);
+    const geo = bakeGeometry(res, tris, rays);
     const mesh = new THREE.Mesh(geo, corrMat);
     try {
       const src = bakeSource(job.mi);
@@ -1436,7 +1639,7 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
         m.uniforms.srcNormal.value = bake.normal;
       }
       corrMat.uniforms.maxDist.value = 0.08 * state.size;
-      corrMat.uniforms.cage.value = 0.01 * state.size;
+      corrMat.uniforms.cage.value = cage;
       for (let y = 0; y < size; y += rows) {
         bakePass(corrMat, bake.corr, mesh, [y, Math.min(rows, size - y)]);
         await nextFrame();
@@ -1452,7 +1655,10 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
         [a, b] = [b, a];
       }
       for (const slot of job.slots) {
-        const tex = loadedMap(state.displayMats[job.mi], slot);
+        // A material without a normal map of its own takes the one made from its base colour, if detail is on.
+        const own = loadedMap(state.displayMats[job.mi], slot);
+        const tex = own || (slot === 'normalMap' ? await detailNormalMap(job.mi, current) : null);
+        if (!current()) return null;
         if (tex) tex.updateMatrix();
         mapMat.uniforms.corr.value = bake.corr.texture;
         mapMat.uniforms.srcMap.value = tex || flatNormalTex;
@@ -1460,16 +1666,17 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
         mapMat.uniforms.hasTangents.value = !!res.tangents;
         mapMat.uniforms.srcMatrix.value.copy(tex ? tex.matrix : new THREE.Matrix3());
         mapMat.uniforms.srcSize.value.set(...(tex ? imageSize(tex.image) : [1, 1]));
-        mapMat.uniforms.normalScale.value.copy(state.displayMats[job.mi].normalScale || new THREE.Vector2(1, 1));
+        mapMat.uniforms.normalScale.value.copy(own && state.displayMats[job.mi].normalScale ? state.displayMats[job.mi].normalScale : new THREE.Vector2(1, 1));
         mapMat.uniforms.mode.value = slot === 'normalMap' ? 2 : tex.colorSpace === THREE.SRGBColorSpace ? 1 : 0;
         bakePass(mapMat, bake.scratch, mesh);
         fillMat.uniforms.corr.value = bake.corr.texture;
         fillMat.uniforms.seeds.value = a.texture;
         fillMat.uniforms.img.value = bake.scratch.texture;
+        fillMat.uniforms.padLimit.value = slot === 'normalMap' ? Math.max(2, Math.round((8 * size) / 1024)) : 0;
         bakePass(fillMat, bake.out);
         const data = await renderer.readRenderTargetPixelsAsync(bake.out, 0, 0, size, size, new Uint8Array(size * size * 4));
         if (!current()) return null;
-        out.maps.push({ mi: job.mi, slot, data, colorSpace: tex && tex.colorSpace === THREE.SRGBColorSpace ? THREE.SRGBColorSpace : THREE.NoColorSpace });
+        out.maps.push({ mi: job.mi, slot, data, colorSpace: own && own.colorSpace === THREE.SRGBColorSpace ? THREE.SRGBColorSpace : THREE.NoColorSpace, detail: !own && !!tex });
       }
     } finally {
       geo.dispose();
@@ -2594,11 +2801,11 @@ function uvStatus() {
   }
   if (r.uvLayout === 'new') {
     const a = i.atlas;
-    const normal = state.bake && state.bake.maps.some(x => x.slot === 'normalMap');
-    const baked = state.bake ? `${normal ? 'The textures and a normal map of the original\'s surface are' : 'The texture is'} baked onto them from the original at ${state.bake.size} px.` : textured ? 'The texture could not be baked.' : 'There is no texture to bake.';
+    const normal = state.bake && state.bake.maps.some(x => x.slot === 'normalMap'), detail = state.bake && state.bake.maps.some(x => x.detail);
+    const baked = state.bake ? `${normal ? `The textures and a normal map of the original's surface${detail ? ', with detail from the base colour,' : ''} are` : 'The texture is'} baked onto them from the original at ${state.bake.size} px.` : textured ? 'The texture could not be baked.' : 'There is no texture to bake.';
     return [state.bake || !textured ? 'ok' : 'warn', `New UVs · ${fmt(a.charts)} charts · ${pct(a.coverage)} of the sheet`, [why, baked].filter(Boolean).join(' ')];
   }
-  const nm = state.bake && state.bake.maps.some(x => x.slot === 'normalMap') ? ` A normal map of the original's surface is baked into them at ${state.bake.size} px.`
+  const nm = state.bake && state.bake.maps.some(x => x.slot === 'normalMap') ? ` A normal map of the original's surface${state.bake.maps.some(x => x.detail) ? ', with detail from the base colour,' : ''} is baked into them at ${state.bake.size} px.`
     : state.texturing ? ' Baking a normal map of the original\'s surface into them…' : '';
   if (!fit) return [state.texturing ? 'busy' : 'ok', 'Original UVs', nm.trim()];
   if (settings.uvMode === 'keep') {
@@ -3093,9 +3300,10 @@ function uvPaneContent(side) {
   if (!w) return { key: 'empty', label: '', msg: loading === doc || doc.saved ? 'Loading the model…' : 'No model in this tab.', busy: loading === doc || !!doc.saved };
   if (!w.uvs) return { key: 'nouv', label: '', msg: 'This model has no UVs, so it has no texture layout.' };
   const mi = uvView.mat, slot = uvView.slot, mat = state.displayMats[mi], base = `${side}|${objId(w.index)}|${mi}`;
-  const src = loadedMap(mat, slot), size = t => { const [x, y] = imageSize(t.image); return x === y ? `${x} px` : `${x} × ${y} px`; };
+  const size = t => { const [x, y] = imageSize(t.image); return x === y ? `${x} px` : `${x} × ${y} px`; };
+  const own = loadedMap(mat, slot), made = !own && slot === 'normalMap' && state.detailMaps.get(mi) ? state.detailMaps.get(mi).texture : null, src = own || made;
   if (side === 'A') {
-    return { key: `${base}|${slot}|${objId(src)}`, texture: src, mesh: w, triEnd: w.triCount, label: `${fmt(w.uvIslands)} ${w.uvIslands === 1 ? 'island' : 'islands'}${src ? ` · ${size(src)}` : ' · no texture'}` };
+    return { key: `${base}|${slot}|${objId(src)}`, texture: src, mesh: w, triEnd: w.triCount, label: `${fmt(w.uvIslands)} ${w.uvIslands === 1 ? 'island' : 'islands'}${src ? ` · ${size(src)}${made ? ' · made from the base colour' : ''}` : ' · no texture'}` };
   }
   const r = state.result, i = state.info;
   if (!r || !i) return { key: `${base}|wait`, label: '', msg: 'Reducing…', busy: true };
@@ -3107,10 +3315,10 @@ function uvPaneContent(side) {
     const baked = state.bakedMats && state.bakedMats[mi] ? loadedMap(state.bakedMats[mi], slot) : null;
     const a = i.atlas && (i.atlas.atlases || []).find(x => x.mat === mi);
     const charts = a ? `${fmt(a.charts)} charts · ${pctOf(a.coverage)} filled` : i.atlas ? `${fmt(i.atlas.charts)} charts` : '';
-    return { key: `${base}|${objId(r)}|${slot}|${objId(baked)}`, texture: baked, mesh: r, triEnd, label: `new UVs · ${charts}${baked ? ` · baked ${size(baked)}` : src ? ' · not baked' : ''}` };
+    return { key: `${base}|${objId(r)}|${slot}|${objId(baked)}`, texture: baked, mesh: r, triEnd, label: `new UVs · ${charts}${baked ? ` · baked ${size(baked)}` : own ? ' · not baked' : ''}` };
   }
-  const fit = i.uvFit;
-  return { key: `${base}|${objId(r)}|${slot}|${objId(src)}`, texture: src, mesh: r, triEnd, label: `original UVs${!fit ? '' : fit.misplaced < 0.0005 ? ' · fits' : ` · ${pctOf(fit.misplaced)} off`}` };
+  const fit = i.uvFit, kept = (state.bakedMats && loadedMap(state.bakedMats[mi], slot)) || own;
+  return { key: `${base}|${objId(r)}|${slot}|${objId(kept)}`, texture: kept, mesh: r, triEnd, label: `original UVs${!fit ? '' : fit.misplaced < 0.0005 ? ' · fits' : ` · ${pctOf(fit.misplaced)} off`}${kept && kept.userData.pbBaked ? ` · baked ${size(kept)}` : ''}` };
 }
 
 function setPaneContent(pane, c) {
@@ -3336,11 +3544,12 @@ function syncUVControls() {
     matSel.dataset.names = matNames.join('\n');
   }
   matSel.value = String(uvView.mat);
-  const slots = MAP_SLOTS.filter(slot => loadedMap(mats[uvView.mat], slot));
+  const baked = state.bakedMats ? state.bakedMats[uvView.mat] : null;
+  const slots = MAP_SLOTS.filter(slot => loadedMap(mats[uvView.mat], slot) || loadedMap(baked, slot));
   if (!slots.includes(uvView.slot)) uvView.slot = slots.includes(settings.uvSlot) ? settings.uvSlot : slots[0] || 'map';
   const slotSel = $('uvSlot');
   const none = !state.welded ? 'No model' : !state.welded.uvs ? 'No UVs' : 'No texture · UVs only';
-  const opts = slots.length ? slots.map(slot => [slot, `${SLOT_NAMES[slot][0].toUpperCase()}${SLOT_NAMES[slot].slice(1)}`]) : [['', none]];
+  const opts = slots.length ? slots.map(slot => [slot, `${SLOT_NAMES[slot][0].toUpperCase()}${SLOT_NAMES[slot].slice(1)}${loadedMap(mats[uvView.mat], slot) ? '' : ' · baked'}`]) : [['', none]];
   const optKey = opts.map(o => o.join(':')).join(',');
   if (slotSel.dataset.slots !== optKey) {
     slotSel.replaceChildren(...opts.map(([value, text]) => el('option', { value, textContent: text })));
@@ -3511,6 +3720,7 @@ async function closeDoc(d) {
   docs.splice(docs.indexOf(d), 1);
   engine.unload(d.id);
   disposeBakedMaterials(d.state);
+  clearDetailMaps(d.state);
   for (const m of d.state.displayMats) {
     for (const slot of MAP_SLOTS) if (m[slot]) m[slot].dispose();
     m.dispose();
@@ -3597,6 +3807,9 @@ function syncControls() {
   for (const b of $('uvModeSeg').querySelectorAll('button')) b.disabled = q && b.dataset.uvmode !== 'new';
   pressSeg('bakeSeg', 'bake', settings.bakeSize);
   $('bakeNormals').checked = settings.bakeNormals;
+  $('colorDetailField').hidden = !settings.bakeNormals;
+  if (document.activeElement !== $('colorDetail')) $('colorDetail').value = String(settings.colorDetail);
+  $('colorDetailOut').textContent = settings.colorDetail > 0 ? `${Math.round(settings.colorDetail * 100)}%` : 'off';
   pressSeg('normalFormatSeg', 'nformat', settings.normalFormat);
   $('keepUVOpts').hidden = q || settings.uvMode === 'new';
   syncSymmetryUI();
@@ -3697,6 +3910,7 @@ bindCheck('prune', 'prune', () => scheduleReduce());
 bindCheck('prune2', 'prune', () => scheduleReduce());
 bindCheck('quadSharp', 'quadSharp', () => scheduleReduce());
 bindCheck('bakeNormals', 'bakeNormals', () => { refreshBake(); updateUVPanel(); updateExportPanel(); });
+bindRange('colorDetail', 'colorDetail', () => { refreshBake(); updateUVPanel(); });
 onSeg('normalFormatSeg', 'nformat', v => { settings.normalFormat = v; updateExportPanel(); });
 bindCheck('tintMirror', 'tintMirror', applyDisplaySettings);
 bindCheck('showPlane', 'showPlane', updatePlaneHelper);

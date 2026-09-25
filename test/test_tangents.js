@@ -2,7 +2,7 @@
 // +v in this tool's UV convention (v up), on a plain quad, on mirrored UVs, and across the rotated and mirrored charts of
 // a real result.
 import { MeshoptTangents } from 'meshoptimizer/tangents';
-import { core, S, settings, check, bumpySphere, sceneOf, context } from './helpers.js';
+import { THREE, core, S, settings, check, bumpySphere, sceneOf, context } from './helpers.js';
 
 await MeshoptTangents.ready;
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -40,4 +40,17 @@ const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   }
   check(agreeT / total > 0.99 && agreeB / total > 0.99 && mirrored > total * 0.3,
     `mirrored sphere: tangents follow +u on ${(100 * agreeT / total).toFixed(1)}% of corners, bitangents +v on ${(100 * agreeB / total).toFixed(1)}%, ${(100 * mirrored / total).toFixed(0)}% flipped`);
+}
+
+// The bake's ray directions: at a box corner, whose three faces each have their own copy of the vertex, the averaged
+// direction points out along the diagonal instead of along one face.
+{
+  const w = core.smartWeld(sceneOf(new THREE.BoxGeometry(2, 2, 2)), { keepUV: false, hardAngle: 30 });
+  const dirs = core.positionNormals(w);
+  let worst = 0;
+  for (let v = 0; v < w.vertexCount; v++) {
+    const p = [w.positions[v * 3], w.positions[v * 3 + 1], w.positions[v * 3 + 2]], l = Math.hypot(...p);
+    worst = Math.max(worst, Math.acos(Math.min(1, dot(p.map(x => x / l), [dirs[v * 3], dirs[v * 3 + 1], dirs[v * 3 + 2]]))));
+  }
+  check(w.vertexCount === 24 && worst < 1e-3, `box corners: ${w.vertexCount} split vertices, averaged directions along the diagonals (off by ${worst.toExponential(1)} rad)`);
 }
