@@ -1737,7 +1737,28 @@ export function remeshQuads(mesh, opt) {
     P[v * 3] = h.x; P[v * 3 + 1] = h.y; P[v * 3 + 2] = h.z;
     hitT[v] = h.t; bary[v * 3] = h.u; bary[v * 3 + 1] = h.v; bary[v * 3 + 2] = h.w;
   };
-  const snapPlane = v => { if (plane && border[v] && Math.abs(P[v * 3 + plane.axis] - plane.offset) < 0.75 * scale) P[v * 3 + plane.axis] = plane.offset; };
+  // The mirror plane's cut: open borders that mostly run within 0.75 grid steps of the plane are the cut, and all their
+  // vertices go onto it however far they sagged, or the mirrored half would leave a gap there.
+  const onCut = new Uint8Array(nv);
+  if (plane) {
+    const root = new Int32Array(nv);
+    for (let v = 0; v < nv; v++) root[v] = v;
+    const find = x => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+    for (const [key, c] of edgeUse) {
+      if (c !== 1) continue;
+      const a = Math.floor(key / nv), b = key - a * nv, ra = find(a), rb = find(b);
+      if (ra !== rb) root[ra] = rb;
+    }
+    const near = new Map(), total = new Map();
+    for (let v = 0; v < nv; v++) {
+      if (!border[v]) continue;
+      const r = find(v);
+      total.set(r, (total.get(r) || 0) + 1);
+      if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < 0.75 * scale) near.set(r, (near.get(r) || 0) + 1);
+    }
+    for (let v = 0; v < nv; v++) if (border[v] && (near.get(find(v)) || 0) * 2 >= total.get(find(v))) onCut[v] = 1;
+  }
+  const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
   for (let v = 0; v < nv; v++) { project(v); snapPlane(v); }
   // Sharp edges: corners take the nearest vertex and hold it; vertices close to an edge move onto it and afterwards only
   // slide along it.

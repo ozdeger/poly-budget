@@ -120,3 +120,23 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
   const crisp = edgeGap(45), round = edgeGap(0);
   check(crisp < 0.005 && crisp < round / 4, `sharp edges: the box's edges stay within ${crisp.toFixed(4)} of the remesh (${round.toFixed(4)} without)`);
 }
+
+// Bumps that the mirror plane only grazes: the cut loop there is smaller than a quad and sags off the plane unless the
+// whole loop is put back on it, which left gaps along the seam.
+{
+  let gaps = 0;
+  for (const [dx, target] of [[0.02, 1200], [0.02, 2400], [0.04, 1200], [0.04, 2400]]) {
+    const g = new THREE.SphereGeometry(1, 128, 64), p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      let s = 1;
+      for (const [cy, cz] of [[0.3, -0.9], [-0.2, -0.95], [0.6, -0.75], [-0.6, -0.78]]) s += 0.12 * Math.exp(-((x - dx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2) / 0.004);
+      p.setXYZ(i, x * s, y * s, z * s);
+    }
+    g.computeVertexNormals();
+    const wb = core.smartWeld(sceneOf(g), { keepUV: false, hardAngle: 30 });
+    const { result: r } = run(wb, { targetTris: target, symmetry: { axis: 0, offset: 0, keepPositive: true } });
+    gaps += openEdges(r).open;
+  }
+  check(gaps === 0, `mirror seam: no gaps where the plane grazes small bumps (${gaps} open edges)`);
+}
