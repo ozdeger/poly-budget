@@ -24,6 +24,10 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
+// Face sizes follow the shape (opt.adapt): each face is sized from the surface's two principal curvatures, short
+// across the direction that bends most and long along the one that bends least, and the direction field is pulled
+// toward that long direction where the faces stretch (see formSizes).
+//
 // Instant Meshes leaves a few triangles and pentagons among the quads and offers all quads only by splitting every
 // face in four. Here each leftover odd face is instead paired with its nearest odd neighbour, and the strip of faces
 // between them is split in two lengthwise, which turns every face into quads while the density barely changes. Edge
@@ -82,13 +86,24 @@ function edgesOf(index, V) {
   return { a: ea.subarray(0, n), b: eb.subarray(0, n), count: count.subarray(0, n), n };
 }
 
-// Splits edges longer than half the local grid size (the smaller of their ends' sizes) until none is left, so the grid
-// can't step over a vertex. New vertices remember the two they were made between and take the smaller size.
-function splitLongEdges(P, index, size, factor = 0.5, maxPasses = 6) {
-  let pos = P, idx = index, V = P.length / 3, sz = size;
+// Splits edges longer than factor × the local grid size (the smaller of their ends' sizes) until none is left, so the
+// grid can't step over a vertex. With a metric (6 floats per vertex, see formSizes) and the grid scale, an edge counts
+// as long when it spans more than factor of the grid step along its own direction, so edges along the long side of
+// stretched faces stay whole. New vertices remember the two they were made between, take the smaller size and the
+// mean metric.
+function splitLongEdges(P, index, size, factor = 0.5, maxPasses = 6, metric = null, scale = 1) {
+  let pos = P, idx = index, V = P.length / 3, sz = size, met = metric;
   let pa = new Int32Array(V), pb = new Int32Array(V);
   for (let i = 0; i < V; i++) pa[i] = pb[i] = i;
-  const limitSq = (a, b) => { const s = factor * Math.min(sz[a], sz[b]); return s * s; };
+  const tooLong = (a, b, dx, dy, dz) => {
+    if (!met) { const s = factor * Math.min(sz[a], sz[b]); return dx * dx + dy * dy + dz * dz > s * s; }
+    let worst = 0;
+    for (const o of [a * 6, b * 6]) {
+      const q = dx * (met[o] * dx + met[o + 1] * dy + met[o + 2] * dz) + dy * (met[o + 1] * dx + met[o + 3] * dy + met[o + 4] * dz) + dz * (met[o + 2] * dx + met[o + 4] * dy + met[o + 5] * dz);
+      if (q > worst) worst = q;
+    }
+    return worst > factor * factor * scale * scale;
+  };
   for (let pass = 0; pass < maxPasses; pass++) {
     const E = edgesOf(idx, V);
     const mid = new Map();
@@ -96,17 +111,20 @@ function splitLongEdges(P, index, size, factor = 0.5, maxPasses = 6) {
     for (let e = 0; e < E.n; e++) {
       const a = E.a[e], b = E.b[e];
       const dx = pos[a * 3] - pos[b * 3], dy = pos[a * 3 + 1] - pos[b * 3 + 1], dz = pos[a * 3 + 2] - pos[b * 3 + 2];
-      if (dx * dx + dy * dy + dz * dz > limitSq(a, b)) { mid.set(a * V + b, V + add); add++; }
+      if (tooLong(a, b, dx, dy, dz)) { mid.set(a * V + b, V + add); add++; }
     }
     if (!add) break;
     const np = new Float64Array((V + add) * 3);
     np.set(pos.subarray(0, V * 3));
     const na = new Int32Array(V + add), nb = new Int32Array(V + add), ns = new Float64Array(V + add);
     na.set(pa.subarray(0, V)); nb.set(pb.subarray(0, V)); ns.set(sz.subarray(0, V));
+    const nm = met ? new Float64Array((V + add) * 6) : null;
+    if (nm) nm.set(met.subarray(0, V * 6));
     for (const [key, m] of mid) {
       const a = Math.floor(key / V), b = key - a * V;
       for (let k = 0; k < 3; k++) np[m * 3 + k] = (pos[a * 3 + k] + pos[b * 3 + k]) / 2;
       na[m] = a; nb[m] = b; ns[m] = Math.min(sz[a], sz[b]);
+      if (nm) for (let k = 0; k < 6; k++) nm[m * 6 + k] = (met[a * 6 + k] + met[b * 6 + k]) / 2;
     }
     const out = [];
     const midOf = (a, b) => { const m = mid.get(a < b ? a * V + b : b * V + a); return m === undefined ? -1 : m; };
@@ -132,8 +150,9 @@ function splitLongEdges(P, index, size, factor = 0.5, maxPasses = 6) {
       else out.push(a, m0, c, m0, m1, c);
     }
     pos = np; idx = Uint32Array.from(out); V += add; pa = na; pb = nb; sz = ns;
+    if (nm) met = nm;
   }
-  return { positions: pos, index: idx, parentA: pa, parentB: pb, size: sz };
+  return { positions: pos, index: idx, parentA: pa, parentB: pb, size: sz, metric: met };
 }
 
 // ---------- graph hierarchy ----------
@@ -152,9 +171,10 @@ function adjacency(n, ea, eb, ne) {
   return { start, id, w };
 }
 
-// One coarser level: vertex pairs along links with similar normals are merged (Instant Meshes' downsample_graph).
+// One coarser level: vertex pairs along links with similar normals are merged (Instant Meshes' downsample_graph); the
+// metric is averaged by area.
 function downsample(L) {
-  const { n, start, id, w, N, A, V, S } = L;
+  const { n, start, id, w, N, A, V, S, M } = L;
   const owner = new Int32Array(id.length);
   let m = 0;
   for (let i = 0; i < n; i++) for (let l = start[i]; l < start[i + 1]; l++) { owner[l] = i; if (id[l] > i) m++; }
@@ -181,7 +201,7 @@ function downsample(L) {
     pa[np] = i; pb[np] = k; np++;
   }
   const n2 = n - np;
-  const V2 = new Float64Array(n2 * 3), N2 = new Float64Array(n2 * 3), A2 = new Float64Array(n2), S2 = new Float64Array(n2);
+  const V2 = new Float64Array(n2 * 3), N2 = new Float64Array(n2 * 3), A2 = new Float64Array(n2), S2 = new Float64Array(n2), M2 = new Float64Array(n2 * 6);
   const up = new Int32Array(n2 * 2).fill(-1), toLower = new Int32Array(n);
   for (let p = 0; p < np; p++) {
     const i = pa[p], k = pb[p], ai = A[i], ak = A[k], sa = ai + ak;
@@ -193,6 +213,7 @@ function downsample(L) {
     N2[p * 3] = nx; N2[p * 3 + 1] = ny; N2[p * 3 + 2] = nz;
     A2[p] = sa;
     S2[p] = S[i] * wi + S[k] * wk;
+    for (let d = 0; d < 6; d++) M2[p * 6 + d] = M[i * 6 + d] * wi + M[k * 6 + d] * wk;
     up[p * 2] = i; up[p * 2 + 1] = k;
     toLower[i] = toLower[k] = p;
   }
@@ -201,6 +222,7 @@ function downsample(L) {
     if (merged[i]) continue;
     for (let d = 0; d < 3; d++) { V2[q * 3 + d] = V[i * 3 + d]; N2[q * 3 + d] = N[i * 3 + d]; }
     A2[q] = A[i]; S2[q] = S[i];
+    for (let d = 0; d < 6; d++) M2[q * 6 + d] = M[i * 6 + d];
     up[q * 2] = i;
     toLower[i] = q++;
   }
@@ -221,7 +243,7 @@ function downsample(L) {
     }
   }
   start2[n2] = o;
-  return { n: n2, V: V2, N: N2, A: A2, S: S2, start: start2, id: id2.slice(0, o), w: w2.slice(0, o), up, toLower };
+  return { n: n2, V: V2, N: N2, A: A2, S: S2, M: M2, start: start2, id: id2.slice(0, o), w: w2.slice(0, o), up, toLower };
 }
 
 function buildHierarchy(L0) {
@@ -269,8 +291,10 @@ function propagateConstraints(levels) {
 
 // ---------- the two fields ----------
 
-// Scratch results: compatOrient writes the two agreeing representatives to R[0..2] and R[3..5].
+// Scratch results: compatOrient writes the two agreeing representatives to R[0..2] and R[3..5], and which ones they
+// are to RA (0: the direction itself, 1: its quarter turn).
 const R = new Float64Array(6);
+const RA = new Int8Array(2);
 
 // Of the four quarter-turn representatives of q0 (normal n0) and q1 (normal n1), the pair that agrees best
 // (Instant Meshes' compat_orientation_extrinsic_4).
@@ -286,13 +310,16 @@ function compatOrient(Qa, ia, Na, ja, Qb, ib, Nb, jb) {
   if (Math.abs(d10) > best) { best = Math.abs(d10); ai = 1; bi = 0; dp = d10; }
   if (Math.abs(d11) > best) { ai = 1; bi = 1; dp = d11; }
   const s = dp < 0 ? -1 : 1;
+  RA[0] = ai; RA[1] = bi;
   if (ai === 0) { R[0] = q0x; R[1] = q0y; R[2] = q0z; } else { R[0] = a1x; R[1] = a1y; R[2] = a1z; }
   if (bi === 0) { R[3] = q1x * s; R[4] = q1y * s; R[5] = q1z * s; } else { R[3] = b1x * s; R[4] = b1y * s; R[5] = b1z * s; }
 }
 
+// Where the faces stretch (L.AQ, L.Aw from levelAlignment), each vertex is pulled toward the long direction by its
+// weight after averaging its neighbours; constraints (open borders) come last and win.
 function optimizeOrientations(L, iterations) {
   const { n, start, id, w, N, Q } = L;
-  const CQ = L.CQ, Cw = L.Cw;
+  const CQ = L.CQ, Cw = L.Cw, AQ = L.AQ, Aw = L.Aw;
   const S3 = new Float64Array(3);
   for (let it = 0; it < iterations; it++) {
     for (let i = 0; i < n; i++) {
@@ -310,6 +337,15 @@ function optimizeOrientations(L, iterations) {
         if (len > 1e-30) { x /= len; y /= len; z /= len; }
         S3[0] = x; S3[1] = y; S3[2] = z;
       }
+      if (Aw && Aw[i] > 0) {
+        const aw = Aw[i];
+        compatOrient(S3, 0, N, i * 3, AQ, i * 3, N, i * 3);
+        let x = R[0] * (1 - aw) + R[3] * aw, y = R[1] * (1 - aw) + R[4] * aw, z = R[2] * (1 - aw) + R[5] * aw;
+        const d = nx * x + ny * y + nz * z;
+        x -= nx * d; y -= ny * d; z -= nz * d;
+        const len = Math.hypot(x, y, z);
+        if (len > 1e-30) { S3[0] = x / len; S3[1] = y / len; S3[2] = z / len; }
+      }
       if (Cw && Cw[i] > 0) {
         const cw = Cw[i];
         compatOrient(S3, 0, N, i * 3, CQ, i * 3, N, i * 3);
@@ -319,7 +355,7 @@ function optimizeOrientations(L, iterations) {
         const len = Math.hypot(x, y, z);
         if (len > 1e-30) { S3[0] = x / len; S3[1] = y / len; S3[2] = z / len; }
       }
-      if (wsum > 0 || (Cw && Cw[i] > 0)) { Q[i * 3] = S3[0]; Q[i * 3 + 1] = S3[1]; Q[i * 3 + 2] = S3[2]; }
+      if (wsum > 0 || (Cw && Cw[i] > 0) || (Aw && Aw[i] > 0)) { Q[i * 3] = S3[0]; Q[i * 3 + 1] = S3[1]; Q[i * 3 + 2] = S3[2]; }
     }
   }
 }
@@ -330,10 +366,11 @@ const P2 = new Float64Array(7);
 const I4 = new Int32Array(4);
 
 // The grid corners near two vertices that come closest to each other (Instant Meshes'
-// compat_position_extrinsic_4, with a grid size per vertex as QuadriFlow allows).
-// Arguments: position p, normal n, direction q (unit, in the tangent plane), grid origin o and grid size s of each.
-function compatPos(p0x, p0y, p0z, n0x, n0y, n0z, q0x, q0y, q0z, o0x, o0y, o0z, s0,
-  p1x, p1y, p1z, n1x, n1y, n1z, q1x, q1y, q1z, o1x, o1y, o1z, s1) {
+// compat_position_extrinsic_4, with a grid size per vertex as QuadriFlow allows, and here one per direction).
+// Arguments: position p, normal n, direction q (unit, in the tangent plane), grid origin o, and the grid step along q
+// (s) and across it (r) of each.
+function compatPos(p0x, p0y, p0z, n0x, n0y, n0z, q0x, q0y, q0z, o0x, o0y, o0z, s0, r0,
+  p1x, p1y, p1z, n1x, n1y, n1z, q1x, q1y, q1z, o1x, o1y, o1z, s1, r1) {
   // The point closest to both vertices that lies in both tangent planes.
   const n0p0 = n0x * p0x + n0y * p0y + n0z * p0z, n0p1 = n0x * p1x + n0y * p1y + n0z * p1z;
   const n1p0 = n1x * p0x + n1y * p0y + n1z * p0z, n1p1 = n1x * p1x + n1y * p1y + n1z * p1z;
@@ -346,29 +383,30 @@ function compatPos(p0x, p0y, p0z, n0x, n0y, n0z, q0x, q0y, q0z, o0x, o0y, o0z, s
   const t0x = n0y * q0z - n0z * q0y, t0y = n0z * q0x - n0x * q0z, t0z = n0x * q0y - n0y * q0x;
   const t1x = n1y * q1z - n1z * q1y, t1y = n1z * q1x - n1x * q1z, t1z = n1x * q1y - n1y * q1x;
   let dx = mx - o0x, dy = my - o0y, dz = mz - o0z;
-  const a0 = Math.floor((q0x * dx + q0y * dy + q0z * dz) / s0), b0 = Math.floor((t0x * dx + t0y * dy + t0z * dz) / s0);
+  const a0 = Math.floor((q0x * dx + q0y * dy + q0z * dz) / s0), b0 = Math.floor((t0x * dx + t0y * dy + t0z * dz) / r0);
   dx = mx - o1x; dy = my - o1y; dz = mz - o1z;
-  const a1 = Math.floor((q1x * dx + q1y * dy + q1z * dz) / s1), b1 = Math.floor((t1x * dx + t1y * dy + t1z * dz) / s1);
+  const a1 = Math.floor((q1x * dx + q1y * dy + q1z * dz) / s1), b1 = Math.floor((t1x * dx + t1y * dy + t1z * dz) / r1);
   let best = Infinity, bi = 0, bj = 0;
   for (let i = 0; i < 4; i++) {
-    const u0 = (a0 + (i & 1)) * s0, v0 = (b0 + (i >> 1)) * s0;
+    const u0 = (a0 + (i & 1)) * s0, v0 = (b0 + (i >> 1)) * r0;
     const x0 = o0x + q0x * u0 + t0x * v0, y0 = o0y + q0y * u0 + t0y * v0, z0 = o0z + q0z * u0 + t0z * v0;
     for (let j = 0; j < 4; j++) {
-      const u1 = (a1 + (j & 1)) * s1, v1 = (b1 + (j >> 1)) * s1;
+      const u1 = (a1 + (j & 1)) * s1, v1 = (b1 + (j >> 1)) * r1;
       const ex = o1x + q1x * u1 + t1x * v1 - x0, ey = o1y + q1y * u1 + t1y * v1 - y0, ez = o1z + q1z * u1 + t1z * v1 - z0;
       const c = ex * ex + ey * ey + ez * ez;
       if (c < best) { best = c; bi = i; bj = j; }
     }
   }
-  const u0 = (a0 + (bi & 1)) * s0, v0 = (b0 + (bi >> 1)) * s0, u1 = (a1 + (bj & 1)) * s1, v1 = (b1 + (bj >> 1)) * s1;
+  const u0 = (a0 + (bi & 1)) * s0, v0 = (b0 + (bi >> 1)) * r0, u1 = (a1 + (bj & 1)) * s1, v1 = (b1 + (bj >> 1)) * r1;
   P2[0] = o0x + q0x * u0 + t0x * v0; P2[1] = o0y + q0y * u0 + t0y * v0; P2[2] = o0z + q0z * u0 + t0z * v0;
   P2[3] = o1x + q1x * u1 + t1x * v1; P2[4] = o1y + q1y * u1 + t1y * v1; P2[5] = o1z + q1z * u1 + t1z * v1;
   P2[6] = best;
   I4[0] = a0 + (bi & 1); I4[1] = b0 + (bi >> 1); I4[2] = a1 + (bj & 1); I4[3] = b1 + (bj >> 1);
 }
 
+// Each vertex's grid runs along its own direction with steps L.SU along it and L.SV across it (levelSpacings).
 function optimizePositions(L, iterations) {
-  const { n, start, id, w, N, Q, O, V, S } = L;
+  const { n, start, id, w, N, Q, O, V, SU, SV } = L;
   const CQ = L.CQ, CO = L.CO, Cw = L.Cw;
   for (let it = 0; it < iterations; it++) {
     for (let i = 0; i < n; i++) {
@@ -377,15 +415,15 @@ function optimizePositions(L, iterations) {
       let qx = Q[i3], qy = Q[i3 + 1], qz = Q[i3 + 2];
       const ql = Math.hypot(qx, qy, qz) || 1;
       qx /= ql; qy /= ql; qz /= ql;
-      const si = S[i];
+      const si = SU[i], ri = SV[i];
       let sx = O[i3], sy = O[i3 + 1], sz = O[i3 + 2], wsum = 0;
       for (let l = start[i]; l < start[i + 1]; l++) {
         const j = id[l], j3 = j * 3, wt = w[l];
         let rx = Q[j3], ry = Q[j3 + 1], rz = Q[j3 + 2];
         const rl = Math.hypot(rx, ry, rz) || 1;
         rx /= rl; ry /= rl; rz /= rl;
-        compatPos(px, py, pz, nx, ny, nz, qx, qy, qz, sx, sy, sz, si,
-          V[j3], V[j3 + 1], V[j3 + 2], N[j3], N[j3 + 1], N[j3 + 2], rx, ry, rz, O[j3], O[j3 + 1], O[j3 + 2], S[j]);
+        compatPos(px, py, pz, nx, ny, nz, qx, qy, qz, sx, sy, sz, si, ri,
+          V[j3], V[j3 + 1], V[j3 + 2], N[j3], N[j3 + 1], N[j3 + 2], rx, ry, rz, O[j3], O[j3 + 1], O[j3 + 2], SU[j], SV[j]);
         const tw = wsum + wt;
         sx = (P2[0] * wsum + P2[3] * wt) / tw; sy = (P2[1] * wsum + P2[4] * wt) / tw; sz = (P2[2] * wsum + P2[5] * wt) / tw;
         wsum = tw;
@@ -405,7 +443,7 @@ function optimizePositions(L, iterations) {
         // The grid corner nearest the vertex.
         const tx = ny * qz - nz * qy, ty = nz * qx - nx * qz, tz = nx * qy - ny * qx;
         const dx = px - sx, dy = py - sy, dz = pz - sz;
-        const a = Math.round((qx * dx + qy * dy + qz * dz) / si) * si, b = Math.round((tx * dx + ty * dy + tz * dz) / si) * si;
+        const a = Math.round((qx * dx + qy * dy + qz * dz) / si) * si, b = Math.round((tx * dx + ty * dy + tz * dz) / ri) * ri;
         O[i3] = sx + qx * a + tx * b; O[i3 + 1] = sy + qy * a + ty * b; O[i3 + 2] = sz + qz * a + tz * b;
       }
     }
@@ -481,7 +519,7 @@ function resolvePositions(levels, seed, progress = null) {
 // The output vertices and edges the fields describe (Instant Meshes' extract_graph): input vertices on the same grid
 // corner are merged, and those one grid step apart are joined.
 function extractGraph(L) {
-  const { n, start, id, N, V, Q, O, S } = L;
+  const { n, start, id, N, V, Q, O, SU, SV } = L;
   const Cw = L.Cw;
   const parent = new Int32Array(n);
   for (let i = 0; i < n; i++) parent[i] = i;
@@ -498,10 +536,12 @@ function extractGraph(L) {
       const j3 = j * 3;
       compatOrient(Q, i3, N, i3, Q, j3, N, j3);
       let qix = R[0], qiy = R[1], qiz = R[2], qjx = R[3], qjy = R[4], qjz = R[5];
+      // A quarter-turned representative swaps which step runs along it.
+      const sui = RA[0] ? SV[i] : SU[i], svi = RA[0] ? SU[i] : SV[i], suj = RA[1] ? SV[j] : SU[j], svj = RA[1] ? SU[j] : SV[j];
       const li = Math.hypot(qix, qiy, qiz) || 1, lj = Math.hypot(qjx, qjy, qjz) || 1;
       qix /= li; qiy /= li; qiz /= li; qjx /= lj; qjy /= lj; qjz /= lj;
-      compatPos(V[i3], V[i3 + 1], V[i3 + 2], N[i3], N[i3 + 1], N[i3 + 2], qix, qiy, qiz, O[i3], O[i3 + 1], O[i3 + 2], S[i],
-        V[j3], V[j3 + 1], V[j3 + 2], N[j3], N[j3 + 1], N[j3 + 2], qjx, qjy, qjz, O[j3], O[j3 + 1], O[j3 + 2], S[j]);
+      compatPos(V[i3], V[i3 + 1], V[i3 + 2], N[i3], N[i3 + 1], N[i3 + 2], qix, qiy, qiz, O[i3], O[i3 + 1], O[i3 + 2], sui, svi,
+        V[j3], V[j3 + 1], V[j3 + 2], N[j3], N[j3 + 1], N[j3 + 2], qjx, qjy, qjz, O[j3], O[j3 + 1], O[j3 + 2], suj, svj);
       const dx = Math.abs(I4[0] - I4[2]), dy = Math.abs(I4[1] - I4[3]);
       if (dx > 1 || dy > 1 || (dx === 1 && dy === 1)) continue;
       if (dx + dy === 0) {
@@ -566,16 +606,20 @@ function extractGraph(L) {
     adj[v] = [];
     removed[v] = 1;
   }
-  // Positions: the group's grid corners, weighted toward members whose corner is close to them.
+  // Positions: the group's grid corners, weighted toward members whose corner is close to them (in grid steps along each
+  // direction); a group's size is its members' shorter step.
   const P = new Float64Array(nv * 3), NN = new Float64Array(nv * 3), SS = new Float64Array(nv), fixed = new Uint8Array(nv);
   const rep = new Int32Array(nv).fill(-1), repD = new Float64Array(nv).fill(Infinity), members = new Int32Array(n).fill(-1);
   for (let i = 0; i < n; i++) {
     const v = vid[find(i)];
     if (v < 0 || removed[v]) continue;
     members[i] = v;
-    const i3 = i * 3, s = S[i];
+    const i3 = i * 3, s = Math.min(SU[i], SV[i]);
     const ex = O[i3] - V[i3], ey = O[i3 + 1] - V[i3 + 1], ez = O[i3 + 2] - V[i3 + 2], d2 = ex * ex + ey * ey + ez * ez;
-    const wt = Math.exp((-9 * d2) / (s * s));
+    const ql = Math.hypot(Q[i3], Q[i3 + 1], Q[i3 + 2]) || 1, qx = Q[i3] / ql, qy = Q[i3 + 1] / ql, qz = Q[i3 + 2] / ql;
+    const tx = N[i3 + 1] * qz - N[i3 + 2] * qy, ty = N[i3 + 2] * qx - N[i3] * qz, tz = N[i3] * qy - N[i3 + 1] * qx;
+    const du = (ex * qx + ey * qy + ez * qz) / SU[i], dv = (ex * tx + ey * ty + ez * tz) / SV[i];
+    const wt = Math.exp(-9 * (du * du + dv * dv));
     for (let d = 0; d < 3; d++) { P[v * 3 + d] += O[i3 + d] * wt; NN[v * 3 + d] += N[i3 + d] * wt; }
     SS[v] += s * wt;
     weight[v] += wt;
@@ -1411,10 +1455,11 @@ function normalsAndAreas(P, index) {
   return { N, A };
 }
 
-// The working surface for the fields: a dense input clustered to about two and a half vertices per grid step, and
-// edges still longer than 0.7 of a step split so the grid can't step over a vertex; then its normals (smoothed a little,
-// keeping sharp edges), the open borders as constraints, and the hierarchy.
-function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress) {
+// The working surface for the fields: a dense input clustered to about two and a half vertices per (shortest) grid
+// step, and edges still longer than 0.7 of a step along their direction split so the grid can't step over a vertex;
+// then its normals (smoothed a little, keeping sharp edges), metric (Msrc, per source vertex), the open borders as
+// constraints, and the hierarchy. scale: the grid scale the metric is read with.
+function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale) {
   let weighted = 0;
   for (let v = 0; v < V0; v++) { const s = sizeAt(v); weighted += srcA[v] / (s * s); }
   const expected = cellFactor * cellFactor * weighted;
@@ -1431,12 +1476,15 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   const cSize = new Float64Array(nC);
   for (let k = 0; k < nC; k++) cSize[k] = sizeAt(wRep[k]);
   mark('cluster');
-  const sub = splitLongEdges(wP, wIdx, cSize, splitFactor);
+  const cMet = new Float64Array(nC * 6);
+  for (let k = 0; k < nC; k++) for (let d = 0; d < 6; d++) cMet[k * 6 + d] = Msrc[wRep[k] * 6 + d];
+  const sub = splitLongEdges(wP, wIdx, cSize, splitFactor, 6, cMet, scale);
   const n = sub.positions.length / 3, WI = sub.index;
   const L0 = { n, V: sub.positions, N: new Float64Array(n * 3), A: new Float64Array(n), S: new Float64Array(n), ...adjacency(n, ...edgeArgs(WI, n)) };
   // A split vertex takes the mean normal of its two parents.
   L0.N.set(wN.subarray(0, nC * 3));
   L0.S.set(sub.size);
+  L0.M = sub.metric;
   for (let k = 0; k < nC; k++) L0.A[k] = wA[k];
   for (let v = nC; v < n; v++) {
     const a = sub.parentA[v], b = sub.parentB[v];
@@ -1674,11 +1722,301 @@ export function formDensity(P, index, N, A, strength) {
   return out;
 }
 
+// Curvature tensors from the normal cycle (David Cohen-Steiner and Jean-Marie Morvan, "Restricted Delaunay
+// triangulations and normal cycle", 2003): each interior edge adds its signed dihedral angle × its length × ê⊗ê.
+// Summed over a region and divided by its area this is the region's curvature tensor; being signed, bumps smaller
+// than the region cancel, which keeps the noise of scans and generated meshes out. Half of each edge's term goes to
+// each end (6 floats per vertex: xx xy xz yy yz zz); edges bending more than maxAngle are left out.
+function vertexTensors(P, index, maxAngle) {
+  const V = P.length / 3, T = index.length / 3, H = T * 3;
+  const fn = new Float64Array(T * 3);
+  for (let t = 0; t < T; t++) {
+    const a = index[t * 3] * 3, b = index[t * 3 + 1] * 3, c = index[t * 3 + 2] * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx, l = Math.hypot(x, y, z);
+    if (l > 0) { fn[t * 3] = x / l; fn[t * 3 + 1] = y / l; fn[t * 3 + 2] = z / l; }
+  }
+  // Half-edges bucketed by their lower vertex; the two halves of an interior edge share (lower, upper).
+  const nxt = h => (h % 3 === 2 ? h - 2 : h + 1);
+  const start = new Int32Array(V + 1);
+  for (let h = 0; h < H; h++) start[Math.min(index[h], index[nxt(h)]) + 1]++;
+  for (let v = 0; v < V; v++) start[v + 1] += start[v];
+  const hi = new Int32Array(H), hid = new Int32Array(H), fill = start.slice(0, V);
+  for (let h = 0; h < H; h++) { const a = index[h], b = index[nxt(h)], o = fill[Math.min(a, b)]++; hi[o] = Math.max(a, b); hid[o] = h; }
+  const Tv = new Float64Array(V * 6);
+  for (let v = 0; v < V; v++) {
+    for (let i = start[v]; i < start[v + 1]; i++) {
+      const w = hi[i];
+      let j2 = -1, other = false;
+      for (let j = start[v]; j < start[v + 1]; j++) {
+        if (j === i || hi[j] !== w) continue;
+        if (j < i || j2 >= 0) { other = true; break; }
+        j2 = j;
+      }
+      // Border edges, edges of three or more faces, and each interior edge's second half are skipped.
+      if (other || j2 < 0) continue;
+      const h1 = hid[i], h2 = hid[j2], f1 = (h1 / 3) | 0, f2 = (h2 / 3) | 0;
+      const u = index[h1], x = index[nxt(h1)];
+      if (index[h2] !== x || index[nxt(h2)] !== u) continue;
+      const c2 = index[nxt(nxt(h2))];
+      let beta = Math.acos(Math.max(-1, Math.min(1, fn[f1 * 3] * fn[f2 * 3] + fn[f1 * 3 + 1] * fn[f2 * 3 + 1] + fn[f1 * 3 + 2] * fn[f2 * 3 + 2])));
+      if (beta > maxAngle) continue;
+      // Concave when the other face's far corner sits above this face.
+      if (fn[f1 * 3] * (P[c2 * 3] - P[u * 3]) + fn[f1 * 3 + 1] * (P[c2 * 3 + 1] - P[u * 3 + 1]) + fn[f1 * 3 + 2] * (P[c2 * 3 + 2] - P[u * 3 + 2]) > 0) beta = -beta;
+      const ex = P[x * 3] - P[u * 3], ey = P[x * 3 + 1] - P[u * 3 + 1], ez = P[x * 3 + 2] - P[u * 3 + 2], el = Math.hypot(ex, ey, ez);
+      if (!(el > 0)) continue;
+      const k = (0.5 * beta) / el;
+      for (const o of [u * 6, x * 6]) {
+        Tv[o] += k * ex * ex; Tv[o + 1] += k * ex * ey; Tv[o + 2] += k * ex * ez;
+        Tv[o + 3] += k * ey * ey; Tv[o + 4] += k * ey * ez; Tv[o + 5] += k * ez * ez;
+      }
+    }
+  }
+  return Tv;
+}
+
+// A symmetric tensor (6 floats at Tm[o]) read in the tangent plane of the unit normal n: its eigenvalues there, the
+// one of larger magnitude in out.big, and that one's eigenvector in out.ex, ey, ez. For a normal-cycle tensor that
+// eigenvector runs along the direction that bends least (the principal directions come out swapped); for a metric it
+// is the direction of the shortest edges.
+function tangentEigen(Tm, o, nx, ny, nz, out) {
+  let cx, cy, cz;
+  if (Math.abs(nx) > Math.abs(ny)) { const l = 1 / Math.sqrt(nx * nx + nz * nz); cx = nz * l; cy = 0; cz = -nx * l; }
+  else { const l = 1 / (Math.sqrt(ny * ny + nz * nz) || 1); cx = 0; cy = nz * l; cz = -ny * l; }
+  const sx = cy * nz - cz * ny, sy = cz * nx - cx * nz, sz = cx * ny - cy * nx;
+  const xx = Tm[o], xy = Tm[o + 1], xz = Tm[o + 2], yy = Tm[o + 3], yz = Tm[o + 4], zz = Tm[o + 5];
+  const q = (ax, ay, az, bx, by, bz) => ax * (xx * bx + xy * by + xz * bz) + ay * (xy * bx + yy * by + yz * bz) + az * (xz * bx + yz * by + zz * bz);
+  const a = q(sx, sy, sz, sx, sy, sz), b = q(sx, sy, sz, cx, cy, cz), d = q(cx, cy, cz, cx, cy, cz);
+  const m = (a + d) / 2, r = Math.sqrt(((a - d) / 2) ** 2 + b * b), l1 = m + r, l2 = m - r;
+  const phi = 0.5 * Math.atan2(2 * b, a - d), cp = Math.cos(phi), sp = Math.sin(phi);
+  const e1x = cp * sx + sp * cx, e1y = cp * sy + sp * cy, e1z = cp * sz + sp * cz;
+  if (Math.abs(l1) >= Math.abs(l2)) { out.big = l1; out.small = l2; out.ex = e1x; out.ey = e1y; out.ez = e1z; }
+  else { out.big = l2; out.small = l1; out.ex = ny * e1z - nz * e1y; out.ey = nz * e1x - nx * e1z; out.ez = nx * e1y - ny * e1x; }
+  return out;
+}
+
+// The surface's principal curvatures, per cluster: normal-cycle tensors (sharp edges past opt.sharp degrees left out,
+// since they become edge loops) summed over clusters of opt.cell × the model's diagonal, plus half of each neighbouring
+// cluster facing the same way. Returns the clusters, their neighbours (CSR) and, per cluster, the larger and smaller
+// principal curvature (magnitudes) and the direction that bends least; worked out once per surface.
+export function formAnalysis(P, index, N, A, opt = {}) {
+  const V = P.length / 3;
+  if (!N || !A) ({ N, A } = normalsAndAreas(P, index));
+  const Tv = vertexTensors(P, index, opt.sharp > 0 ? (opt.sharp * Math.PI) / 180 : Math.PI);
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (let v = 0; v < V; v++) {
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const cell = (opt.cell ?? 0.003) * (Math.hypot(x1 - x0, y1 - y0, z1 - z0) || 1);
+  const cl = clusterSurface(P, index, N, A, () => cell), C = cl.count, CN = cl.normals, CI = cl.index;
+  const T0 = new Float64Array(C * 6);
+  for (let v = 0; v < V; v++) { const c = cl.of[v]; if (c >= 0) for (let k = 0; k < 6; k++) T0[c * 6 + k] += Tv[v * 6 + k]; }
+  const nstart = new Int32Array(C + 1);
+  let nid;
+  {
+    const keys = new Float64Array(CI.length);
+    let m = 0;
+    for (let t = 0; t < CI.length; t += 3) for (let k = 0; k < 3; k++) {
+      const a = CI[t + k], b = CI[t + ((k + 1) % 3)];
+      if (a !== b) keys[m++] = a < b ? a * C + b : b * C + a;
+    }
+    const sorted = keys.subarray(0, m).sort(), ea = [], eb = [];
+    for (let i = 0; i < m; i++) if (i === 0 || sorted[i] !== sorted[i - 1]) { const a = Math.floor(sorted[i] / C); ea.push(a); eb.push(sorted[i] - a * C); }
+    for (let e = 0; e < ea.length; e++) { nstart[ea[e] + 1]++; nstart[eb[e] + 1]++; }
+    for (let c = 0; c < C; c++) nstart[c + 1] += nstart[c];
+    nid = new Int32Array(nstart[C]);
+    const fillN = nstart.slice(0, C);
+    for (let e = 0; e < ea.length; e++) { nid[fillN[ea[e]]++] = eb[e]; nid[fillN[eb[e]]++] = ea[e]; }
+  }
+  const T1 = Float64Array.from(T0), A1 = Float64Array.from(cl.area);
+  for (let c = 0; c < C; c++) {
+    for (let l = nstart[c]; l < nstart[c + 1]; l++) {
+      const j = nid[l];
+      if (CN[c * 3] * CN[j * 3] + CN[c * 3 + 1] * CN[j * 3 + 1] + CN[c * 3 + 2] * CN[j * 3 + 2] < 0.5) continue;
+      for (let k = 0; k < 6; k++) T1[c * 6 + k] += 0.5 * T0[j * 6 + k];
+      A1[c] += 0.5 * cl.area[j];
+    }
+  }
+  const kb = new Float32Array(C), ks = new Float32Array(C), dir = new Float32Array(C * 3), E = {};
+  for (let c = 0; c < C; c++) {
+    for (let k = 0; k < 6; k++) T1[c * 6 + k] /= A1[c] || 1;
+    tangentEigen(T1, c * 6, CN[c * 3], CN[c * 3 + 1], CN[c * 3 + 2], E);
+    kb[c] = Math.abs(E.big); ks[c] = Math.abs(E.small);
+    dir[c * 3] = E.ex; dir[c * 3 + 1] = E.ey; dir[c * 3 + 2] = E.ez;
+  }
+  let area = 0;
+  for (let c = 0; c < C; c++) area += cl.area[c];
+  return { cl, nstart, nid, kb, ks, dir, area, V };
+}
+
+// The largest metric inside both ellipses A and B (2×2 symmetric as a, b, d), by simultaneous reduction, into out;
+// false when B asks for nothing A doesn't already give.
+function intersect2(a1, b1, d1, a2, b2, d2, out) {
+  const pa = a1 - a2, pb = b1 - b2, pd = d1 - d2;
+  if (pa >= 0 && pd >= 0 && pa * pd - pb * pb >= -1e-12 * (a1 * d1 + 1e-30)) return false;
+  const det = a1 * d1 - b1 * b1;
+  if (!(det > 0)) { out[0] = a2; out[1] = b2; out[2] = d2; return true; }
+  // N = A⁻¹B; its eigenvectors are A- and B-orthogonal.
+  const ia = d1 / det, ib = -b1 / det, id = a1 / det;
+  const n00 = ia * a2 + ib * b2, n01 = ia * b2 + ib * d2, n10 = ib * a2 + id * b2, n11 = ib * b2 + id * d2;
+  const tr = n00 + n11, disc = (tr * tr) / 4 - (n00 * n11 - n01 * n10);
+  if (disc <= 1e-14 * tr * tr) {
+    const k = Math.max(1, tr / 2);
+    out[0] = a1 * k; out[1] = b1 * k; out[2] = d1 * k;
+    return true;
+  }
+  const r = Math.sqrt(disc);
+  // From whichever row of N - λI gives the longer vector.
+  const eig = l => { const ax = n01, ay = l - n00, bx = l - n11, by = n10; return ax * ax + ay * ay >= bx * bx + by * by ? [ax, ay] : [bx, by]; };
+  const [v1x, v1y] = eig(tr / 2 + r), [v2x, v2y] = eig(tr / 2 - r);
+  const q = (x, y, a, b, d) => a * x * x + 2 * b * x * y + d * y * y;
+  const m1 = Math.max(q(v1x, v1y, a1, b1, d1), q(v1x, v1y, a2, b2, d2)), m2 = Math.max(q(v2x, v2y, a1, b1, d1), q(v2x, v2y, a2, b2, d2));
+  const pdet = v1x * v2y - v2x * v1y;
+  if (!(Math.abs(pdet) > 1e-30)) return false;
+  // M = P⁻ᵀ diag(m1, m2) P⁻¹ with P = [v1 v2].
+  const i00 = v2y / pdet, i01 = -v2x / pdet, i10 = -v1y / pdet, i11 = v1x / pdet;
+  out[0] = m1 * i00 * i00 + m2 * i10 * i10;
+  out[1] = m1 * i00 * i01 + m2 * i10 * i11;
+  out[2] = m1 * i01 * i01 + m2 * i11 * i11;
+  return true;
+}
+
+// The metric for about `target` faces (6 floats per source vertex, xx xy xz yy yz zz): an edge along unit u should be
+// 1/√(u·M·u) long. A flat face with an edge h along a direction in which the surface bends by κ stands off it by about
+// κh²/8, so an even error everywhere asks for edges h = c/√κ along each principal direction: short across the
+// direction that bends most, long along the one that bends least (square faces spend √(κ1/κ2) times more, which on
+// tubes, folds and limbs is several times), and faces per area in proportion to √(κ1κ2). Edges stay within
+// [hMin, hMax] × the even size √(area / target) and the long one within alpha × the short one; strength blends from
+// even squares (0) to that (1) in log space; c is found for the target. Then no edge length may grow by more than
+// grade × the distance from a neighbour's, along each of the neighbour's directions (Frédéric Alauzet, "Size gradation
+// control of anisotropic meshes", 2010): along a tube the long edges then stay even all around it, as a grid of
+// closed loops needs, and sizes change slowly enough for the grid to follow. The result is scaled back to the target.
+export function formSizes(an, target, strength, opt = {}) {
+  const { cl, nstart, nid, kb, ks, dir, area, V } = an, C = cl.count, CN = cl.normals, CP = cl.positions;
+  const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 4, grade = opt.grade ?? 0.3;
+  const h0 = Math.sqrt(area / target);
+  const h1 = new Float64Array(C), h2 = new Float64Array(C);
+  const sizes = c => {
+    for (let i = 0; i < C; i++) {
+      let s1 = kb[i] > 0 ? c / Math.sqrt(kb[i]) : Infinity, s2 = ks[i] > 0 ? c / Math.sqrt(ks[i]) : Infinity;
+      s1 = Math.min(hMax * h0, Math.max(hMin * h0, s1));
+      s2 = Math.min(hMax * h0, Math.max(s1, Math.min(alpha * s1, s2)));
+      h1[i] = h0 * (s1 / h0) ** strength; h2[i] = h0 * (s2 / h0) ** strength;
+    }
+  };
+  // Bisection on log c: faces fall as c grows.
+  let lo = -40, hi = 40;
+  for (let it = 0; it < 60; it++) {
+    const mid = (lo + hi) / 2;
+    sizes(Math.exp(mid));
+    let n = 0;
+    for (let i = 0; i < C; i++) n += cl.area[i] / (h1[i] * h2[i]);
+    if (n > target) lo = mid; else hi = mid;
+  }
+  sizes(Math.exp(hi));
+  // Per cluster, the metric in its tangent basis (s, t from tangents()) as a, b, d.
+  const M2 = new Float64Array(C * 3), basis = new Float64Array(C * 6);
+  for (let i = 0; i < C; i++) {
+    tangents(CN[i * 3], CN[i * 3 + 1], CN[i * 3 + 2], basis, i * 6);
+    const u = dir[i * 3] * basis[i * 6] + dir[i * 3 + 1] * basis[i * 6 + 1] + dir[i * 3 + 2] * basis[i * 6 + 2];
+    const w = dir[i * 3] * basis[i * 6 + 3] + dir[i * 3 + 1] * basis[i * 6 + 4] + dir[i * 3 + 2] * basis[i * 6 + 5];
+    const ul = Math.hypot(u, w) || 1, cu = u / ul, cw = w / ul, mL = 1 / (h2[i] * h2[i]), mS = 1 / (h1[i] * h1[i]);
+    M2[i * 3] = mL * cu * cu + mS * cw * cw;
+    M2[i * 3 + 1] = (mL - mS) * cu * cw;
+    M2[i * 3 + 2] = mL * cw * cw + mS * cu * cu;
+  }
+  const O3 = new Float64Array(3);
+  for (let round = 0; grade > 0 && round < 2; round++) {
+    for (let sweep = 0; sweep < 4; sweep++) {
+      for (let k = 0; k < C; k++) {
+        const i = sweep % 2 ? C - 1 - k : k, si = i * 6;
+        for (let l = nstart[i]; l < nstart[i + 1]; l++) {
+          const j = nid[l], sj = j * 6;
+          if (CN[i * 3] * CN[j * 3] + CN[i * 3 + 1] * CN[j * 3 + 1] + CN[i * 3 + 2] * CN[j * 3 + 2] < 0.5) continue;
+          // j's metric read in i's basis.
+          const a = M2[j * 3], b = M2[j * 3 + 1], d = M2[j * 3 + 2];
+          const us = basis[si] * basis[sj] + basis[si + 1] * basis[sj + 1] + basis[si + 2] * basis[sj + 2];
+          const ut = basis[si] * basis[sj + 3] + basis[si + 1] * basis[sj + 4] + basis[si + 2] * basis[sj + 5];
+          const vs = basis[si + 3] * basis[sj] + basis[si + 4] * basis[sj + 1] + basis[si + 5] * basis[sj + 2];
+          const vt = basis[si + 3] * basis[sj + 3] + basis[si + 4] * basis[sj + 4] + basis[si + 5] * basis[sj + 5];
+          let A2 = a * us * us + 2 * b * us * ut + d * ut * ut, B2 = a * us * vs + b * (us * vt + ut * vs) + d * ut * vt, D2 = a * vs * vs + 2 * b * vs * vt + d * vt * vt;
+          // Each of its edge lengths grown by grade × the distance.
+          const dist = Math.hypot(CP[i * 3] - CP[j * 3], CP[i * 3 + 1] - CP[j * 3 + 1], CP[i * 3 + 2] - CP[j * 3 + 2]);
+          const m = (A2 + D2) / 2, r = Math.sqrt(((A2 - D2) / 2) ** 2 + B2 * B2), e1 = m + r, e2 = Math.max(1e-30, m - r);
+          const phi = 0.5 * Math.atan2(2 * B2, A2 - D2), cp = Math.cos(phi), sp = Math.sin(phi);
+          const g1 = e1 / (1 + grade * dist * Math.sqrt(e1)) ** 2, g2 = e2 / (1 + grade * dist * Math.sqrt(e2)) ** 2;
+          A2 = g1 * cp * cp + g2 * sp * sp; B2 = (g1 - g2) * cp * sp; D2 = g1 * sp * sp + g2 * cp * cp;
+          if (intersect2(M2[i * 3], M2[i * 3 + 1], M2[i * 3 + 2], A2, B2, D2, O3)) { M2[i * 3] = O3[0]; M2[i * 3 + 1] = O3[1]; M2[i * 3 + 2] = O3[2]; }
+        }
+      }
+    }
+    // Back to the target: faces per area is √det.
+    let n = 0;
+    for (let i = 0; i < C; i++) n += cl.area[i] * Math.sqrt(Math.max(0, M2[i * 3] * M2[i * 3 + 2] - M2[i * 3 + 1] ** 2));
+    const f = target / n;
+    for (let i = 0; i < C * 3; i++) M2[i] *= f;
+  }
+  // As 3D tensors (the normal gets the smaller value), per source vertex.
+  const out = new Float32Array(V * 6), Mc = new Float64Array(C * 6);
+  for (let i = 0; i < C; i++) {
+    const a = M2[i * 3], b = M2[i * 3 + 1], d = M2[i * 3 + 2], o = i * 6;
+    const S = [basis[o], basis[o + 1], basis[o + 2]], T = [basis[o + 3], basis[o + 4], basis[o + 5]], Nn = [CN[i * 3], CN[i * 3 + 1], CN[i * 3 + 2]];
+    const mn = (a + d) / 2 - Math.sqrt(((a - d) / 2) ** 2 + b * b);
+    const e = (p, q) => S[p] * (a * S[q] + b * T[q]) + T[p] * (b * S[q] + d * T[q]) + mn * Nn[p] * Nn[q];
+    Mc[o] = e(0, 0); Mc[o + 1] = e(0, 1); Mc[o + 2] = e(0, 2); Mc[o + 3] = e(1, 1); Mc[o + 4] = e(1, 2); Mc[o + 5] = e(2, 2);
+  }
+  const iso = 1 / (h0 * h0);
+  for (let v = 0; v < V; v++) {
+    const k = cl.of[v];
+    if (k < 0) { out[v * 6] = out[v * 6 + 3] = out[v * 6 + 5] = iso; continue; }
+    for (let q = 0; q < 6; q++) out[v * 6 + q] = Mc[k * 6 + q];
+  }
+  return out;
+}
+
+// The grid step at each vertex of a level along its direction q (SU) and across it (SV), from the level's metric
+// (q·M·q · SU² = scale²), and their geometric mean in S.
+function levelSpacings(L, scale) {
+  const { n, N, Q, M } = L;
+  if (!L.SU || L.SU.length !== n) { L.SU = new Float64Array(n); L.SV = new Float64Array(n); }
+  for (let i = 0; i < n; i++) {
+    const i3 = i * 3, i6 = i * 6;
+    const ql = Math.hypot(Q[i3], Q[i3 + 1], Q[i3 + 2]) || 1, qx = Q[i3] / ql, qy = Q[i3 + 1] / ql, qz = Q[i3 + 2] / ql;
+    const nx = N[i3], ny = N[i3 + 1], nz = N[i3 + 2];
+    const tx = ny * qz - nz * qy, ty = nz * qx - nx * qz, tz = nx * qy - ny * qx;
+    const xx = M[i6], xy = M[i6 + 1], xz = M[i6 + 2], yy = M[i6 + 3], yz = M[i6 + 4], zz = M[i6 + 5];
+    const mq = qx * (xx * qx + xy * qy + xz * qz) + qy * (xy * qx + yy * qy + yz * qz) + qz * (xz * qx + yz * qy + zz * qz);
+    const mt = tx * (xx * tx + xy * ty + xz * tz) + ty * (xy * tx + yy * ty + yz * tz) + tz * (xz * tx + yz * ty + zz * tz);
+    const su = scale / Math.sqrt(Math.max(1e-12, mq)), sv = scale / Math.sqrt(Math.max(1e-12, mt));
+    L.SU[i] = su; L.SV[i] = sv; L.S[i] = Math.sqrt(su * sv);
+  }
+}
+
+// Where the metric stretches faces, the direction field is pulled toward its long direction, with weight
+// strength × (m1 - m2) / (m1 + m2); none where faces stay square.
+function levelAlignment(L, strength) {
+  const { n, N, M } = L, E = {};
+  L.AQ = new Float64Array(n * 3); L.Aw = new Float32Array(n);
+  let any = false;
+  for (let i = 0; i < n; i++) {
+    const nx = N[i * 3], ny = N[i * 3 + 1], nz = N[i * 3 + 2];
+    tangentEigen(M, i * 6, nx, ny, nz, E);
+    const m1 = Math.abs(E.big), m2 = Math.abs(E.small), stretch = m1 + m2 > 0 ? (m1 - m2) / (m1 + m2) : 0;
+    if (!(stretch > 1e-3)) continue;
+    // E.e is the short direction; the long one is across it.
+    L.AQ[i * 3] = ny * E.ez - nz * E.ey; L.AQ[i * 3 + 1] = nz * E.ex - nx * E.ez; L.AQ[i * 3 + 2] = nx * E.ey - ny * E.ex;
+    L.Aw[i] = strength * stretch;
+    any = true;
+  }
+  if (!any) { L.AQ = null; L.Aw = null; }
+}
+
 // ---------- the whole remesh ----------
 
 // mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
-// opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), adapt: how far face size follows the
-//        surface's curvature (0 even … 1, see formDensity), boundary: align open borders (true),
+// opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), adapt: how far face sizes and
+//        directions follow the surface's curvature (0 even squares … 1, see formSizes), boundary: align open borders (true),
 //        plane: { axis, offset } whose border is kept exactly on the plane, sharp: the angle past which long sharp
 //        edges become edge loops (0: off), pure: all quads (true), seed, relax: iterations, progress(stage, f),
 //        cache and cacheKey: where to keep the working surface and direction field between calls }
@@ -1693,48 +2031,85 @@ export function remeshQuads(mesh, opt) {
   const target = Math.max(6, opt.targetFaces | 0);
   const na = normalsAndAreas(srcP, srcIdx);
   const srcN = mesh.normals || na.N, srcA = na.A;
-  // Density that follows the shape is worked out once per surface and strength, and kept with the cache.
-  let dens = opt.density || null;
+  // The metric (edge lengths wanted, per direction) follows the shape when opt.adapt > 0: the curvature analysis is
+  // worked out once per surface, the sizes once per budget step of 2^(1/4) (so they, the working surface and the
+  // direction field are reused while the budget stays within the step; the grid scale fits the exact budget), both
+  // kept with the cache. Painted density multiplies faces per area.
+  const dens = opt.density || null, cache = opt.cache || null;
+  const step = Math.round(4 * Math.log2(target));
+  let Msrc = null;
   if (opt.adapt > 0) {
-    const formKey = `${V0}|${srcIdx.length}|${opt.adapt}`;
-    let form = opt.cache && opt.cache.form && opt.cache.form.key === formKey ? opt.cache.form.d : null;
-    if (!form) {
-      form = formDensity(srcP, srcIdx, srcN, srcA, opt.adapt);
-      if (opt.cache) opt.cache.form = { key: formKey, d: form };
+    const anKey = `${V0}|${srcIdx.length}|${opt.sharp || 0}`, formKey = `${anKey}|${opt.adapt}|${step}`;
+    Msrc = cache && cache.form && cache.form.key === formKey ? cache.form.m : null;
+    if (!Msrc) {
+      let an = cache && cache.analysis && cache.analysis.key === anKey ? cache.analysis.an : null;
+      if (!an) {
+        an = formAnalysis(srcP, srcIdx, srcN, srcA, { sharp: opt.sharp });
+        if (cache) cache.analysis = { key: anKey, an };
+      }
+      Msrc = formSizes(an, 2 ** (step / 4), opt.adapt);
+      if (cache) cache.form = { key: formKey, m: Msrc };
     }
-    if (dens) { const mixed = new Float32Array(V0); for (let v = 0; v < V0; v++) mixed[v] = dens[v] * form[v]; dens = mixed; } else dens = form;
     mark('form');
   }
+  if (!Msrc || dens) {
+    const base = Msrc;
+    Msrc = new Float32Array(V0 * 6);
+    for (let v = 0; v < V0; v++) {
+      const f = dens ? dens[v] : 1;
+      if (base) for (let k = 0; k < 6; k++) Msrc[v * 6 + k] = base[v * 6 + k] * f;
+      else Msrc[v * 6] = Msrc[v * 6 + 3] = Msrc[v * 6 + 5] = f;
+    }
+  }
+  // Per source vertex: the metric's larger value (the shortest edge wanted) and √(m1·m2), faces per area.
+  const mMax = new Float32Array(V0), mArea = new Float32Array(V0), EG = {};
+  for (let v = 0; v < V0; v++) {
+    tangentEigen(Msrc, v * 6, srcN[v * 3], srcN[v * 3 + 1], srcN[v * 3 + 2], EG);
+    const m1 = Math.max(1e-12, Math.abs(EG.big)), m2 = Math.max(1e-12, Math.abs(EG.small));
+    mMax[v] = m1; mArea[v] = Math.sqrt(m1 * m2);
+  }
 
-  // Surface area (weighted by density) sets the grid size: faces ≈ Σ area·density / size².
-  let weighted = 0;
-  for (let v = 0; v < V0; v++) weighted += srcA[v] * (dens ? dens[v] : 1);
-  // Extraction tends to give a few percent more faces than area / size², so the first grid starts that much larger.
-  let scale = Math.sqrt(weighted / target) * 1.02;
-  const sizeAt = v => (dens ? scale / Math.sqrt(Math.max(1e-6, dens[v])) : scale);
+  // Surface area weighted by faces per area sets the grid scale: faces ≈ Σ area·density / scale².
+  let weighted = 0, areaTotal = 0;
+  for (let v = 0; v < V0; v++) { weighted += srcA[v] * mArea[v]; areaTotal += srcA[v]; }
+  // Extraction gives more faces than that (a few percent on an even grid, more where sizes vary), so the first grid
+  // starts that much larger; how much more the last remesh of this surface gave is remembered with the cache, and so
+  // is the start each budget got, so that asking for a budget again gives the same faces.
+  const biasKey = [opt.cacheKey ?? '', opt.sharp || 0, opt.adapt || 0, opt.boundary !== false].join('|');
+  if (cache && (!cache.bias || cache.bias.key !== biasKey)) cache.bias = { key: biasKey, phi: 1.04 + 0.12 * (opt.adapt || 0), used: new Map() };
+  let phi = cache ? cache.bias.used.get(target) : undefined;
+  if (phi === undefined) {
+    phi = cache ? cache.bias.phi : 1.04 + 0.12 * (opt.adapt || 0);
+    if (cache) cache.bias.used.set(target, phi);
+  }
+  let scale = Math.sqrt((phi * weighted) / target);
+  // The shortest edge wanted at a source vertex (the working surface must resolve it), the mean edge there, and the
+  // mean edge over the surface.
+  const sizeAt = v => scale / Math.sqrt(mMax[v]);
+  const sizeMean = v => scale / Math.sqrt(mArea[v]);
+  const sizeRef = () => scale * Math.sqrt(areaTotal / weighted);
   // Sharp edges (opt.sharp: the angle, 0 for none): the fields see one side's normal along them, and vertices near
   // them are snapped onto them after extraction.
-  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, v => 3 * sizeAt(v)) : null;
+  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, v => 3 * sizeMean(v)) : null;
   const fieldN = crease && crease.segs.length ? crease.N : srcN;
 
   // The working surface, its hierarchy and the direction field don't depend on the exact budget: they are kept in
-  // opt.cache and reused while the grid size stays within the same step of 2^(1/4) and nothing else changed.
+  // opt.cache and reused while the budget (or, with even sizes, the grid size) stays within the same step of 2^(1/4)
+  // and nothing else changed.
   const cellFactor = 2.5, splitFactor = 0.7;
   const seed = opt.seed ?? 12345;
-  const bucket = Math.round(4 * Math.log2(scale / cellFactor));
-  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0].join('|');
-  const cache = opt.cache || null;
+  const bucket = opt.adapt > 0 ? step : Math.round(4 * Math.log2(scale / cellFactor));
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0].join('|');
   let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
   if (work) {
-    const ratio = scale / work.scale;
-    work.levels.forEach((L, l) => { const base = work.baseS[l]; for (let i = 0; i < L.n; i++) L.S[i] = base[i] * ratio; });
+    for (const L of work.levels) levelSpacings(L, scale);
     mark('cached');
     if (progress) progress('orientation', 1);
   } else {
-    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress);
-    work.scale = scale;
-    work.baseS = work.levels.map(L => L.S.slice());
+    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale);
+    for (const L of work.levels) levelAlignment(L, 0.5);
     solveOrientations(work.levels, seed, progress);
+    for (const L of work.levels) levelSpacings(L, scale);
     mark('orientation');
     if (cache) { cache.key = key; cache.work = work; }
   }
@@ -1742,7 +2117,7 @@ export function remeshQuads(mesh, opt) {
   resolvePositions(levels, seed, progress);
   mark('positions');
 
-  const grid = new SurfaceGrid(srcP, srcIdx, scale);
+  const grid = new SurfaceGrid(srcP, srcIdx, sizeRef());
   const attempts = [];
   mark('grid');
   let result = null;
@@ -1776,11 +2151,12 @@ export function remeshQuads(mesh, opt) {
     if (Math.abs(count / target - 1) < 0.04 || attempt === 2 || count === 0) break;
     const f = Math.sqrt(count / target);
     scale *= Math.max(0.6, Math.min(1.6, f));
-    for (const L of levels) for (let i = 0; i < L.n; i++) L.S[i] *= Math.max(0.6, Math.min(1.6, f));
+    for (const L of levels) levelSpacings(L, scale);
     if (progress) progress('position', 0);
     resolvePositions(levels, seed + attempt + 1);
     mark(`positions${attempt + 1}`);
   }
+  if (cache && result.count > 0) cache.bias.phi = (result.count * scale * scale) / weighted;
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
   const nv = even.nv, P = even.positions;
@@ -1830,7 +2206,7 @@ export function remeshQuads(mesh, opt) {
       if (!border[v]) continue;
       const r = find(v);
       total.set(r, (total.get(r) || 0) + 1);
-      if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < 0.75 * scale) near.set(r, (near.get(r) || 0) + 1);
+      if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < 0.75 * sizeRef()) near.set(r, (near.get(r) || 0) + 1);
     }
     for (let v = 0; v < nv; v++) if (border[v] && (near.get(find(v)) || 0) * 2 >= total.get(find(v))) onCut[v] = 1;
   }
@@ -1845,10 +2221,10 @@ export function remeshQuads(mesh, opt) {
   for (let v = 0; v < nv; v++) {
     let sum = 0;
     for (const u of nbr[v]) sum += Math.hypot(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]);
-    local[v] = nbr[v].length ? Math.min(scale, sum / nbr[v].length) : scale;
+    local[v] = nbr[v].length ? Math.min(2 * sizeRef(), sum / nbr[v].length) : sizeRef();
   }
   if (crease && crease.segs.length) {
-    segGrid = new SegmentGrid(srcP, crease.segs, scale);
+    segGrid = new SegmentGrid(srcP, crease.segs, sizeRef());
     const snapSeg = v => {
       const q = segGrid.nearest(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], 0.4 * local[v]);
       if (!q) return false;
@@ -1857,7 +2233,7 @@ export function remeshQuads(mesh, opt) {
     };
     for (let v = 0; v < nv; v++) if (nbr[v].length && !border[v] && snapSeg(v)) { sharpV[v] = 1; project(v); }
     for (const c of crease.corners) {
-      let best = -1, bd = (0.5 * Math.min(scale, sizeAt(c))) ** 2;
+      let best = -1, bd = (0.5 * Math.min(2 * sizeRef(), sizeMean(c))) ** 2;
       for (let v = 0; v < nv; v++) {
         if (!nbr[v].length || border[v]) continue;
         const d2 = (P[v * 3] - srcP[c * 3]) ** 2 + (P[v * 3 + 1] - srcP[c * 3 + 1]) ** 2 + (P[v * 3 + 2] - srcP[c * 3 + 2]) ** 2;
@@ -1933,7 +2309,7 @@ export function remeshQuads(mesh, opt) {
   });
   return {
     positions, faces: out, faceCount: faces.length, hit: { tri, bary: bc }, faceTri,
-    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, target, scale, clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
+    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, target, scale, size: sizeRef(), clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
   };
 }
 

@@ -1,7 +1,7 @@
 // Quad remeshing: all quads near the budget, closed where the input is, symmetric under a mirror plane, painted
 // density, new UVs that keep each quad whole, and FBX/OBJ files that store quads.
 import { THREE, core, S, settings, check, bumpySphere, sceneOf, context, layoutCheck, openEdges } from './helpers.js';
-import { remeshQuads } from '../src/quad.js';
+import { remeshQuads, QUAD_NONE } from '../src/quad.js';
 
 const quadsOf = r => { let n = 0; for (let t = 0; t < r.triCount; t++) if (r.quad[t] === 1) n++; return n; };
 const loneOf = r => { let n = 0; for (let t = 0; t < r.triCount; t++) if (!r.quad[t]) n++; return n; };
@@ -165,4 +165,47 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
   const even = ridge(0), shaped = ridge(0.8);
   check(shaped.share > even.share * 1.5 && shaped.crest >= even.crest - 1e-3,
     `follow the shape: the ridge gets ${(100 * shaped.share).toFixed(1)}% of the faces instead of ${(100 * even.share).toFixed(1)}%, crest radius ${shaped.crest.toFixed(3)} vs ${even.crest.toFixed(3)} (1.060 in the original)`);
+}
+
+// Long quads: a thin ring bends far more around its tube than along it, so following the shape makes its quads long
+// along the ring and short around the tube, with more of them around for the same budget, and the faces' middles then
+// sit closer to the ring's surface than with even squares.
+{
+  const R = 1, r0 = 0.12, wt = core.smartWeld(sceneOf(new THREE.TorusGeometry(R, r0, 48, 320)), { keepUV: false, hardAngle: 180 });
+  const ring = adapt => {
+    const rq = remeshQuads({ positions: wt.positions, index: wt.index }, { targetFaces: 240, adapt });
+    const P = rq.positions, along = [], around = [], off = [];
+    for (let f = 0; f < rq.faceCount; f++) {
+      const q = [...rq.faces.subarray(f * 4, f * 4 + 4)].filter(v => v !== QUAD_NONE);
+      let cx = 0, cy = 0, cz = 0;
+      for (let k = 0; k < q.length; k++) {
+        const a = q[k] * 3, b = q[(k + 1) % q.length] * 3;
+        cx += P[a] / q.length; cy += P[a + 1] / q.length; cz += P[a + 2] / q.length;
+        const ex = P[b] - P[a], ey = P[b + 1] - P[a + 1], ez = P[b + 2] - P[a + 2], el = Math.hypot(ex, ey, ez);
+        const mx = (P[a] + P[b]) / 2, my = (P[a + 1] + P[b + 1]) / 2, ml = Math.hypot(mx, my) || 1;
+        const c = Math.abs((-my * ex + mx * ey) / ml) / el;
+        if (c > 0.8) along.push(el); else if (c < 0.3) around.push(el);
+      }
+      // How far the face's middle is from the ring's surface.
+      off.push(Math.abs(Math.hypot(Math.hypot(cx, cy) - R, cz) - r0));
+    }
+    const med = a => a.sort((x, y) => x - y)[a.length >> 1];
+    return { aspect: med(along) / med(around), around: (2 * Math.PI * r0) / med(around), mean: off.reduce((x, y) => x + y, 0) / off.length, faces: rq.faceCount };
+  };
+  const even = ring(0), long = ring(1);
+  check(long.aspect > 1.8 && even.aspect < 1.3 && long.around > even.around * 1.3 && long.mean < even.mean * 0.8,
+    `long quads: on a thin ring ${long.aspect.toFixed(1)}:1 quads with ${long.around.toFixed(1)} around the tube (even squares: ${even.aspect.toFixed(1)}:1, ${even.around.toFixed(1)} around), face middles ${long.mean.toFixed(4)} off the surface on average (${even.mean.toFixed(4)})`);
+}
+
+// The budget: after one remesh of a surface the next lands within 5% on its first try, and asking for a budget again
+// gives the same faces whatever was asked in between.
+{
+  const wk = core.smartWeld(sceneOf(new THREE.TorusKnotGeometry(0.8, 0.25, 300, 40)), { keepUV: false, hardAngle: 180 });
+  const cache = {}, mesh = { positions: wk.positions, index: wk.index };
+  const a = remeshQuads(mesh, { targetFaces: 1500, adapt: 1, cache, cacheKey: 'k' });
+  const b = remeshQuads(mesh, { targetFaces: 1100, adapt: 1, cache, cacheKey: 'k' });
+  const c = remeshQuads(mesh, { targetFaces: 1500, adapt: 1, cache, cacheKey: 'k' });
+  const same = a.faceCount === c.faceCount && a.positions.length === c.positions.length && a.positions.every((x, i) => x === c.positions[i]);
+  check(b.stats.attempts.length === 1 && Math.abs(b.faceCount / 1100 - 1) < 0.05 && same,
+    `budget: ${b.faceCount} faces for 1100 on the first try after a remesh at 1500; 1500 again gives the same ${c.faceCount} faces`);
 }
