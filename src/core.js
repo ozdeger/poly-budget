@@ -1341,7 +1341,39 @@ function lscm(n, tris, X, uv, pinA, pinB) {
   return x;
 }
 
-// A flattened chart is usable when no triangle flips, no two triangles overlap and texel density stays within 5×.
+// One triangle, or two sharing an edge, laid flat with their true shapes: the first as it is, the second turned about
+// the shared edge onto the far side of it. Returns UVs as [u0..un-1, v0..vn-1], or null for anything else.
+function unfoldFlat(n, tris, X) {
+  const m = tris.length / 3;
+  if (m > 2) return null;
+  const d = (i, j) => Math.hypot(X[i * 3] - X[j * 3], X[i * 3 + 1] - X[j * 3 + 1], X[i * 3 + 2] - X[j * 3 + 2]);
+  const uv = new Float64Array(n * 2).fill(NaN);
+  // Point x at distances ri from placed point i and rj from placed point j, on the left of i→j (side 1) or right (-1).
+  const place = (x, i, j, ri, rj, side) => {
+    const ux = uv[j] - uv[i], uy = uv[n + j] - uv[n + i], l = Math.hypot(ux, uy) || 1e-30;
+    const along = (ri * ri - rj * rj + l * l) / (2 * l), across = Math.sqrt(Math.max(0, ri * ri - along * along));
+    uv[x] = uv[i] + (ux * along - uy * across * side) / l;
+    uv[n + x] = uv[n + i] + (uy * along + ux * across * side) / l;
+  };
+  const [a, b, c] = [tris[0], tris[1], tris[2]];
+  uv[a] = 0; uv[n + a] = 0; uv[b] = d(a, b); uv[n + b] = 0;
+  place(c, a, b, d(a, c), d(b, c), 1);
+  if (m === 2) {
+    const t2 = [tris[3], tris[4], tris[5]], k = t2.findIndex(v => v !== a && v !== b && v !== c);
+    if (k < 0) return null;
+    // Wound the same way, the second triangle runs the shared edge the other way round, so its free corner goes left
+    // of that edge as the second triangle runs it: the far side from the first triangle.
+    const x = t2[k], p = t2[(k + 1) % 3], q = t2[(k + 2) % 3];
+    if (!(uv[p] === uv[p]) || !(uv[q] === uv[q])) return null;
+    place(x, p, q, d(p, x), d(q, x), 1);
+  }
+  for (let i = 0; i < n * 2; i++) if (!(uv[i] === uv[i])) uv[i] = 0;
+  return uv;
+}
+
+// A flattened chart is usable when no triangle flips, no two triangles overlap, texel density stays within 5× over
+// all but 2% of its area, and no triangle gets less than 0.15 (or more than 1/0.15) of its share: such a sliver would
+// read its whole texture from a line of texels, or from the gutter beside it.
 function chartIsValid(uv, n, tris, area3) {
   const m = tris.length / 3;
   let uvTotal = 0, a3Total = 0;
@@ -1357,6 +1389,7 @@ function chartIsValid(uv, n, tris, area3) {
     if (area3[t] <= a3Total * 1e-9) continue;
     if (s[t] <= 0) return false;
     const ratio = (s[t] / uvTotal) / (area3[t] / a3Total);
+    if (ratio < 0.15 || ratio > 1 / 0.15) return false;
     if (ratio < 0.2 || ratio > 5) stretched += area3[t];
   }
   if (stretched > a3Total * 0.02) return false;
@@ -1597,13 +1630,23 @@ export function unwrap(mesh, opt = {}) {
     }
   }
 
-  // Grow charts from the largest faces, always taking the neighbour closest to the chart's mean normal.
+  // Grow charts from the largest faces, always taking the neighbour closest to the chart's mean normal. A quad folded
+  // by more than 90° between its two triangles gets a chart of its own first: in a bigger chart the flattening would
+  // squash it to a sliver.
   let chart = new Int32Array(T).fill(-1);
   const order = new Uint32Array(T);
   for (let t = 0; t < T; t++) order[t] = t;
   order.sort((a, b) => area[b] - area[a]);
   const heap = new MinHeap();
   let C = 0;
+  const alone = new Uint8Array(T);
+  if (pair) {
+    for (let t = 0; t + 1 < T; t++) {
+      if (pair[t] !== 1 || area[t] <= tiny || area[t + 1] <= tiny || dot(t, t + 1) >= 0) continue;
+      chart[t] = chart[t + 1] = C++;
+      alone[t] = alone[t + 1] = 1;
+    }
+  }
   for (let s = 0; s < T; s++) {
     const seed = order[s];
     if (chart[seed] >= 0) continue;
@@ -1658,6 +1701,7 @@ export function unwrap(mesh, opt = {}) {
     const nx = sum[a * 3] + sum[b * 3], ny = sum[a * 3 + 1] + sum[b * 3 + 1], nz = sum[a * 3 + 2] + sum[b * 3 + 2];
     const l = Math.hypot(nx, ny, nz);
     if (!(l > 0)) continue;
+    if (alone[faceLists[a][0]] || alone[faceLists[b][0]]) continue;
     const small = faceLists[a].length <= 2 || faceLists[b].length <= 2;
     const limit = small ? cosMerge : cosCone;
     let ok = true;
@@ -1765,10 +1809,10 @@ export function unwrap(mesh, opt = {}) {
       const solved = pinA !== pinB ? lscm(n, tris, X, start, pinA, pinB) : start;
       if (chartIsValid(solved, n, tris, a3)) uv = solved;
       else if (!chartIsValid(start, n, tris, a3)) {
-        // A chart that won't split any further (one quad) keeps the flattening it has.
+        // A chart that won't split any further (one quad) is unfolded flat about its diagonal.
         const pieces = split(faces);
         if (pieces.length > 1) { splits++; queue.push(...pieces); continue; }
-        uv = solved;
+        uv = unfoldFlat(n, tris, X) || solved;
       }
     }
     let uvArea = 0, a3Total = 0;
