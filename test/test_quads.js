@@ -95,8 +95,8 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
 // Sharp edges: a box keeps its edges and corners crisp instead of rounding them off.
 {
   const w3 = core.smartWeld(sceneOf(new THREE.BoxGeometry(1.6, 1, 1, 48, 30, 30)), { keepUV: false, hardAngle: 30 });
-  const edgeGap = sharp => {
-    const { result: r } = run(w3, { targetTris: 2000, symmetry: null, quadSharp: sharp });
+  const edgeGap = (sharp, adapt = 0) => {
+    const { result: r } = run(w3, { targetTris: 2000, symmetry: null, quadSharp: sharp, quadAdapt: adapt });
     const P = r.positions, idx = r.index;
     // Distance from points along the box's twelve edges to the remeshed surface.
     const dist = (x, y, z) => {
@@ -117,8 +117,8 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
     }
     return worst;
   };
-  const crisp = edgeGap(45), round = edgeGap(0);
-  check(crisp < 0.005 && crisp < round / 4, `sharp edges: the box's edges stay within ${crisp.toFixed(4)} of the remesh (${round.toFixed(4)} without)`);
+  const crisp = edgeGap(45), round = edgeGap(0), shaped = edgeGap(45, 0.5);
+  check(crisp < 0.005 && crisp < round / 4 && shaped < 0.005, `sharp edges: the box's edges stay within ${crisp.toFixed(4)} of the remesh (${shaped.toFixed(4)} following the shape, ${round.toFixed(4)} without sharp edges)`);
 }
 
 // Bumps that the mirror plane only grazes: the cut loop there is smaller than a quad and sags off the plane unless the
@@ -139,4 +139,30 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
     gaps += openEdges(r).open;
   }
   check(gaps === 0, `mirror seam: no gaps where the plane grazes small bumps (${gaps} open edges)`);
+}
+
+// Following the shape: a thin ridge around a sphere's middle bends far more than the rest, so with the density following
+// curvature it gets a larger share of the same budget, and the ridge's worst gap to the original shrinks.
+{
+  const g = new THREE.SphereGeometry(1, 256, 128), p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i), s = 1 + 0.06 * Math.exp(-(y * y) / 0.0009);
+    p.setXYZ(i, x * s, y * s, z * s);
+  }
+  g.computeVertexNormals();
+  const wr = core.smartWeld(sceneOf(g), { keepUV: false, hardAngle: 180 });
+  const ridge = adapt => {
+    const { result: r } = run(wr, { targetTris: 3000, symmetry: null, quadAdapt: adapt });
+    let inBand = 0, worst = 0;
+    for (let t = 0; t < r.triCount; t++) {
+      const y = (r.positions[r.index[t * 3] * 3 + 1] + r.positions[r.index[t * 3 + 1] * 3 + 1] + r.positions[r.index[t * 3 + 2] * 3 + 1]) / 3;
+      if (Math.abs(y) < 0.08) inBand++;
+    }
+    // How far the ridge's crest (radius 1.06 at y = 0) sinks into the result: the result's largest radius near the equator.
+    for (let v = 0; v < r.vertexCount; v++) if (Math.abs(r.positions[v * 3 + 1]) < 0.01) worst = Math.max(worst, Math.hypot(r.positions[v * 3], r.positions[v * 3 + 2]));
+    return { share: inBand / r.triCount, crest: worst };
+  };
+  const even = ridge(0), shaped = ridge(0.8);
+  check(shaped.share > even.share * 1.5 && shaped.crest >= even.crest - 1e-3,
+    `follow the shape: the ridge gets ${(100 * shaped.share).toFixed(1)}% of the faces instead of ${(100 * even.share).toFixed(1)}%, crest radius ${shaped.crest.toFixed(3)} vs ${even.crest.toFixed(3)} (1.060 in the original)`);
 }

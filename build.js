@@ -4,7 +4,7 @@ const IMPORT = /^import[^;]*;[ \t]*$/gm;
 const strip = src => src.replace(IMPORT, m => (/from '\.\//.test(m) || /from 'three';/.test(m) ? '' : m)).replace(/^export\s+(?=(async\s+)?function|const|let|class)/gm, '');
 const core = strip(read('./src/core.js'));
 // The remesher keeps its helpers to itself; only its exports join the shared scope.
-const quad = `const { remeshQuads, QUAD_NONE } = (() => {\n${strip(read('./src/quad.js'))}\nreturn { remeshQuads, QUAD_NONE };\n})();`;
+const quad = `const { remeshQuads, QUAD_NONE, formDensity } = (() => {\n${strip(read('./src/quad.js'))}\nreturn { remeshQuads, QUAD_NONE, formDensity };\n})();`;
 // So does the visibility pass for hidden areas.
 const visibility = `const { computeVisibility } = (() => {\n${strip(read('./src/visibility.js'))}\nreturn { computeVisibility };\n})();`;
 const collect = strip(read('./src/collect.js'));

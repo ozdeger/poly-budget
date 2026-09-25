@@ -89,3 +89,22 @@ const inner = v => Math.max(Math.abs(boxes.positions[v * 3]), Math.abs(boxes.pos
   const b = core.runReduction(S, ctx, null, { ...settings, targetTris: 800, topology: 'tris', symmetry: null, deferUV: true }, { normals: 'smooth' }).result;
   check(cat.rest === w.triCount && a.triCount === b.triCount, `Normal detail counts as unpainted (${a.triCount} triangles either way)`);
 }
+
+// A thin ring hugging a sphere, like a necklace on a neck: its inner side faces the sphere and is hardly seen, but it
+// bends sharply, so it keeps its detail (the visible side's round shape depends on it); the sphere's own hidden band
+// under the ring still gets less.
+{
+  const { formDensity } = await import('../src/quad.js');
+  const w = weld(merge(new THREE.SphereGeometry(1, 128, 64), new THREE.TorusGeometry(1.035, 0.03, 16, 160).rotateX(Math.PI / 2)));
+  const { vis } = computeVisibility(w);
+  const curve = formDensity(w.positions, w.index, null, null, 1);
+  const plain = core.hiddenLabels(vis, 'medium'), kept = core.hiddenLabels(vis, 'medium', false, curve);
+  let ringHidden = 0, ringKept = 0, sphereHidden = 0, sphereKept = 0;
+  for (let v = 0; v < w.vertexCount; v++) {
+    const onRing = Math.hypot(w.positions[v * 3], w.positions[v * 3 + 2]) > 1.002 && Math.abs(w.positions[v * 3 + 1]) < 0.04;
+    if (onRing) { if (plain[v]) ringHidden++; if (kept[v]) ringKept++; }
+    else { if (plain[v]) sphereHidden++; if (kept[v]) sphereKept++; }
+  }
+  check(ringHidden > 50 && ringKept < ringHidden / 5 && sphereKept > sphereHidden / 2,
+    `thin ring on a sphere: ${ringHidden} hidden ring vertices without the curvature rule, ${ringKept} with it; the sphere keeps ${sphereKept} of its ${sphereHidden} hidden vertices`);
+}

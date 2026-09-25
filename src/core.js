@@ -331,11 +331,16 @@ export const HIDDEN_LEVELS = {
 };
 
 // Less levels per vertex from its visibility (0 never seen … 1 fully open); with cull, vertices nothing sees get CULL.
-export function hiddenLabels(vis, level = 'medium', cull = false) {
+// curve (optional, per vertex): how strongly the surface bends there relative to the model's median (formDensity).
+// Parts bending past HIDDEN_KEEP_CURVE times the median keep their detail: the hidden side of a thin ring or chain is what
+// holds the visible side's round shape. Surface nothing can see is still deleted.
+export const HIDDEN_KEEP_CURVE = 2;
+export function hiddenLabels(vis, level = 'medium', cull = false, curve = null) {
   const bands = HIDDEN_LEVELS[level] || HIDDEN_LEVELS.medium, out = new Int8Array(vis.length);
   for (let v = 0; v < vis.length; v++) {
     const x = vis[v];
     if (cull && x <= 1e-6) { out[v] = LABEL.CULL; continue; }
+    if (curve && curve[v] > HIDDEN_KEEP_CURVE) continue;
     for (const [below, l] of bands) if (x < below) { out[v] = l; break; }
   }
   return out;
@@ -2351,8 +2356,8 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
   if (!holder.quadCache) holder.quadCache = {};
   const rq = remeshQuads({ positions: base.positions, index, normals: smooth }, {
     targetFaces: quads, density, plane: sym ? { axis: sym.axis, offset: Math.fround(sym.offset) } : null, progress,
-    cache: holder.quadCache, cacheKey: `${st.prune ? 1 : 0}|${index.length}|${density ? hashFloats(density) : 'even'}`,
-    sharp: st.quadSharp ?? QUAD_SHARP,
+    cache: holder.quadCache, cacheKey: `${st.prune ? 1 : 0}|${index.length}|${density ? hashFloats(density) : 'even'}|${st.quadAdapt || 0}`,
+    sharp: st.quadSharp ?? QUAD_SHARP, adapt: st.quadAdapt || 0,
   });
   // Triangles the prune dropped don't exist for the lookups either.
   // Culled surface is remeshed like the lowest Less level and its finished faces dropped: cutting it out first leaves

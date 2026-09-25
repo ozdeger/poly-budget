@@ -1,6 +1,7 @@
 import { MeshoptSimplifier } from 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.2.0/meshopt_simplifier.js';
 import { packAttributes, runReduction, mirrorOriginal, unwrapResult } from './core.js';
 import { computeVisibility } from './visibility.js';
+import { formDensity } from './quad.js';
 
 // One context per tab: the welded mesh, its packed attributes and the caches runReduction keeps.
 const ctxs = new Map();
@@ -17,7 +18,9 @@ self.onmessage = async ({ data }) => {
         self.postMessage({ type: 'progress', id: data.id, frac });
       };
       const { vis, stats } = computeVisibility(data.mesh, { progress });
-      self.postMessage({ type: 'visibility', id: data.id, vis, stats }, [vis.buffer]);
+      // How strongly each spot bends: small curved parts keep their faces even where they are hidden.
+      const curve = formDensity(data.mesh.positions, data.mesh.index, null, null, 1);
+      self.postMessage({ type: 'visibility', id: data.id, vis, curve, stats }, [vis.buffer, curve.buffer]);
       return;
     }
     if (data.type === 'unwrap') {

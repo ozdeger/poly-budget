@@ -1510,7 +1510,8 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
 // ---------- sharp edges ----------
 
 // Sharp edges of the input: where neighbouring triangles turn by more than `angle` degrees. Short runs are surface
-// noise and are dropped; only connected runs at least minLength long count. Returns the kept edges as vertex pairs,
+// noise and are dropped; only connected runs at least minLength(v) long count (averaged over the run's vertices, so
+// runs where faces will be small may be short). Returns the kept edges as vertex pairs,
 // normals where each crease vertex takes one side's normal (so the grid snaps to the crease rather than cutting it), and
 // the corners where three or more kept edges meet.
 function findCreases(P, index, N, angle, minLength) {
@@ -1545,12 +1546,18 @@ function findCreases(P, index, N, angle, minLength) {
   for (let v = 0; v < V; v++) parent[v] = v;
   const find = x => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
   for (let e = 0; e < ea.length; e++) { const x = find(ea[e]), y = find(eb[e]); if (x !== y) parent[x] = y; }
-  const length = new Map();
+  const length = new Map(), need = new Map(), count = new Map();
   const len = e => Math.hypot(P[ea[e] * 3] - P[eb[e] * 3], P[ea[e] * 3 + 1] - P[eb[e] * 3 + 1], P[ea[e] * 3 + 2] - P[eb[e] * 3 + 2]);
-  for (let e = 0; e < ea.length; e++) { const r = find(ea[e]); length.set(r, (length.get(r) || 0) + len(e)); }
+  for (let e = 0; e < ea.length; e++) {
+    const r = find(ea[e]);
+    length.set(r, (length.get(r) || 0) + len(e));
+    need.set(r, (need.get(r) || 0) + minLength(ea[e]) + minLength(eb[e]));
+    count.set(r, (count.get(r) || 0) + 2);
+  }
   const segs = [], deg = new Uint8Array(V);
   for (let e = 0; e < ea.length; e++) {
-    if (length.get(find(ea[e])) < minLength) continue;
+    const r = find(ea[e]);
+    if (length.get(r) < need.get(r) / count.get(r)) continue;
     segs.push(ea[e], eb[e]);
     deg[ea[e]] = Math.min(255, deg[ea[e]] + 1); deg[eb[e]] = Math.min(255, deg[eb[e]] + 1);
   }
@@ -1610,10 +1617,68 @@ class SegmentGrid {
   }
 }
 
+// ---------- following the shape ----------
+
+// Faces per area each part of the surface needs for its shape, as a multiplier per source vertex. A flat face of edge h
+// on a surface bending with curvature κ stands off it by about κh²/8, so an even error asks for faces per area in
+// proportion to curvature. Curvature is read between neighbouring clusters on a grid of 0.4% of the model's size, whose
+// averaged normals hide the noise of scans and generated meshes; it counts relative to its area-weighted median, is kept
+// within [1/3, 12] of it, and is smoothed in log space so sizes change gradually (sudden changes cost poles). strength:
+// 0 keeps faces even, 1 follows curvature fully. N and A (vertex normals and areas) are worked out when not given.
+export function formDensity(P, index, N, A, strength) {
+  const V = P.length / 3;
+  if (!N || !A) ({ N, A } = normalsAndAreas(P, index));
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (let v = 0; v < V; v++) {
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const cell = 0.004 * (Math.hypot(x1 - x0, y1 - y0, z1 - z0) || 1);
+  const cl = clusterSurface(P, index, N, A, () => cell), C = cl.count, CP = cl.positions, CN = cl.normals, CI = cl.index;
+  // Neighbouring clusters, and the curvature across each pair: the angle between their normals over their distance.
+  const kappa = new Float64Array(C), nbrs = Array.from({ length: C }, () => []);
+  const seen = new Set();
+  for (let t = 0; t < CI.length; t += 3) {
+    for (let k = 0; k < 3; k++) {
+      const a = CI[t + k], b = CI[t + ((k + 1) % 3)], key = a < b ? a * C + b : b * C + a;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      nbrs[a].push(b); nbrs[b].push(a);
+      const d = Math.hypot(CP[a * 3] - CP[b * 3], CP[a * 3 + 1] - CP[b * 3 + 1], CP[a * 3 + 2] - CP[b * 3 + 2]);
+      if (!(d > 0)) continue;
+      const c = Math.max(-1, Math.min(1, CN[a * 3] * CN[b * 3] + CN[a * 3 + 1] * CN[b * 3 + 1] + CN[a * 3 + 2] * CN[b * 3 + 2]));
+      const k2 = Math.acos(c) / d;
+      if (k2 > kappa[a]) kappa[a] = k2;
+      if (k2 > kappa[b]) kappa[b] = k2;
+    }
+  }
+  // Relative to the area-weighted median curvature.
+  const order = Array.from({ length: C }, (_, i) => i).sort((a, b) => kappa[a] - kappa[b]);
+  let total = 0, acc = 0, median = 0;
+  for (let i = 0; i < C; i++) total += cl.area[i];
+  for (const i of order) { acc += cl.area[i]; if (acc >= total / 2) { median = kappa[i]; break; } }
+  const lg = new Float64Array(C), tmp = new Float64Array(C);
+  for (let i = 0; i < C; i++) lg[i] = Math.log(Math.min(12, Math.max(1 / 3, median > 0 ? kappa[i] / median : 1)));
+  for (let pass = 0; pass < 5; pass++) {
+    for (let i = 0; i < C; i++) {
+      const nb = nbrs[i];
+      if (!nb.length) { tmp[i] = lg[i]; continue; }
+      let m = 0;
+      for (const j of nb) m += lg[j];
+      tmp[i] = 0.5 * lg[i] + (0.5 * m) / nb.length;
+    }
+    lg.set(tmp);
+  }
+  const out = new Float32Array(V).fill(1);
+  for (let v = 0; v < V; v++) { const c = cl.of[v]; if (c >= 0) out[v] = Math.exp(strength * lg[c]); }
+  return out;
+}
+
 // ---------- the whole remesh ----------
 
 // mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
-// opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), boundary: align open borders (true),
+// opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), adapt: how far face size follows the
+//        surface's curvature (0 even … 1, see formDensity), boundary: align open borders (true),
 //        plane: { axis, offset } whose border is kept exactly on the plane, sharp: the angle past which long sharp
 //        edges become edge loops (0: off), pure: all quads (true), seed, relax: iterations, progress(stage, f),
 //        cache and cacheKey: where to keep the working surface and direction field between calls }
@@ -1626,9 +1691,20 @@ export function remeshQuads(mesh, opt) {
   const progress = opt.progress || null;
   const srcP = mesh.positions, srcIdx = mesh.index instanceof Uint32Array ? mesh.index : Uint32Array.from(mesh.index), V0 = srcP.length / 3;
   const target = Math.max(6, opt.targetFaces | 0);
-  const dens = opt.density || null;
   const na = normalsAndAreas(srcP, srcIdx);
   const srcN = mesh.normals || na.N, srcA = na.A;
+  // Density that follows the shape is worked out once per surface and strength, and kept with the cache.
+  let dens = opt.density || null;
+  if (opt.adapt > 0) {
+    const formKey = `${V0}|${srcIdx.length}|${opt.adapt}`;
+    let form = opt.cache && opt.cache.form && opt.cache.form.key === formKey ? opt.cache.form.d : null;
+    if (!form) {
+      form = formDensity(srcP, srcIdx, srcN, srcA, opt.adapt);
+      if (opt.cache) opt.cache.form = { key: formKey, d: form };
+    }
+    if (dens) { const mixed = new Float32Array(V0); for (let v = 0; v < V0; v++) mixed[v] = dens[v] * form[v]; dens = mixed; } else dens = form;
+    mark('form');
+  }
 
   // Surface area (weighted by density) sets the grid size: faces ≈ Σ area·density / size².
   let weighted = 0;
@@ -1638,7 +1714,7 @@ export function remeshQuads(mesh, opt) {
   const sizeAt = v => (dens ? scale / Math.sqrt(Math.max(1e-6, dens[v])) : scale);
   // Sharp edges (opt.sharp: the angle, 0 for none): the fields see one side's normal along them, and vertices near
   // them are snapped onto them after extraction.
-  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, 3 * scale) : null;
+  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, v => 3 * sizeAt(v)) : null;
   const fieldN = crease && crease.segs.length ? crease.N : srcN;
 
   // The working surface, its hierarchy and the direction field don't depend on the exact budget: they are kept in
@@ -1761,20 +1837,27 @@ export function remeshQuads(mesh, opt) {
   const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
   for (let v = 0; v < nv; v++) { project(v); snapPlane(v); }
   // Sharp edges: corners take the nearest vertex and hold it; vertices close to an edge move onto it and afterwards only
-  // slide along it.
+  // slide along it. Distances count in the local face size (the mean length of a vertex's edges), which varies where
+  // density follows the shape or paint.
   const sharpV = new Uint8Array(nv);
   let segGrid = null;
+  const local = new Float64Array(nv);
+  for (let v = 0; v < nv; v++) {
+    let sum = 0;
+    for (const u of nbr[v]) sum += Math.hypot(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]);
+    local[v] = nbr[v].length ? Math.min(scale, sum / nbr[v].length) : scale;
+  }
   if (crease && crease.segs.length) {
     segGrid = new SegmentGrid(srcP, crease.segs, scale);
     const snapSeg = v => {
-      const q = segGrid.nearest(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], 0.4 * scale);
+      const q = segGrid.nearest(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], 0.4 * local[v]);
       if (!q) return false;
       P[v * 3] = q.x; P[v * 3 + 1] = q.y; P[v * 3 + 2] = q.z;
       return true;
     };
     for (let v = 0; v < nv; v++) if (nbr[v].length && !border[v] && snapSeg(v)) { sharpV[v] = 1; project(v); }
     for (const c of crease.corners) {
-      let best = -1, bd = (0.5 * scale) ** 2;
+      let best = -1, bd = (0.5 * Math.min(scale, sizeAt(c))) ** 2;
       for (let v = 0; v < nv; v++) {
         if (!nbr[v].length || border[v]) continue;
         const d2 = (P[v * 3] - srcP[c * 3]) ** 2 + (P[v * 3 + 1] - srcP[c * 3 + 1]) ** 2 + (P[v * 3 + 2] - srcP[c * 3 + 2]) ** 2;
@@ -1791,7 +1874,7 @@ export function remeshQuads(mesh, opt) {
       if (sharpNbr.length < 2) return;
       let cx = 0, cy = 0, cz = 0;
       for (const u of sharpNbr) { cx += P[u * 3]; cy += P[u * 3 + 1]; cz += P[u * 3 + 2]; }
-      const q = segGrid.nearest((P[v * 3] + cx / sharpNbr.length) / 2, (P[v * 3 + 1] + cy / sharpNbr.length) / 2, (P[v * 3 + 2] + cz / sharpNbr.length) / 2, 0.6 * scale);
+      const q = segGrid.nearest((P[v * 3] + cx / sharpNbr.length) / 2, (P[v * 3 + 1] + cy / sharpNbr.length) / 2, (P[v * 3 + 2] + cz / sharpNbr.length) / 2, 0.6 * local[v]);
       if (q) { tmp[v * 3] = q.x; tmp[v * 3 + 1] = q.y; tmp[v * 3 + 2] = q.z; }
     };
     relaxSharp = slide;

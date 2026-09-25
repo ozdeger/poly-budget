@@ -15,6 +15,7 @@ import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVerte
 import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, cornerTangents, positionNormals, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
 import { computeVisibility } from './visibility.js';
+import { formDensity } from './quad.js';
 
 const $ = id => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat('en-US');
@@ -37,7 +38,7 @@ function loadTangents() {
 // ---------- settings ----------
 const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
-  targetPct: 10, topology: 'tris', quadSharp: true, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
+  targetPct: 10, topology: 'tris', quadSharp: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, normalFormat: 'opengl',
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
@@ -59,7 +60,7 @@ function saveSettings() {
 // ---------- tabs ----------
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
-const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
+const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'quadAdapt', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
   'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'bakeNormals', 'colorDetail', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
@@ -73,7 +74,7 @@ function newDoc(saved = null) {
       meta: null, collected: null, welded: null, labels: null, result: null, info: null, engineMesh: null,
       orig: { bvh: null, index: null }, left: null, diag: 1, size: 1, undo: [], redo: [], strokeSnapshot: null, strokeChanged: false,
       painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
-      vis: null, visStats: null, visJob: null, visFrac: 0, auto: null, detailMaps: new Map(),
+      vis: null, visCurve: null, visStats: null, visJob: null, visFrac: 0, auto: null, detailMaps: new Map(),
     },
     symPlane: { axis: 0, offset: 0, fit: null, ready: false },
     session: { model: null, files: new Map(), ready: false },
@@ -415,7 +416,8 @@ const visEngine = {
   },
   async runLocal(msg, onProgress) {
     await nextFrame();
-    return computeVisibility(msg.mesh, { progress: onProgress });
+    const out = computeVisibility(msg.mesh, { progress: onProgress });
+    return { ...out, curve: formDensity(msg.mesh.positions, msg.mesh.index, null, null, 1) };
   },
 };
 
@@ -439,13 +441,13 @@ async function startVisibility(d = doc) {
   }
   if (s.visJob !== job) return;
   s.visJob = null;
-  if (out && s.welded === w) { s.vis = out.vis; s.visStats = out.stats; }
+  if (out && s.welded === w) { s.vis = out.vis; s.visCurve = out.curve || null; s.visStats = out.stats; }
   if (d !== doc) { if (s.vis) d.dirty = true; return; }
   if (s.vis) { applyHidden(); saveSessionSoon(); } else { updateHiddenUI(); scheduleReduce(0); }
 }
 // The hidden-area levels for the active tab's settings, or none.
 function updateAuto() {
-  state.auto = settings.hidden && state.vis ? hiddenLabels(state.vis, settings.hiddenLevel, settings.hiddenCull) : null;
+  state.auto = settings.hidden && state.vis ? hiddenLabels(state.vis, settings.hiddenLevel, settings.hiddenCull, state.visCurve) : null;
 }
 function applyHidden(reduce = true) {
   updateAuto();
@@ -503,6 +505,9 @@ function transferVis(old, oldVis, welded) {
   }
   return out;
 }
+// Curvature relative to the median (1/3 … 12), kept in the session as a byte per vertex on a log scale.
+const packCurve = c => Uint8Array.from(c, x => Math.round(Math.min(1, Math.max(0, (Math.log2(x) + 1.6) / 5.2)) * 255));
+const unpackCurve = q => Float32Array.from(q, b => 2 ** ((b / 255) * 5.2 - 1.6));
 // Visibility kept in the session as a byte per vertex; 0 stays exactly never seen.
 const packVis = vis => Uint8Array.from(vis, x => (x <= 1e-6 ? 0 : 1 + Math.round(Math.min(1, x) * 254)));
 const unpackVis = q => Float32Array.from(q, b => (b ? Math.max(0.5, b - 1) / 254 : 0));
@@ -588,7 +593,7 @@ async function saveSession() {
   const record = {
     version: 2, id, title: doc.title, model: session.model, files: [...session.files.keys()], textures, settings: docSettings(),
     labels: state.labels, weld: { hardAngle: settings.hardAngle, weldTol: settings.weldTol },
-    vis: state.vis ? packVis(state.vis) : null, visStats: state.vis ? state.visStats : null,
+    vis: state.vis ? packVis(state.vis) : null, visCurve: state.vis && state.visCurve ? packCurve(state.visCurve) : null, visStats: state.vis ? state.visStats : null,
     symPlane: symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset } : null,
     camera: { position: camera.position.toArray(), target: controls.target.toArray() },
   };
@@ -864,10 +869,14 @@ async function rebuildWeld(resetLabels) {
   const savedLabels = saved && saved.labels && saved.labels.length === welded.vertexCount && saved.weld
     && saved.weld.hardAngle === settings.hardAngle && saved.weld.weldTol === settings.weldTol ? saved.labels : null;
   state.labels = savedLabels ? Int8Array.from(savedLabels) : resetLabels || !old ? new Int8Array(welded.vertexCount) : transferLabels(old, oldLabels, welded);
-  const oldVis = state.vis;
+  const oldVis = state.vis, oldCurve = state.visCurve;
   visEngine.cancel();
   state.visJob = null;
   state.vis = savedLabels && saved.vis && saved.vis.length === welded.vertexCount ? unpackVis(saved.vis) : !resetLabels && old && oldVis ? transferVis(old, oldVis, welded) : null;
+  state.visCurve = !state.vis ? null : savedLabels && saved.visCurve && saved.visCurve.length === welded.vertexCount ? unpackCurve(saved.visCurve)
+    : !resetLabels && old && oldCurve ? transferVis(old, oldCurve, welded) : null;
+  // A visibility pass saved before curvature was kept runs again, so hidden levels spare the small curved parts.
+  if (state.vis && !state.visCurve) state.vis = null;
   state.visStats = state.vis ? (savedLabels ? saved.visStats : state.visStats) || null : null;
   if (state.vis && !state.visStats) state.vis = null;
   updateAuto();
@@ -2485,7 +2494,7 @@ function reduceSettings(target) {
     targetTris: target ?? targetTris(), maxError: Number(settings.maxError), lockBorder: settings.lockBorder,
     permissive: settings.permissive, prune: settings.prune, regularize: settings.regularize, normalWeight: settings.normalWeight,
     uvWeight: settings.uvWeight, optimizePositions: settings.optimizePositions,
-    uvMode: settings.uvMode, deferUV: true, hardAngle: settings.hardAngle, topology: settings.topology, quadSharp: settings.quadSharp ? QUAD_SHARP : 0,
+    uvMode: settings.uvMode, deferUV: true, hardAngle: settings.hardAngle, topology: settings.topology, quadSharp: settings.quadSharp ? QUAD_SHARP : 0, quadAdapt: settings.quadAdapt,
     symmetry: settings.symmetry && symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset, keepPositive: settings.symSide !== '-' } : null,
   };
 }
@@ -3822,6 +3831,8 @@ function syncControls() {
   pressSeg('topoSeg', 'topo', settings.topology);
   $('prune2').checked = settings.prune;
   $('quadSharp').checked = settings.quadSharp;
+  if (document.activeElement !== $('quadAdapt')) $('quadAdapt').value = String(settings.quadAdapt);
+  $('quadAdaptOut').textContent = settings.quadAdapt > 0 ? `${Math.round(settings.quadAdapt * 100)}%` : 'off';
   $('secQuads').hidden = !q;
   $('secReduce').hidden = q;
   // Quads always get new UVs.
@@ -3931,6 +3942,7 @@ bindCheck('lockBorder', 'lockBorder', () => scheduleReduce());
 bindCheck('prune', 'prune', () => scheduleReduce());
 bindCheck('prune2', 'prune', () => scheduleReduce());
 bindCheck('quadSharp', 'quadSharp', () => scheduleReduce());
+bindRange('quadAdapt', 'quadAdapt', () => scheduleReduce());
 bindCheck('bakeNormals', 'bakeNormals', () => { refreshBake(); updateUVPanel(); updateExportPanel(); });
 bindRange('colorDetail', 'colorDetail', () => { refreshBake(); updateUVPanel(); });
 onSeg('normalFormatSeg', 'nformat', v => { settings.normalFormat = v; updateExportPanel(); });

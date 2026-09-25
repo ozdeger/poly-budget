@@ -870,6 +870,7 @@ details.more[open] > summary { margin-bottom: 8px; }
     <details class="sec" id="secQuads" data-sec="quads" data-needs-model hidden>
       <summary><h2>Remeshing</h2><span class="sum-meta" id="quadsMeta"></span></summary>
       <p class="note">Rebuilds the surface as quads whose edges follow its shape, and bakes the texture onto new UVs. Paint More or Less detail to change the quad size there; Keep asks for the smallest quads.</p>
+      <label class="field"><span>Follow the shape <output id="quadAdaptOut"></output></span><input type="range" id="quadAdapt" min="0" max="1" step="0.05" aria-label="Follow the shape" title="Smaller quads where the surface bends (small parts, chains, faces, strand edges) and bigger ones where it's flat. Higher keeps small forms better but adds poles."></label>
       <label class="check"><input type="checkbox" id="quadSharp"><span>Keep sharp edges<small>Edges sharper than 45° that run a few quads long become edge loops, so rims and corners stay crisp</small></span></label>
       <label class="check"><input type="checkbox" id="prune2"><span>Remove tiny floating parts<small>Otherwise every separate piece keeps at least a few quads</small></span></label>
     </details>
