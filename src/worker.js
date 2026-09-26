@@ -23,6 +23,12 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ type: 'visibility', id: data.id, vis, curve, stats }, [vis.buffer, curve.buffer]);
       return;
     }
+    // A result's visibility, for the bake: few rays are enough to tell surfaces in plain view from ones out of sight.
+    if (data.type === 'resultVisibility') {
+      const { vis } = computeVisibility(data.mesh, { rays: data.rays });
+      self.postMessage({ type: 'resultVisibility', id: data.id, vis }, [vis.buffer]);
+      return;
+    }
     if (data.type === 'unwrap') {
       const out = unwrapResult(data.mesh, data.plane, data.labels, data.size), r = out.result;
       const transfer = [r.positions.buffer, r.normals.buffer, r.index.buffer, r.vPart.buffer, r.vMat.buffer, r.srcId.buffer, r.uvs.buffer];

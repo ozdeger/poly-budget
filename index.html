@@ -6193,6 +6193,12 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ type: 'visibility', id: data.id, vis, curve, stats }, [vis.buffer, curve.buffer]);
       return;
     }
+    // A result's visibility, for the bake: few rays are enough to tell surfaces in plain view from ones out of sight.
+    if (data.type === 'resultVisibility') {
+      const { vis } = computeVisibility(data.mesh, { rays: data.rays });
+      self.postMessage({ type: 'resultVisibility', id: data.id, vis }, [vis.buffer]);
+      return;
+    }
     if (data.type === 'unwrap') {
       const out = unwrapResult(data.mesh, data.plane, data.labels, data.size), r = out.result;
       const transfer = [r.positions.buffer, r.normals.buffer, r.index.buffer, r.vPart.buffer, r.vMat.buffer, r.srcId.buffer, r.uvs.buffer];
@@ -11854,6 +11860,7 @@ const texEngine = {
   },
   async runLocal(msg) {
     await nextFrame();
+    if (msg.type === 'resultVisibility') return computeVisibility(msg.mesh, { rays: msg.rays });
     return unwrapResult(msg.mesh, msg.plane, msg.labels, msg.size);
   },
 };
@@ -11909,6 +11916,9 @@ const visEngine = {
 
 // Models up to this many triangles wait for their hidden areas before the first reduction.
 const QUICK_VISIBILITY = 300000;
+// Hidden areas need the visibility pass, and so does a model with UVs, whose bake reads it to keep surfaces nobody sees
+// out of the texture.
+const wantsVisibility = () => settings.hidden || !!(state.welded && state.welded.uvs);
 // Starts the visibility pass for tab d unless it has one or is running it; the result updates the tab when it lands.
 async function startVisibility(d = doc) {
   const s = d.state;
@@ -11928,8 +11938,26 @@ async function startVisibility(d = doc) {
   if (s.visJob !== job) return;
   s.visJob = null;
   if (out && s.welded === w) { s.vis = out.vis; s.visCurve = out.curve || null; s.visStats = out.stats; }
-  if (d !== doc) { if (s.vis) d.dirty = true; return; }
-  if (s.vis) { applyHidden(); saveSessionSoon(); } else { updateHiddenUI(); scheduleReduce(0); }
+  // Only Hidden areas change the reduction; a pass the bake started just waits in the tab.
+  const hidden = d === doc ? settings.hidden : d.settings.hidden;
+  if (d !== doc) { if (s.vis && hidden) d.dirty = true; return; }
+  if (s.vis) { if (hidden) applyHidden(); else updateHiddenUI(); saveSessionSoon(); } else { updateHiddenUI(); if (hidden) scheduleReduce(0); }
+}
+// The original's visibility for a bake, waiting for the pass while it runs; null when there is none.
+async function bakeVisibility(d = doc) {
+  const s = d.state;
+  if (!s.vis && !s.visJob) startVisibility(d);
+  if (s.visJob) await s.visJob.catch(() => {});
+  return s.vis;
+}
+// How visible each vertex of a result is, for the bake: a quick pass, kept with the result.
+const RESULT_VIS_RAYS = 300000;
+async function resultVisibility(res) {
+  if (!res.vis) {
+    const mesh = { positions: res.positions, index: res.index, vertexCount: res.vertexCount };
+    res.vis = (await texEngine.run({ type: 'resultVisibility', mesh, rays: RESULT_VIS_RAYS })).vis;
+  }
+  return res.vis;
 }
 // The hidden-area levels for the active tab's settings, or none.
 function updateAuto() {
@@ -12394,7 +12422,7 @@ async function rebuildWeld(resetLabels) {
   if (state.meta.sample && resetLabels) paintSample();
   await engine.load(doc.id, state.engineMesh);
   setStatus('');
-  if (settings.hidden && !state.vis) startVisibility();
+  if (wantsVisibility() && !state.vis) startVisibility();
   if (symActive()) refreshMirrorView();
   updateModelPanel();
   updateLegend();
@@ -12404,7 +12432,7 @@ async function rebuildWeld(resetLabels) {
   updateUVPanel();
   // A smaller model's hidden areas take a second or so, so its first reduction waits for them instead of running
   // twice; the pass schedules it when it lands.
-  if (!(state.visJob && welded.triCount <= QUICK_VISIBILITY)) scheduleReduce(0);
+  if (!(settings.hidden && state.visJob && welded.triCount <= QUICK_VISIBILITY)) scheduleReduce(0);
 }
 
 function transferLabels(old, oldLabels, welded) {
@@ -12595,7 +12623,8 @@ function updateTexturePanel() {
 // ---------- texture bake for new UVs ----------
 // The reduced mesh is drawn in its new UV layout. Every texel finds the original surface under it (a ray cast inward
 // from a thin cage along the normal, else the closest point that faces the same way), reads the original UV there and
-// samples the original texture, so the texture fits the new UVs.
+// samples the original texture, so the texture fits the new UVs. Where the result shows a surface the original hides,
+// the visible surface covering it is used instead.
 const BAKE_GLSL = /* glsl */`
 precision highp isampler2D;
 precision highp usampler2D;
@@ -12610,21 +12639,26 @@ varying vec3 vPos;
 varying vec3 vNrm;
 varying vec4 vTan;
 varying vec3 vRay;
+varying float vVis;
 `;
 // bakeTangent: the result's MikkTSpace tangent at each triangle corner (xyz, and the bitangent's sign in w). bakeRay:
 // the direction rays look for the original along, the normals at one position averaged, so hard edges don't split it.
+// bakeVis: how visible the result is there (0 when unknown).
 const UV_SPACE_VS = /* glsl */`
 attribute vec4 bakeTangent;
 attribute vec3 bakeRay;
+attribute float bakeVis;
 varying vec3 vPos;
 varying vec3 vNrm;
 varying vec4 vTan;
 varying vec3 vRay;
+varying float vVis;
 void main() {
   vPos = position;
   vNrm = normal;
   vTan = bakeTangent;
   vRay = bakeRay;
+  vVis = bakeVis;
   gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }`;
 const QUAD_VS = /* glsl */'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }';
@@ -12634,6 +12668,12 @@ const QUAD_VS = /* glsl */'void main() { gl_Position = vec4(position.xy, 0.0, 1.
 const CORR_FS = /* glsl */`${BAKE_GLSL}
 uniform float maxDist;
 uniform float cage;
+uniform sampler2D srcVis;
+
+// How visible the original is at a point of triangle f.
+float seen(uvec4 f, vec3 b) {
+  return b.x * texelFetch1D(srcVis, f.x).x + b.y * texelFetch1D(srcVis, f.y).x + b.z * texelFetch1D(srcVis, f.z).x;
+}
 
 // Closest point among triangles that face within ~105 degrees of n, so thin shells and nearby strands don't swap sides.
 float closestFacing(vec3 p, vec3 n, float maxD, inout uvec4 faceIndices, inout vec3 barycoord) {
@@ -12696,6 +12736,19 @@ void main() {
     vec3 op = vec3(0.0);
     d = bvhClosestPointToPoint(bvh, vPos, maxDist * 4.0, fi, hn, bc, side, op);
     if (d >= maxDist * 4.0) { gl_FragColor = vec4(0.0); return; }
+  }
+  // Where the result shows what the original hides (the match is seen far less than this spot), as where it cuts into a
+  // thick shell or opens a narrow pleat, the surface covering the spot in the original, looked for from further out
+  // along the ray, takes over when it is seen about as well: the texture shows what the original shows from outside
+  // instead of an inside nobody painted.
+  if (vVis > 0.0 && seen(fi, bc) < 0.25 * vVis) {
+    for (int k = 1; k <= 2; k++) {
+      float reach = min(maxDist, 2.0 * float(k) * cage);
+      uvec4 fc = uvec4(0u);
+      vec3 bcc = vec3(0.0), nc = vec3(0.0);
+      float sc = 0.0, dc = 0.0;
+      if (bvhIntersectFirstHit(bvh, vPos + n * reach, -n, fc, nc, bcc, sc, dc) && sc > 0.0 && dc < reach && seen(fc, bcc) >= 0.5 * vVis) { fi = fc; bc = bcc; break; }
+    }
   }
   vec3 a = texelFetch1D(bvh.position, fi.x).xyz, b = texelFetch1D(bvh.position, fi.y).xyz, c = texelFetch1D(bvh.position, fi.z).xyz;
   vec2 ta = texelFetch1D(srcUV, fi.x).xy, tb = texelFetch1D(srcUV, fi.y).xy, tc = texelFetch1D(srcUV, fi.z).xy;
@@ -12919,7 +12972,7 @@ void main() {
 }`;
 
 const bakeMaterial = (vertexShader, fragmentShader, uniforms) => new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
-const corrMat = bakeMaterial(UV_SPACE_VS, CORR_FS, { bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, maxDist: { value: 1 }, cage: { value: 0.01 } });
+const corrMat = bakeMaterial(UV_SPACE_VS, CORR_FS, { bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, srcVis: { value: null }, maxDist: { value: 1 }, cage: { value: 0.01 } });
 const mapMat = bakeMaterial(UV_SPACE_VS, MAP_FS, {
   bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, corr: { value: null }, srcMap: { value: null },
   srcMatrix: { value: new THREE.Matrix3() }, srcSize: { value: new THREE.Vector2() }, normalScale: { value: new THREE.Vector2(1, 1) }, mode: { value: 0 },
@@ -12939,7 +12992,7 @@ const fillMat = bakeMaterial(QUAD_VS, FILL_FS, { corr: { value: null }, seeds: {
 const quadGeo = new THREE.BufferGeometry();
 quadGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
 const bakeScene = new THREE.Scene(), bakeCam = new THREE.Camera();
-const bake = { size: 0, corr: null, seedA: null, seedB: null, scratch: null, out: null, sources: new Map(), uv: null, normal: null };
+const bake = { size: 0, corr: null, seedA: null, seedB: null, scratch: null, out: null, sources: new Map(), uv: null, normal: null, vis: null, visFrom: null };
 
 function bakeTarget(size, type) {
   return new THREE.WebGLRenderTarget(size, size, { type, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: false });
@@ -12958,7 +13011,18 @@ function resetBakeSources() {
   for (const s of bake.sources.values()) { s.struct.dispose(); if (s.geometry) s.geometry.dispose(); }
   bake.sources.clear();
   if (bake.uv) { bake.uv.dispose(); bake.normal.dispose(); }
-  bake.uv = bake.normal = null;
+  if (bake.vis) bake.vis.dispose();
+  bake.uv = bake.normal = bake.vis = bake.visFrom = null;
+}
+// The original's visibility for the shader, remade when a visibility pass lands (zeros until then: the result's
+// visibility is left out too, which turns the rule that reads it off).
+function bakeVisTexture() {
+  if (bake.vis && bake.visFrom === state.vis) return bake.vis;
+  if (bake.vis) bake.vis.dispose();
+  bake.vis = new FloatVertexAttributeTexture();
+  bake.vis.updateFrom(new THREE.BufferAttribute(state.vis || new Float32Array(1), 1));
+  bake.visFrom = state.vis;
+  return bake.vis;
 }
 // The original surface of one material, packed for the shader (one BVH over everything when there is one material).
 function bakeSource(mi) {
@@ -13018,16 +13082,18 @@ function prewarmBakeSources() {
   if (!state.welded || !state.welded.uvs || !state.orig.bvh) return;
   for (const { mi } of bakeJobs()) bakeSource(mi);
 }
-// The result's triangles tris, unshared, with the tangent of each corner when the result has them and the ray direction.
-function bakeGeometry(res, tris, rays) {
+// The result's triangles tris, unshared, with the tangent of each corner when the result has them, the ray direction and
+// the result's visibility (vis, when there is one).
+function bakeGeometry(res, tris, rays, vis) {
   const n = tris.length * 3, P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = new Float32Array(n * 2), TG = new Float32Array(n * 4), R = new Float32Array(n * 3);
-  const idx = res.index, tan = res.tangents;
+  const VI = new Float32Array(n), idx = res.index, tan = res.tangents;
   for (let i = 0; i < tris.length; i++) {
     for (let k = 0; k < 3; k++) {
       const c = tris[i] * 3 + k, v = idx[c], o = i * 3 + k;
       for (let j = 0; j < 3; j++) { P[o * 3 + j] = res.positions[v * 3 + j]; N[o * 3 + j] = res.normals[v * 3 + j]; R[o * 3 + j] = rays[v * 3 + j]; }
       UV[o * 2] = res.uvs[v * 2]; UV[o * 2 + 1] = res.uvs[v * 2 + 1];
       if (tan) for (let j = 0; j < 4; j++) TG[o * 4 + j] = tan[c * 4 + j];
+      if (vis) VI[o] = vis[v];
     }
   }
   const geo = new THREE.BufferGeometry();
@@ -13036,6 +13102,7 @@ function bakeGeometry(res, tris, rays) {
   geo.setAttribute('uv', new THREE.BufferAttribute(UV, 2));
   geo.setAttribute('bakeTangent', new THREE.BufferAttribute(TG, 4));
   geo.setAttribute('bakeRay', new THREE.BufferAttribute(R, 3));
+  geo.setAttribute('bakeVis', new THREE.BufferAttribute(VI, 1));
   return geo;
 }
 // How far rays look for the original: past nearly all of how far this result strays from it (the 98th percentile of
@@ -13142,11 +13209,12 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
   const triEnd = info && info.symmetry ? res.triCount / 2 : res.triCount;
   const nMat = state.displayMats.length, idx = res.index;
   const out = { size, maps: [] }, rays = positionNormals(res), cage = bakeCage(res);
+  const srcVis = bakeVisTexture(), vis = state.vis && res.vis && res.vis.length === res.vertexCount ? res.vis : null;
   for (const job of jobs) {
     const tris = [];
     for (let t = 0; t < triEnd; t++) if (Math.min(res.vMat[idx[t * 3]], nMat - 1) === job.mi) tris.push(t);
     if (!tris.length) continue;
-    const geo = bakeGeometry(res, tris, rays);
+    const geo = bakeGeometry(res, tris, rays, vis);
     const mesh = new THREE.Mesh(geo, corrMat);
     try {
       const src = bakeSource(job.mi);
@@ -13155,6 +13223,7 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
         m.uniforms.srcUV.value = bake.uv;
         m.uniforms.srcNormal.value = bake.normal;
       }
+      corrMat.uniforms.srcVis.value = srcVis;
       corrMat.uniforms.maxDist.value = 0.08 * state.size;
       corrMat.uniforms.cage.value = cage;
       for (let y = 0; y < size; y += rows) {
@@ -13252,6 +13321,8 @@ function startTextureJob(rebakeOnly = false) {
   const job = (async () => {
     let res = state.result, info = state.info;
     const kept = res.uvLayout === 'original';
+    // The bake reads which surfaces of the original are seen; a pass still missing runs alongside the unwrap.
+    const bakes = !!(state.welded.uvs && bakeJobs(kept).length), sourceVis = bakes ? bakeVisibility() : null;
     if (!kept && !(rebakeOnly && res && res.uvLayout === 'new')) {
       const unwrapped = texEngine.run({ type: 'unwrap', mesh: geo.result, plane: geo.plane, labels: geo.labels, size: settings.bakeSize });
       prewarmBakeSources();
@@ -13263,6 +13334,12 @@ function startTextureJob(rebakeOnly = false) {
     // MikkTSpace tangents, which engines work out the same way on import, for the normal map bake and the view.
     if (res.uvs && !res.tangents) {
       try { res.tangents = cornerTangents(await loadTangents(), res); } catch (err) { console.error(err); tangentsLib = null; }
+      if (!current()) return;
+    }
+    // And which of the result, so the bake can tell where the result shows an inside the original hides.
+    if (bakes && res.uvs && await sourceVis) {
+      if (!current()) return;
+      try { await resultVisibility(res); } catch (err) { if (err.message === 'cancelled') throw err; console.error(err); }
       if (!current()) return;
     }
     const baked = await bakeResultAsync(res, info, current, kept);
@@ -15209,7 +15286,7 @@ function attachDoc() {
   $('resErr').textContent = '…';
   if (state.result) setTimeout(() => measureDeviation(state.result), 30);
   if (state.geo && state.result && (state.result.uvLayout === 'pending' || (state.result.uvLayout === 'original' && !state.bake))) startTextureJob();
-  if (settings.hidden && !state.vis) startVisibility();
+  if (wantsVisibility() && !state.vis) startVisibility();
   if (doc.dirty || !state.result) { doc.dirty = false; scheduleReduce(0); }
   requestRender();
 }
