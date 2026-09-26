@@ -2291,8 +2291,17 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
   const d2 = (a, b) => (P[a * 3] - P[b * 3]) ** 2 + (P[a * 3 + 1] - P[b * 3 + 1]) ** 2 + (P[a * 3 + 2] - P[b * 3 + 2]) ** 2;
   const off32 = plane ? Math.fround(plane.offset) : 0;
   const onPlane = v => plane && P[v * 3 + plane.axis] === off32;
-  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane.
+  // Edges of the faces, for diagonals that already exist.
+  const edges = new Set(), ek = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  for (let f = 0; f < F; f++) {
+    const n = faces[f * 4 + 3] === QUAD_NONE ? 3 : 4;
+    for (let k = 0; k < n; k++) edges.add(ek(faces[f * 4 + k], faces[f * 4 + (k + 1) % n]));
+  }
+  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane. A diagonal
+  // that is already an edge of other faces is never taken: that edge would join three or four triangles.
   const alongAC = (a, b, c, d) => {
+    const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
+    if (acTaken !== bdTaken) return bdTaken;
     const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
     const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
     if (acFlat !== bdFlat) return bdFlat;
@@ -2306,8 +2315,9 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     if (culled && culled(a) && culled(b) && culled(c) && (d === QUAD_NONE || culled(d))) continue;
     const m = t >= 0 ? triMat[t] : base.vMat[near[a]];
     if (d === QUAD_NONE) { tris.push(vid(a, m), vid(b, m), vid(c, m)); marks.push(0); continue; }
-    if (alongAC(a, b, c, d)) tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m));
-    else tris.push(vid(b, m), vid(c, m), vid(d, m), vid(b, m), vid(d, m), vid(a, m));
+    // The chosen diagonal is an edge from now on, for the quads after this one.
+    if (alongAC(a, b, c, d)) { tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m)); edges.add(ek(a, c)); }
+    else { tris.push(vid(b, m), vid(c, m), vid(d, m), vid(b, m), vid(d, m), vid(a, m)); edges.add(ek(b, d)); }
     marks.push(1, 2);
     quads++;
   }

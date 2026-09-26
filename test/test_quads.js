@@ -197,6 +197,29 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
     `long quads: on a thin ring ${long.aspect.toFixed(1)}:1 quads with ${long.around.toFixed(1)} around the tube (even squares: ${even.aspect.toFixed(1)}:1, ${even.around.toFixed(1)} around), face middles ${long.mean.toFixed(4)} off the surface on average (${even.mean.toFixed(4)})`);
 }
 
+// Fewer poles: a torus with quads following its shape needs no poles at all, but steps that follow curvature alone
+// can't close the grid around it, and it answers with pole pairs; steps fitted to what the direction field allows
+// leave far fewer. Averaged over three budgets, since single remeshes vary.
+{
+  const wt = core.smartWeld(sceneOf(new THREE.TorusGeometry(1, 0.38, 64, 160)), { keepUV: false, hardAngle: 180 });
+  const share = rq => {
+    const nv = rq.positions.length / 3, deg = new Int32Array(nv), seen = new Set();
+    for (let f = 0; f < rq.faceCount; f++) {
+      const p = [...rq.faces.subarray(f * 4, f * 4 + 4)].filter(v => v !== QUAD_NONE);
+      for (let k = 0; k < p.length; k++) {
+        const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a;
+        if (!seen.has(key)) { seen.add(key); deg[a]++; deg[b]++; }
+      }
+    }
+    let used = 0, irregular = 0;
+    for (let v = 0; v < nv; v++) if (deg[v]) { used++; if (deg[v] !== 4) irregular++; }
+    return irregular / used;
+  };
+  const mean = fit => [1300, 1500, 1700].reduce((s, t) => s + share(remeshQuads({ positions: wt.positions, index: wt.index }, { targetFaces: t, adapt: 1, fit })), 0) / 3;
+  const fitted = mean(true), asked = mean(false);
+  check(fitted < 0.7 * asked, `fewer poles: ${(100 * fitted).toFixed(1)}% of the torus's vertices are poles with fitted steps, ${(100 * asked).toFixed(1)}% without`);
+}
+
 // The budget: after one remesh of a surface the next lands within 5% on its first try, and asking for a budget again
 // gives the same faces whatever was asked in between.
 {

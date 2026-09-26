@@ -1049,11 +1049,14 @@ const { remeshQuads, QUAD_NONE, formDensity } = (() => {
 // across the direction that bends most and long along the one that bends least, and the direction field is pulled
 // toward that long direction where the faces stretch (see formSizes).
 //
+// Before the grid is laid, its steps are fitted to what the direction field lets a grid tile without poles (fitSteps):
+// steps that change across the edges faster than the edges bend make the grid start extra rows, each a pole pair.
+//
 // Instant Meshes leaves a few triangles and pentagons among the quads and offers all quads only by splitting every
-// face in four. Here each leftover odd face is instead paired with its nearest odd neighbour, and the strip of faces
-// between them is split in two lengthwise, which turns every face into quads while the density barely changes. Edge
-// rotations and diagonal collapses then lower the pole count, long sharp edges are kept as edge loops, and the
-// vertices are relaxed along the original surface.
+// face in four. Here odd faces side by side are merged and cut into quads again, and each other leftover odd face is
+// paired with its nearest odd neighbour, the strip of faces between them split in two lengthwise, which turns every
+// face into quads while the density barely changes. Edge rotations and diagonal collapses then lower the pole count,
+// long sharp edges are kept as edge loops, and the vertices are relaxed along the original surface.
 
 const NONE = 0xffffffff;
 
@@ -1931,10 +1934,105 @@ function extractFaces(G) {
 
 // ---------- all quads ----------
 
+// Odd faces side by side (a triangle beside a pentagon is how a misplaced grid step shows), or with one quad between
+// them, are merged into one even polygon and cut into quads again, with the cut that leaves the fewest poles (sum of
+// (valence - 4)²) among cuts whose corners stay under 160°. Nothing is added, unlike pairing them through a split
+// strip; a merge is taken unless it raises that sum by more than 2, about what a strip costs. Returns the faces.
+function mergeOddPairs(faces, P, nv) {
+  const F = faces.length, alive = new Uint8Array(F).fill(1), key = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  const edgeFaces = new Map(), deg = new Int32Array(nv), border = new Uint8Array(nv);
+  faces.forEach((p, f) => {
+    for (let k = 0; k < p.length; k++) { const e = key(p[k], p[(k + 1) % p.length]), l = edgeFaces.get(e); if (l) l.push(f); else edgeFaces.set(e, [f]); }
+  });
+  for (const [e, l] of edgeFaces) { const a = Math.floor(e / nv), b = e - a * nv; deg[a]++; deg[b]++; if (l.length !== 2) border[a] = border[b] = 1; }
+  const across = f => {
+    const out = [], p = faces[f];
+    for (let k = 0; k < p.length; k++) { const l = edgeFaces.get(key(p[k], p[(k + 1) % p.length])); if (l && l.length === 2) out.push(l[0] === f ? l[1] : l[0]); }
+    return out;
+  };
+  // The outline of a set of faces with their shared edges removed, if it is one simple loop; and those shared edges.
+  const outline = set => {
+    const half = new Set(), inner = [];
+    for (const f of set) { const p = faces[f]; for (let k = 0; k < p.length; k++) half.add(p[k] * nv + p[(k + 1) % p.length]); }
+    const next = new Map();
+    for (const h of half) {
+      const a = Math.floor(h / nv), b = h - a * nv;
+      if (half.has(b * nv + a)) { if (a < b) inner.push([a, b]); continue; }
+      if (next.has(a)) return null;
+      next.set(a, b);
+    }
+    if (!next.size) return null;
+    const first = next.keys().next().value, loop = [first];
+    for (let v = next.get(first); v !== first; v = next.get(v)) { if (v === undefined || loop.length > next.size) return null; loop.push(v); }
+    return loop.length === next.size ? { loop, inner } : null;
+  };
+  // Every way to cut an even polygon into quads by diagonals.
+  const cuts = poly => {
+    if (poly.length === 4) return [[poly]];
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
+      const rest = poly.filter((_, k) => k !== (i + 1) % poly.length && k !== (i + 2) % poly.length);
+      for (const r of cuts(rest)) out.push([q, ...r]);
+    }
+    return out;
+  };
+  const energy = (v, d) => (border[v] ? 0 : (d - 4) * (d - 4));
+  const sets = [];
+  for (let f = 0; f < F; f++) {
+    if (!(faces[f].length & 1)) continue;
+    for (const g of across(f)) {
+      if (g > f && faces[g].length & 1) sets.push([f, g]);
+      if (faces[g].length === 4) for (const h of across(g)) if (h > f && faces[h].length & 1) sets.push([f, g, h]);
+    }
+  }
+  // Neighbours before pairs with a quad between.
+  sets.sort((x, y) => x.length - y.length);
+  const out = [];
+  for (const set of sets) {
+    if (set.some(f => !alive[f]) || new Set(set).size !== set.length) continue;
+    const o = outline(set);
+    if (!o || o.loop.length & 1 || o.loop.length > 10 || new Set(o.loop).size !== o.loop.length) continue;
+    const onLoop = new Set(o.loop.map((v, k) => key(v, o.loop[(k + 1) % o.loop.length])));
+    let best = null;
+    for (const quads of cuts(o.loop)) {
+      if (!quads.every(q => [0, 1, 2, 3].every(k => cornerAngle(P, q, k) <= 160))) continue;
+      const change = new Map(), add = (v, d) => change.set(v, (change.get(v) || 0) + d);
+      for (const [a, b] of o.inner) { add(a, -1); add(b, -1); }
+      let clash = false;
+      for (const q of quads) {
+        for (let k = 0; k < 4; k++) {
+          const a = q[k], b = q[(k + 1) % 4], e = key(a, b);
+          if (onLoop.has(e)) continue;
+          // A diagonal that is already an edge elsewhere would join three faces.
+          if (edgeFaces.has(e) && !o.inner.some(([x, y]) => key(x, y) === e)) { clash = true; break; }
+          if (a < b) { add(a, 1); add(b, 1); }
+        }
+        if (clash) break;
+      }
+      if (clash) continue;
+      let dE = 0;
+      for (const [v, d] of change) dE += energy(v, deg[v] + d) - energy(v, deg[v]);
+      const shape = quads.reduce((sum, q) => sum + quadScore(P, q), 0);
+      if (!best || dE < best.dE || (dE === best.dE && shape < best.shape)) best = { dE, shape, quads, change };
+    }
+    if (!best || best.dE > 2) continue;
+    for (const f of set) alive[f] = 0;
+    for (const [v, d] of best.change) deg[v] += d;
+    // The shared edges are gone and the diagonals now exist, so a later merge can't add one of them again.
+    for (const [a, b] of o.inner) edgeFaces.delete(key(a, b));
+    for (const q of best.quads) for (let k = 0; k < 4; k++) { const e = key(q[k], q[(k + 1) % 4]); if (!onLoop.has(e)) edgeFaces.set(e, [-1, -1]); }
+    out.push(...best.quads);
+  }
+  for (let f = 0; f < F; f++) if (alive[f]) out.push(faces[f]);
+  return out;
+}
+
 // Pairs each odd face (triangle, pentagon) with the nearest other odd face or an open border, and splits every edge
 // that the paths between them cross an odd number of times; afterwards every face has an even number of sides and is
 // cut into quads. Returns the new faces; P grows by the edge midpoints.
 function evenFaces(faces, P, nv) {
+  faces = mergeOddPairs(faces, P, nv);
   const F = faces.length;
   const half = new Map(); // directed edge a*nv+b -> face
   for (let f = 0; f < F; f++) {
@@ -2480,7 +2578,7 @@ function normalsAndAreas(P, index) {
 // step, and edges still longer than 0.7 of a step along their direction split so the grid can't step over a vertex;
 // then its normals (smoothed a little, keeping sharp edges), metric (Msrc, per source vertex), the open borders as
 // constraints, and the hierarchy. scale: the grid scale the metric is read with.
-function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale) {
+function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens) {
   let weighted = 0;
   for (let v = 0; v < V0; v++) { const s = sizeAt(v); weighted += srcA[v] / (s * s); }
   const expected = cellFactor * cellFactor * weighted;
@@ -2506,6 +2604,13 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   L0.N.set(wN.subarray(0, nC * 3));
   L0.S.set(sub.size);
   L0.M = sub.metric;
+  // The painted density at each working vertex (log), which the step fit leaves as asked; a split vertex takes the
+  // mean of its two parents'.
+  if (dens) {
+    L0.logD = new Float64Array(n);
+    for (let k = 0; k < nC; k++) L0.logD[k] = Math.log(dens[wRep[k]] || 1);
+    for (let v = nC; v < n; v++) L0.logD[v] = (L0.logD[sub.parentA[v]] + L0.logD[sub.parentB[v]]) / 2;
+  }
   for (let k = 0; k < nC; k++) L0.A[k] = wA[k];
   for (let v = nC; v < n; v++) {
     const a = sub.parentA[v], b = sub.parentB[v];
@@ -3033,6 +3138,221 @@ function levelAlignment(L, strength) {
   if (!any) { L.AQ = null; L.Aw = null; }
 }
 
+// ---------- steps the grid can follow ----------
+
+// A grid with steps s_u along the direction field e1 and s_v along e2 = n × e1 closes up (needs no poles besides the
+// field's own singularities) only where the forms e1/s_u and e2/s_v are closed. With the field's turning form ω
+// (∇_X e1 = ω(X) e2), Cartan's structure equations make that ∂_{e2} log s_u = -ω(e1) and ∂_{e1} log s_v = ω(e2): a step
+// may change freely along its own direction, but across it only as fast as the field's lines bend. Steps asked by the
+// shape rarely obey this, and the position field answers with a pole pair wherever they don't. Here log s_u and log s_v
+// are fitted per working vertex to obey it in least squares, held to the requested steps with weight 1 / (FIT_K·h)².
+// Growing a step costs FIT_GROW times more than shrinking it, and steps stay between FIT_FLOOR times the vertex's
+// longest link (the working surface can't resolve smaller ones) and FIT_CEIL times the request (larger ones lose
+// detail). ω comes from how the direction turns across each working triangle, averaged over the triangles around it,
+// since per triangle it is noisy. Painted density is left out of the fit (steps are fitted as if unpainted and the
+// paint applies on top): a deliberate change of density needs its poles however smooth it is made, so smoothing it
+// would only blur the paint. Returns per level the log offsets to add to the requested steps along q (dA) and across
+// it (dB), and the factor the fit changes the face count by; null without usable triangles.
+const FIT_K = 8, FIT_GROW = 25, FIT_FLOOR = 1.25, FIT_CEIL = 1.1, FIT_ROUNDS = 2, FIT_ITERATIONS = 40;
+function fitSteps(levels, WI) {
+  const L = levels[0], { n, N, Q, V, A, SU, SV, start, id } = L;
+  const T = WI.length / 3, rep = [new Float64Array(3), new Float64Array(3), new Float64Array(3)];
+  // Per triangle two residuals, each over three unknowns of x = [log s_u..., log s_v...]:
+  // ∂_{e2} a + ω(e1) and ∂_{e1} b - ω(e2), with a corner's a and b swapped when its direction is a quarter turn off.
+  const ia = new Int32Array(T * 3), ca = new Float64Array(T * 3), ib = new Int32Array(T * 3), cb = new Float64Array(T * 3);
+  const wf = new Float64Array(T), OM = new Float64Array(T * 3), E1 = new Float64Array(T * 3), E2 = new Float64Array(T * 3), NF = new Float64Array(T * 3);
+  // Turn from i's direction to j's representative (i's rep 0 ~ j's rep r).
+  const turn = (i, j) => {
+    compatOrient(Q, i * 3, N, i * 3, Q, j * 3, N, j * 3);
+    const qx = Q[j * 3], qy = Q[j * 3 + 1], qz = Q[j * 3 + 2], nx = N[j * 3], ny = N[j * 3 + 1], nz = N[j * 3 + 2];
+    const rx = RA[1] ? ny * qz - nz * qy : qx, ry = RA[1] ? nz * qx - nx * qz : qy, rz = RA[1] ? nx * qy - ny * qx : qz;
+    return (((RA[1] + (rx * R[3] + ry * R[4] + rz * R[5] < 0 ? 2 : 0) - RA[0]) % 4) + 4) % 4;
+  };
+  let used = 0;
+  for (let f = 0; f < T; f++) {
+    const a = WI[f * 3], b = WI[f * 3 + 1], c = WI[f * 3 + 2];
+    const r01 = turn(a, b), r12 = turn(b, c);
+    if ((r01 + r12 + turn(c, a)) % 4) continue;
+    const vs = [a, b, c], k = [0, r01, (r01 + r12) % 4];
+    const ux = V[b * 3] - V[a * 3], uy = V[b * 3 + 1] - V[a * 3 + 1], uz = V[b * 3 + 2] - V[a * 3 + 2];
+    const vx = V[c * 3] - V[a * 3], vy = V[c * 3 + 1] - V[a * 3 + 1], vz = V[c * 3 + 2] - V[a * 3 + 2];
+    let gx = uy * vz - uz * vy, gy = uz * vx - ux * vz, gz = ux * vy - uy * vx;
+    const g2 = Math.hypot(gx, gy, gz);
+    if (!(g2 > 1e-30)) continue;
+    gx /= g2; gy /= g2; gz /= g2;
+    // The side the field's normals are on.
+    const side = gx * (N[a * 3] + N[b * 3] + N[c * 3]) + gy * (N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1]) + gz * (N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2]) < 0 ? -1 : 1;
+    const fx = gx * side, fy = gy * side, fz = gz * side;
+    // Corner directions (matching representatives) laid into the triangle; e1 their mean, e2 = n × e1.
+    let ex = 0, ey = 0, ez = 0;
+    for (let m = 0; m < 3; m++) {
+      const v = vs[m], ql = Math.hypot(Q[v * 3], Q[v * 3 + 1], Q[v * 3 + 2]) || 1;
+      const qx = Q[v * 3] / ql, qy = Q[v * 3 + 1] / ql, qz = Q[v * 3 + 2] / ql, nx = N[v * 3], ny = N[v * 3 + 1], nz = N[v * 3 + 2];
+      const co = [1, 0, -1, 0][k[m]], sn = [0, 1, 0, -1][k[m]];
+      let x = qx * co + (ny * qz - nz * qy) * sn, y = qy * co + (nz * qx - nx * qz) * sn, z = qz * co + (nx * qy - ny * qx) * sn;
+      const d = x * fx + y * fy + z * fz;
+      x -= fx * d; y -= fy * d; z -= fz * d;
+      const l = Math.hypot(x, y, z) || 1;
+      rep[m][0] = x / l; rep[m][1] = y / l; rep[m][2] = z / l;
+      ex += rep[m][0]; ey += rep[m][1]; ez += rep[m][2];
+    }
+    const el = Math.hypot(ex, ey, ez);
+    if (!(el > 1e-9)) continue;
+    ex /= el; ey /= el; ez /= el;
+    const tx = fy * ez - fz * ey, ty = fz * ex - fx * ez, tz = fx * ey - fy * ex;
+    // Gradients of the corners' barycentric coordinates; ω = the gradient of the direction's angle from e1.
+    let wx = 0, wy = 0, wz = 0;
+    for (let m = 0; m < 3; m++) {
+      const p = vs[(m + 1) % 3], q = vs[(m + 2) % 3];
+      const dx = V[q * 3] - V[p * 3], dy = V[q * 3 + 1] - V[p * 3 + 1], dz = V[q * 3 + 2] - V[p * 3 + 2];
+      const hx = (gy * dz - gz * dy) / g2, hy = (gz * dx - gx * dz) / g2, hz = (gx * dy - gy * dx) / g2;
+      const phi = Math.atan2(rep[m][0] * tx + rep[m][1] * ty + rep[m][2] * tz, rep[m][0] * ex + rep[m][1] * ey + rep[m][2] * ez);
+      wx += phi * hx; wy += phi * hy; wz += phi * hz;
+      const odd = k[m] & 1, o = f * 3 + m, v = vs[m];
+      ia[o] = odd ? n + v : v; ca[o] = hx * tx + hy * ty + hz * tz;
+      ib[o] = odd ? v : n + v; cb[o] = hx * ex + hy * ey + hz * ez;
+    }
+    OM[f * 3] = wx; OM[f * 3 + 1] = wy; OM[f * 3 + 2] = wz;
+    E1[f * 3] = ex; E1[f * 3 + 1] = ey; E1[f * 3 + 2] = ez; E2[f * 3] = tx; E2[f * 3 + 1] = ty; E2[f * 3 + 2] = tz;
+    NF[f * 3] = fx; NF[f * 3 + 1] = fy; NF[f * 3 + 2] = fz;
+    wf[f] = g2 / 2;
+    used++;
+  }
+  if (!used) return null;
+  // ω averaged over the triangles around each triangle's corners, three rounds, kept in the triangle's plane.
+  const acc = new Float64Array(n * 3), accW = new Float64Array(n);
+  for (let round = 0; round < 3; round++) {
+    acc.fill(0); accW.fill(0);
+    for (let f = 0; f < T; f++) {
+      if (!wf[f]) continue;
+      for (let m = 0; m < 3; m++) {
+        const v = WI[f * 3 + m];
+        acc[v * 3] += OM[f * 3] * wf[f]; acc[v * 3 + 1] += OM[f * 3 + 1] * wf[f]; acc[v * 3 + 2] += OM[f * 3 + 2] * wf[f];
+        accW[v] += wf[f];
+      }
+    }
+    for (let f = 0; f < T; f++) {
+      if (!wf[f]) continue;
+      let x = 0, y = 0, z = 0, w = 0;
+      for (let m = 0; m < 3; m++) { const v = WI[f * 3 + m]; x += acc[v * 3]; y += acc[v * 3 + 1]; z += acc[v * 3 + 2]; w += accW[v]; }
+      x /= w; y /= w; z /= w;
+      const d = x * NF[f * 3] + y * NF[f * 3 + 1] + z * NF[f * 3 + 2];
+      OM[f * 3] = x - NF[f * 3] * d; OM[f * 3 + 1] = y - NF[f * 3 + 1] * d; OM[f * 3 + 2] = z - NF[f * 3 + 2] * d;
+    }
+  }
+  const ra = new Float64Array(T), rb = new Float64Array(T), logD = L.logD;
+  for (let f = 0; f < T; f++) {
+    if (!wf[f]) continue;
+    ra[f] = -(OM[f * 3] * E1[f * 3] + OM[f * 3 + 1] * E1[f * 3 + 1] + OM[f * 3 + 2] * E1[f * 3 + 2]);
+    rb[f] = OM[f * 3] * E2[f * 3] + OM[f * 3 + 1] * E2[f * 3 + 1] + OM[f * 3 + 2] * E2[f * 3 + 2];
+    // Unpainted log step = log step + log(density) / 2; its change across the triangle is what must match ω.
+    if (logD) for (let m = 0; m < 3; m++) { const o = f * 3 + m, h = logD[WI[o]] / 2; ra[f] -= ca[o] * h; rb[f] -= cb[o] * h; }
+  }
+  // Requested steps, data weights (from the unpainted steps too, so painted areas drift as far as bare ones and the
+  // paint's ratios hold), and the band's floor (log of FIT_FLOOR × the longest link).
+  const x0 = new Float64Array(2 * n), lam0 = new Float64Array(2 * n), floor = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    x0[i] = Math.log(SU[i]); x0[n + i] = Math.log(SV[i]);
+    lam0[i] = lam0[n + i] = A[i] / (FIT_K * FIT_K * SU[i] * SV[i] * (logD ? Math.exp(logD[i]) : 1));
+    let m = 0;
+    for (let l = start[i]; l < start[i + 1]; l++) { const j = id[l]; m = Math.max(m, Math.hypot(V[j * 3] - V[i * 3], V[j * 3 + 1] - V[i * 3 + 1], V[j * 3 + 2] - V[i * 3 + 2])); }
+    floor[i] = Math.log(Math.max(1e-30, FIT_FLOOR * m));
+  }
+  const lam = Float64Array.from(lam0), ceil = Math.log(FIT_CEIL);
+  const apply = (x, out) => {
+    for (let i = 0; i < 2 * n; i++) out[i] = lam[i] * x[i];
+    for (let f = 0; f < T; f++) {
+      if (!wf[f]) continue;
+      const o = f * 3;
+      const da = (ca[o] * x[ia[o]] + ca[o + 1] * x[ia[o + 1]] + ca[o + 2] * x[ia[o + 2]]) * wf[f];
+      const db = (cb[o] * x[ib[o]] + cb[o + 1] * x[ib[o + 1]] + cb[o + 2] * x[ib[o + 2]]) * wf[f];
+      for (let m = 0; m < 3; m++) { out[ia[o + m]] += ca[o + m] * da; out[ib[o + m]] += cb[o + m] * db; }
+    }
+  };
+  const x = Float64Array.from(x0), rhs = new Float64Array(2 * n), dg = new Float64Array(2 * n);
+  const r = new Float64Array(2 * n), z = new Float64Array(2 * n), p = new Float64Array(2 * n), Ap = new Float64Array(2 * n);
+  for (let round = 0; round < FIT_ROUNDS; round++) {
+    // After the first round, growth and leaving the band cost more (a sharp rise past the band's edges).
+    if (round > 0) {
+      for (let u = 0; u < 2 * n; u++) {
+        const dev = x[u] - x0[u], lo = floor[u % n] - x0[u];
+        let l = dev > 0 ? lam0[u] * FIT_GROW : lam0[u];
+        if (dev < lo) l *= 1 + 200 * ((dev - lo) / 0.1) ** 2;
+        else if (dev > ceil) l *= 1 + 200 * ((dev - ceil) / 0.1) ** 2;
+        lam[u] = Math.max(lam[u], l);
+      }
+    }
+    for (let u = 0; u < 2 * n; u++) { rhs[u] = lam[u] * x0[u]; dg[u] = lam[u]; }
+    for (let f = 0; f < T; f++) {
+      if (!wf[f]) continue;
+      for (let m = 0; m < 3; m++) {
+        const o = f * 3 + m;
+        rhs[ia[o]] += wf[f] * ca[o] * ra[f]; rhs[ib[o]] += wf[f] * cb[o] * rb[f];
+        dg[ia[o]] += wf[f] * ca[o] * ca[o]; dg[ib[o]] += wf[f] * cb[o] * cb[o];
+      }
+    }
+    // Jacobi-preconditioned conjugate gradients from the current answer.
+    apply(x, Ap);
+    let rz = 0;
+    for (let u = 0; u < 2 * n; u++) { r[u] = rhs[u] - Ap[u]; z[u] = r[u] / dg[u]; p[u] = z[u]; rz += r[u] * z[u]; }
+    for (let it = 0; it < FIT_ITERATIONS && rz > 0; it++) {
+      apply(p, Ap);
+      let pAp = 0;
+      for (let u = 0; u < 2 * n; u++) pAp += p[u] * Ap[u];
+      if (!(pAp > 0)) break;
+      const alpha = rz / pAp;
+      let rz2 = 0;
+      for (let u = 0; u < 2 * n; u++) { x[u] += alpha * p[u]; r[u] -= alpha * Ap[u]; z[u] = r[u] / dg[u]; rz2 += r[u] * z[u]; }
+      const beta = rz2 / rz;
+      rz = rz2;
+      for (let u = 0; u < 2 * n; u++) p[u] = z[u] + beta * p[u];
+    }
+  }
+  const offsets = [{ dA: new Float64Array(n), dB: new Float64Array(n) }];
+  for (let i = 0; i < n; i++) { offsets[0].dA[i] = x[i] - x0[i]; offsets[0].dB[i] = x[n + i] - x0[n + i]; }
+  // Each painted level (and each small piece's boost) keeps its share of the faces: where the fit shrank steps within
+  // one, that level's steps all grow back a little, instead of the whole surface's. Coarser areas get more of the fit,
+  // so without this a painted area would lose faces to the bare ones around it.
+  if (logD) {
+    const groups = new Map();
+    for (let i = 0; i < n; i++) {
+      const g = Math.round(logD[i] * 1e4), share = A[i] / (SU[i] * SV[i]), acc = groups.get(g) || [0, 0];
+      acc[0] += share; acc[1] += share * Math.exp(-offsets[0].dA[i] - offsets[0].dB[i]);
+      groups.set(g, acc);
+    }
+    for (let i = 0; i < n; i++) {
+      const acc = groups.get(Math.round(logD[i] * 1e4)), d = 0.5 * Math.log(acc[1] / acc[0]);
+      offsets[0].dA[i] += d; offsets[0].dB[i] += d;
+    }
+  }
+  let before = 0, after = 0;
+  for (let i = 0; i < n; i++) { const share = A[i] / (SU[i] * SV[i]); before += share; after += share * Math.exp(-offsets[0].dA[i] - offsets[0].dB[i]); }
+  // Coarser levels: their children's offsets, area-weighted, swapped where a child's direction is a quarter turn off.
+  for (let l = 1; l < levels.length; l++) {
+    const C = levels[l], F = levels[l - 1], fo = offsets[l - 1], dA = new Float64Array(C.n), dB = new Float64Array(C.n);
+    for (let i = 0; i < C.n; i++) {
+      let sa = 0, sb = 0, sw = 0;
+      for (let h = 0; h < 2; h++) {
+        const c = C.up[i * 2 + h];
+        if (c < 0) continue;
+        compatOrient(C.Q, i * 3, C.N, i * 3, F.Q, c * 3, F.N, c * 3);
+        const odd = (RA[0] + RA[1]) & 1, w = F.A[c] || 1e-30;
+        sa += (odd ? fo.dB[c] : fo.dA[c]) * w; sb += (odd ? fo.dA[c] : fo.dB[c]) * w; sw += w;
+      }
+      if (sw > 0) { dA[i] = sa / sw; dB[i] = sb / sw; }
+    }
+    offsets.push({ dA, dB });
+  }
+  return { offsets, density: after / before };
+}
+function applyFit(levels, fit) {
+  if (!fit) return;
+  levels.forEach((L, l) => {
+    const o = fit.offsets[l];
+    for (let i = 0; i < L.n; i++) { L.SU[i] *= Math.exp(o.dA[i]); L.SV[i] *= Math.exp(o.dB[i]); L.S[i] = Math.sqrt(L.SU[i] * L.SV[i]); }
+  });
+}
+
 // ---------- the whole remesh ----------
 
 // mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
@@ -3096,11 +3416,12 @@ function remeshQuads(mesh, opt) {
   // Extraction gives more faces than that (a few percent on an even grid, more where sizes vary), so the first grid
   // starts that much larger; how much more the last remesh of this surface gave is remembered with the cache, and so
   // is the start each budget got, so that asking for a budget again gives the same faces.
-  const biasKey = [opt.cacheKey ?? '', opt.sharp || 0, opt.adapt || 0, opt.boundary !== false].join('|');
-  if (cache && (!cache.bias || cache.bias.key !== biasKey)) cache.bias = { key: biasKey, phi: 1.04 + 0.12 * (opt.adapt || 0), used: new Map() };
+  const biasKey = [opt.cacheKey ?? '', opt.sharp || 0, opt.adapt || 0, opt.boundary !== false, opt.fit !== false].join('|');
+  const phi0 = opt.fit === false ? 1.04 + 0.12 * (opt.adapt || 0) : 1.03 + 0.08 * (opt.adapt || 0);
+  if (cache && (!cache.bias || cache.bias.key !== biasKey)) cache.bias = { key: biasKey, phi: phi0, used: new Map() };
   let phi = cache ? cache.bias.used.get(target) : undefined;
   if (phi === undefined) {
-    phi = cache ? cache.bias.phi : 1.04 + 0.12 * (opt.adapt || 0);
+    phi = cache ? cache.bias.phi : phi0;
     if (cache) cache.bias.used.set(target, phi);
   }
   let scale = Math.sqrt((phi * weighted) / target);
@@ -3120,21 +3441,31 @@ function remeshQuads(mesh, opt) {
   const cellFactor = 2.5, splitFactor = 0.7;
   const seed = opt.seed ?? 12345;
   const bucket = opt.adapt > 0 ? step : Math.round(4 * Math.log2(scale / cellFactor));
-  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0].join('|');
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0, opt.fit !== false].join('|');
   let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
   if (work) {
     for (const L of work.levels) levelSpacings(L, scale);
+    applyFit(work.levels, work.fit);
     mark('cached');
     if (progress) progress('orientation', 1);
   } else {
-    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale);
+    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens);
     for (const L of work.levels) levelAlignment(L, 0.5);
     solveOrientations(work.levels, seed, progress);
     for (const L of work.levels) levelSpacings(L, scale);
     mark('orientation');
+    work.fit = opt.fit === false ? null : fitSteps(work.levels, work.WI);
+    applyFit(work.levels, work.fit);
+    mark('fit');
     if (cache) { cache.key = key; cache.work = work; }
   }
   const { levels, n, nC, WI } = work, L0 = levels[0];
+  // The fit changes the faces per area; the first grid is scaled for it, so the first extraction lands on the budget.
+  if (work.fit) {
+    scale *= Math.sqrt(work.fit.density);
+    for (const L of levels) levelSpacings(L, scale);
+    applyFit(levels, work.fit);
+  }
   resolvePositions(levels, seed, progress);
   mark('positions');
 
@@ -3173,11 +3504,12 @@ function remeshQuads(mesh, opt) {
     const f = Math.sqrt(count / target);
     scale *= Math.max(0.6, Math.min(1.6, f));
     for (const L of levels) levelSpacings(L, scale);
+    applyFit(levels, work.fit);
     if (progress) progress('position', 0);
     resolvePositions(levels, seed + attempt + 1);
     mark(`positions${attempt + 1}`);
   }
-  if (cache && result.count > 0) cache.bias.phi = (result.count * scale * scale) / weighted;
+  if (cache && result.count > 0) cache.bias.phi = (result.count * scale * scale) / (weighted * (work.fit ? work.fit.density : 1));
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
   const nv = even.nv, P = even.positions;
@@ -5968,8 +6300,17 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
   const d2 = (a, b) => (P[a * 3] - P[b * 3]) ** 2 + (P[a * 3 + 1] - P[b * 3 + 1]) ** 2 + (P[a * 3 + 2] - P[b * 3 + 2]) ** 2;
   const off32 = plane ? Math.fround(plane.offset) : 0;
   const onPlane = v => plane && P[v * 3 + plane.axis] === off32;
-  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane.
+  // Edges of the faces, for diagonals that already exist.
+  const edges = new Set(), ek = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  for (let f = 0; f < F; f++) {
+    const n = faces[f * 4 + 3] === QUAD_NONE ? 3 : 4;
+    for (let k = 0; k < n; k++) edges.add(ek(faces[f * 4 + k], faces[f * 4 + (k + 1) % n]));
+  }
+  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane. A diagonal
+  // that is already an edge of other faces is never taken: that edge would join three or four triangles.
   const alongAC = (a, b, c, d) => {
+    const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
+    if (acTaken !== bdTaken) return bdTaken;
     const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
     const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
     if (acFlat !== bdFlat) return bdFlat;
@@ -5983,8 +6324,9 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     if (culled && culled(a) && culled(b) && culled(c) && (d === QUAD_NONE || culled(d))) continue;
     const m = t >= 0 ? triMat[t] : base.vMat[near[a]];
     if (d === QUAD_NONE) { tris.push(vid(a, m), vid(b, m), vid(c, m)); marks.push(0); continue; }
-    if (alongAC(a, b, c, d)) tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m));
-    else tris.push(vid(b, m), vid(c, m), vid(d, m), vid(b, m), vid(d, m), vid(a, m));
+    // The chosen diagonal is an edge from now on, for the quads after this one.
+    if (alongAC(a, b, c, d)) { tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m)); edges.add(ek(a, c)); }
+    else { tris.push(vid(b, m), vid(c, m), vid(d, m), vid(b, m), vid(d, m), vid(a, m)); edges.add(ek(b, d)); }
     marks.push(1, 2);
     quads++;
   }
@@ -6296,11 +6638,14 @@ const { remeshQuads, QUAD_NONE, formDensity } = (() => {
 // across the direction that bends most and long along the one that bends least, and the direction field is pulled
 // toward that long direction where the faces stretch (see formSizes).
 //
+// Before the grid is laid, its steps are fitted to what the direction field lets a grid tile without poles (fitSteps):
+// steps that change across the edges faster than the edges bend make the grid start extra rows, each a pole pair.
+//
 // Instant Meshes leaves a few triangles and pentagons among the quads and offers all quads only by splitting every
-// face in four. Here each leftover odd face is instead paired with its nearest odd neighbour, and the strip of faces
-// between them is split in two lengthwise, which turns every face into quads while the density barely changes. Edge
-// rotations and diagonal collapses then lower the pole count, long sharp edges are kept as edge loops, and the
-// vertices are relaxed along the original surface.
+// face in four. Here odd faces side by side are merged and cut into quads again, and each other leftover odd face is
+// paired with its nearest odd neighbour, the strip of faces between them split in two lengthwise, which turns every
+// face into quads while the density barely changes. Edge rotations and diagonal collapses then lower the pole count,
+// long sharp edges are kept as edge loops, and the vertices are relaxed along the original surface.
 
 const NONE = 0xffffffff;
 
@@ -7178,10 +7523,105 @@ function extractFaces(G) {
 
 // ---------- all quads ----------
 
+// Odd faces side by side (a triangle beside a pentagon is how a misplaced grid step shows), or with one quad between
+// them, are merged into one even polygon and cut into quads again, with the cut that leaves the fewest poles (sum of
+// (valence - 4)²) among cuts whose corners stay under 160°. Nothing is added, unlike pairing them through a split
+// strip; a merge is taken unless it raises that sum by more than 2, about what a strip costs. Returns the faces.
+function mergeOddPairs(faces, P, nv) {
+  const F = faces.length, alive = new Uint8Array(F).fill(1), key = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  const edgeFaces = new Map(), deg = new Int32Array(nv), border = new Uint8Array(nv);
+  faces.forEach((p, f) => {
+    for (let k = 0; k < p.length; k++) { const e = key(p[k], p[(k + 1) % p.length]), l = edgeFaces.get(e); if (l) l.push(f); else edgeFaces.set(e, [f]); }
+  });
+  for (const [e, l] of edgeFaces) { const a = Math.floor(e / nv), b = e - a * nv; deg[a]++; deg[b]++; if (l.length !== 2) border[a] = border[b] = 1; }
+  const across = f => {
+    const out = [], p = faces[f];
+    for (let k = 0; k < p.length; k++) { const l = edgeFaces.get(key(p[k], p[(k + 1) % p.length])); if (l && l.length === 2) out.push(l[0] === f ? l[1] : l[0]); }
+    return out;
+  };
+  // The outline of a set of faces with their shared edges removed, if it is one simple loop; and those shared edges.
+  const outline = set => {
+    const half = new Set(), inner = [];
+    for (const f of set) { const p = faces[f]; for (let k = 0; k < p.length; k++) half.add(p[k] * nv + p[(k + 1) % p.length]); }
+    const next = new Map();
+    for (const h of half) {
+      const a = Math.floor(h / nv), b = h - a * nv;
+      if (half.has(b * nv + a)) { if (a < b) inner.push([a, b]); continue; }
+      if (next.has(a)) return null;
+      next.set(a, b);
+    }
+    if (!next.size) return null;
+    const first = next.keys().next().value, loop = [first];
+    for (let v = next.get(first); v !== first; v = next.get(v)) { if (v === undefined || loop.length > next.size) return null; loop.push(v); }
+    return loop.length === next.size ? { loop, inner } : null;
+  };
+  // Every way to cut an even polygon into quads by diagonals.
+  const cuts = poly => {
+    if (poly.length === 4) return [[poly]];
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
+      const rest = poly.filter((_, k) => k !== (i + 1) % poly.length && k !== (i + 2) % poly.length);
+      for (const r of cuts(rest)) out.push([q, ...r]);
+    }
+    return out;
+  };
+  const energy = (v, d) => (border[v] ? 0 : (d - 4) * (d - 4));
+  const sets = [];
+  for (let f = 0; f < F; f++) {
+    if (!(faces[f].length & 1)) continue;
+    for (const g of across(f)) {
+      if (g > f && faces[g].length & 1) sets.push([f, g]);
+      if (faces[g].length === 4) for (const h of across(g)) if (h > f && faces[h].length & 1) sets.push([f, g, h]);
+    }
+  }
+  // Neighbours before pairs with a quad between.
+  sets.sort((x, y) => x.length - y.length);
+  const out = [];
+  for (const set of sets) {
+    if (set.some(f => !alive[f]) || new Set(set).size !== set.length) continue;
+    const o = outline(set);
+    if (!o || o.loop.length & 1 || o.loop.length > 10 || new Set(o.loop).size !== o.loop.length) continue;
+    const onLoop = new Set(o.loop.map((v, k) => key(v, o.loop[(k + 1) % o.loop.length])));
+    let best = null;
+    for (const quads of cuts(o.loop)) {
+      if (!quads.every(q => [0, 1, 2, 3].every(k => cornerAngle(P, q, k) <= 160))) continue;
+      const change = new Map(), add = (v, d) => change.set(v, (change.get(v) || 0) + d);
+      for (const [a, b] of o.inner) { add(a, -1); add(b, -1); }
+      let clash = false;
+      for (const q of quads) {
+        for (let k = 0; k < 4; k++) {
+          const a = q[k], b = q[(k + 1) % 4], e = key(a, b);
+          if (onLoop.has(e)) continue;
+          // A diagonal that is already an edge elsewhere would join three faces.
+          if (edgeFaces.has(e) && !o.inner.some(([x, y]) => key(x, y) === e)) { clash = true; break; }
+          if (a < b) { add(a, 1); add(b, 1); }
+        }
+        if (clash) break;
+      }
+      if (clash) continue;
+      let dE = 0;
+      for (const [v, d] of change) dE += energy(v, deg[v] + d) - energy(v, deg[v]);
+      const shape = quads.reduce((sum, q) => sum + quadScore(P, q), 0);
+      if (!best || dE < best.dE || (dE === best.dE && shape < best.shape)) best = { dE, shape, quads, change };
+    }
+    if (!best || best.dE > 2) continue;
+    for (const f of set) alive[f] = 0;
+    for (const [v, d] of best.change) deg[v] += d;
+    // The shared edges are gone and the diagonals now exist, so a later merge can't add one of them again.
+    for (const [a, b] of o.inner) edgeFaces.delete(key(a, b));
+    for (const q of best.quads) for (let k = 0; k < 4; k++) { const e = key(q[k], q[(k + 1) % 4]); if (!onLoop.has(e)) edgeFaces.set(e, [-1, -1]); }
+    out.push(...best.quads);
+  }
+  for (let f = 0; f < F; f++) if (alive[f]) out.push(faces[f]);
+  return out;
+}
+
 // Pairs each odd face (triangle, pentagon) with the nearest other odd face or an open border, and splits every edge
 // that the paths between them cross an odd number of times; afterwards every face has an even number of sides and is
 // cut into quads. Returns the new faces; P grows by the edge midpoints.
 function evenFaces(faces, P, nv) {
+  faces = mergeOddPairs(faces, P, nv);
   const F = faces.length;
   const half = new Map(); // directed edge a*nv+b -> face
   for (let f = 0; f < F; f++) {
@@ -7727,7 +8167,7 @@ function normalsAndAreas(P, index) {
 // step, and edges still longer than 0.7 of a step along their direction split so the grid can't step over a vertex;
 // then its normals (smoothed a little, keeping sharp edges), metric (Msrc, per source vertex), the open borders as
 // constraints, and the hierarchy. scale: the grid scale the metric is read with.
-function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale) {
+function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens) {
   let weighted = 0;
   for (let v = 0; v < V0; v++) { const s = sizeAt(v); weighted += srcA[v] / (s * s); }
   const expected = cellFactor * cellFactor * weighted;
@@ -7753,6 +8193,13 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   L0.N.set(wN.subarray(0, nC * 3));
   L0.S.set(sub.size);
   L0.M = sub.metric;
+  // The painted density at each working vertex (log), which the step fit leaves as asked; a split vertex takes the
+  // mean of its two parents'.
+  if (dens) {
+    L0.logD = new Float64Array(n);
+    for (let k = 0; k < nC; k++) L0.logD[k] = Math.log(dens[wRep[k]] || 1);
+    for (let v = nC; v < n; v++) L0.logD[v] = (L0.logD[sub.parentA[v]] + L0.logD[sub.parentB[v]]) / 2;
+  }
   for (let k = 0; k < nC; k++) L0.A[k] = wA[k];
   for (let v = nC; v < n; v++) {
     const a = sub.parentA[v], b = sub.parentB[v];
@@ -8280,6 +8727,221 @@ function levelAlignment(L, strength) {
   if (!any) { L.AQ = null; L.Aw = null; }
 }
 
+// ---------- steps the grid can follow ----------
+
+// A grid with steps s_u along the direction field e1 and s_v along e2 = n × e1 closes up (needs no poles besides the
+// field's own singularities) only where the forms e1/s_u and e2/s_v are closed. With the field's turning form ω
+// (∇_X e1 = ω(X) e2), Cartan's structure equations make that ∂_{e2} log s_u = -ω(e1) and ∂_{e1} log s_v = ω(e2): a step
+// may change freely along its own direction, but across it only as fast as the field's lines bend. Steps asked by the
+// shape rarely obey this, and the position field answers with a pole pair wherever they don't. Here log s_u and log s_v
+// are fitted per working vertex to obey it in least squares, held to the requested steps with weight 1 / (FIT_K·h)².
+// Growing a step costs FIT_GROW times more than shrinking it, and steps stay between FIT_FLOOR times the vertex's
+// longest link (the working surface can't resolve smaller ones) and FIT_CEIL times the request (larger ones lose
+// detail). ω comes from how the direction turns across each working triangle, averaged over the triangles around it,
+// since per triangle it is noisy. Painted density is left out of the fit (steps are fitted as if unpainted and the
+// paint applies on top): a deliberate change of density needs its poles however smooth it is made, so smoothing it
+// would only blur the paint. Returns per level the log offsets to add to the requested steps along q (dA) and across
+// it (dB), and the factor the fit changes the face count by; null without usable triangles.
+const FIT_K = 8, FIT_GROW = 25, FIT_FLOOR = 1.25, FIT_CEIL = 1.1, FIT_ROUNDS = 2, FIT_ITERATIONS = 40;
+function fitSteps(levels, WI) {
+  const L = levels[0], { n, N, Q, V, A, SU, SV, start, id } = L;
+  const T = WI.length / 3, rep = [new Float64Array(3), new Float64Array(3), new Float64Array(3)];
+  // Per triangle two residuals, each over three unknowns of x = [log s_u..., log s_v...]:
+  // ∂_{e2} a + ω(e1) and ∂_{e1} b - ω(e2), with a corner's a and b swapped when its direction is a quarter turn off.
+  const ia = new Int32Array(T * 3), ca = new Float64Array(T * 3), ib = new Int32Array(T * 3), cb = new Float64Array(T * 3);
+  const wf = new Float64Array(T), OM = new Float64Array(T * 3), E1 = new Float64Array(T * 3), E2 = new Float64Array(T * 3), NF = new Float64Array(T * 3);
+  // Turn from i's direction to j's representative (i's rep 0 ~ j's rep r).
+  const turn = (i, j) => {
+    compatOrient(Q, i * 3, N, i * 3, Q, j * 3, N, j * 3);
+    const qx = Q[j * 3], qy = Q[j * 3 + 1], qz = Q[j * 3 + 2], nx = N[j * 3], ny = N[j * 3 + 1], nz = N[j * 3 + 2];
+    const rx = RA[1] ? ny * qz - nz * qy : qx, ry = RA[1] ? nz * qx - nx * qz : qy, rz = RA[1] ? nx * qy - ny * qx : qz;
+    return (((RA[1] + (rx * R[3] + ry * R[4] + rz * R[5] < 0 ? 2 : 0) - RA[0]) % 4) + 4) % 4;
+  };
+  let used = 0;
+  for (let f = 0; f < T; f++) {
+    const a = WI[f * 3], b = WI[f * 3 + 1], c = WI[f * 3 + 2];
+    const r01 = turn(a, b), r12 = turn(b, c);
+    if ((r01 + r12 + turn(c, a)) % 4) continue;
+    const vs = [a, b, c], k = [0, r01, (r01 + r12) % 4];
+    const ux = V[b * 3] - V[a * 3], uy = V[b * 3 + 1] - V[a * 3 + 1], uz = V[b * 3 + 2] - V[a * 3 + 2];
+    const vx = V[c * 3] - V[a * 3], vy = V[c * 3 + 1] - V[a * 3 + 1], vz = V[c * 3 + 2] - V[a * 3 + 2];
+    let gx = uy * vz - uz * vy, gy = uz * vx - ux * vz, gz = ux * vy - uy * vx;
+    const g2 = Math.hypot(gx, gy, gz);
+    if (!(g2 > 1e-30)) continue;
+    gx /= g2; gy /= g2; gz /= g2;
+    // The side the field's normals are on.
+    const side = gx * (N[a * 3] + N[b * 3] + N[c * 3]) + gy * (N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1]) + gz * (N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2]) < 0 ? -1 : 1;
+    const fx = gx * side, fy = gy * side, fz = gz * side;
+    // Corner directions (matching representatives) laid into the triangle; e1 their mean, e2 = n × e1.
+    let ex = 0, ey = 0, ez = 0;
+    for (let m = 0; m < 3; m++) {
+      const v = vs[m], ql = Math.hypot(Q[v * 3], Q[v * 3 + 1], Q[v * 3 + 2]) || 1;
+      const qx = Q[v * 3] / ql, qy = Q[v * 3 + 1] / ql, qz = Q[v * 3 + 2] / ql, nx = N[v * 3], ny = N[v * 3 + 1], nz = N[v * 3 + 2];
+      const co = [1, 0, -1, 0][k[m]], sn = [0, 1, 0, -1][k[m]];
+      let x = qx * co + (ny * qz - nz * qy) * sn, y = qy * co + (nz * qx - nx * qz) * sn, z = qz * co + (nx * qy - ny * qx) * sn;
+      const d = x * fx + y * fy + z * fz;
+      x -= fx * d; y -= fy * d; z -= fz * d;
+      const l = Math.hypot(x, y, z) || 1;
+      rep[m][0] = x / l; rep[m][1] = y / l; rep[m][2] = z / l;
+      ex += rep[m][0]; ey += rep[m][1]; ez += rep[m][2];
+    }
+    const el = Math.hypot(ex, ey, ez);
+    if (!(el > 1e-9)) continue;
+    ex /= el; ey /= el; ez /= el;
+    const tx = fy * ez - fz * ey, ty = fz * ex - fx * ez, tz = fx * ey - fy * ex;
+    // Gradients of the corners' barycentric coordinates; ω = the gradient of the direction's angle from e1.
+    let wx = 0, wy = 0, wz = 0;
+    for (let m = 0; m < 3; m++) {
+      const p = vs[(m + 1) % 3], q = vs[(m + 2) % 3];
+      const dx = V[q * 3] - V[p * 3], dy = V[q * 3 + 1] - V[p * 3 + 1], dz = V[q * 3 + 2] - V[p * 3 + 2];
+      const hx = (gy * dz - gz * dy) / g2, hy = (gz * dx - gx * dz) / g2, hz = (gx * dy - gy * dx) / g2;
+      const phi = Math.atan2(rep[m][0] * tx + rep[m][1] * ty + rep[m][2] * tz, rep[m][0] * ex + rep[m][1] * ey + rep[m][2] * ez);
+      wx += phi * hx; wy += phi * hy; wz += phi * hz;
+      const odd = k[m] & 1, o = f * 3 + m, v = vs[m];
+      ia[o] = odd ? n + v : v; ca[o] = hx * tx + hy * ty + hz * tz;
+      ib[o] = odd ? v : n + v; cb[o] = hx * ex + hy * ey + hz * ez;
+    }
+    OM[f * 3] = wx; OM[f * 3 + 1] = wy; OM[f * 3 + 2] = wz;
+    E1[f * 3] = ex; E1[f * 3 + 1] = ey; E1[f * 3 + 2] = ez; E2[f * 3] = tx; E2[f * 3 + 1] = ty; E2[f * 3 + 2] = tz;
+    NF[f * 3] = fx; NF[f * 3 + 1] = fy; NF[f * 3 + 2] = fz;
+    wf[f] = g2 / 2;
+    used++;
+  }
+  if (!used) return null;
+  // ω averaged over the triangles around each triangle's corners, three rounds, kept in the triangle's plane.
+  const acc = new Float64Array(n * 3), accW = new Float64Array(n);
+  for (let round = 0; round < 3; round++) {
+    acc.fill(0); accW.fill(0);
+    for (let f = 0; f < T; f++) {
+      if (!wf[f]) continue;
+      for (let m = 0; m < 3; m++) {
+        const v = WI[f * 3 + m];
+        acc[v * 3] += OM[f * 3] * wf[f]; acc[v * 3 + 1] += OM[f * 3 + 1] * wf[f]; acc[v * 3 + 2] += OM[f * 3 + 2] * wf[f];
+        accW[v] += wf[f];
+      }
+    }
+    for (let f = 0; f < T; f++) {
+      if (!wf[f]) continue;
+      let x = 0, y = 0, z = 0, w = 0;
+      for (let m = 0; m < 3; m++) { const v = WI[f * 3 + m]; x += acc[v * 3]; y += acc[v * 3 + 1]; z += acc[v * 3 + 2]; w += accW[v]; }
+      x /= w; y /= w; z /= w;
+      const d = x * NF[f * 3] + y * NF[f * 3 + 1] + z * NF[f * 3 + 2];
+      OM[f * 3] = x - NF[f * 3] * d; OM[f * 3 + 1] = y - NF[f * 3 + 1] * d; OM[f * 3 + 2] = z - NF[f * 3 + 2] * d;
+    }
+  }
+  const ra = new Float64Array(T), rb = new Float64Array(T), logD = L.logD;
+  for (let f = 0; f < T; f++) {
+    if (!wf[f]) continue;
+    ra[f] = -(OM[f * 3] * E1[f * 3] + OM[f * 3 + 1] * E1[f * 3 + 1] + OM[f * 3 + 2] * E1[f * 3 + 2]);
+    rb[f] = OM[f * 3] * E2[f * 3] + OM[f * 3 + 1] * E2[f * 3 + 1] + OM[f * 3 + 2] * E2[f * 3 + 2];
+    // Unpainted log step = log step + log(density) / 2; its change across the triangle is what must match ω.
+    if (logD) for (let m = 0; m < 3; m++) { const o = f * 3 + m, h = logD[WI[o]] / 2; ra[f] -= ca[o] * h; rb[f] -= cb[o] * h; }
+  }
+  // Requested steps, data weights (from the unpainted steps too, so painted areas drift as far as bare ones and the
+  // paint's ratios hold), and the band's floor (log of FIT_FLOOR × the longest link).
+  const x0 = new Float64Array(2 * n), lam0 = new Float64Array(2 * n), floor = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    x0[i] = Math.log(SU[i]); x0[n + i] = Math.log(SV[i]);
+    lam0[i] = lam0[n + i] = A[i] / (FIT_K * FIT_K * SU[i] * SV[i] * (logD ? Math.exp(logD[i]) : 1));
+    let m = 0;
+    for (let l = start[i]; l < start[i + 1]; l++) { const j = id[l]; m = Math.max(m, Math.hypot(V[j * 3] - V[i * 3], V[j * 3 + 1] - V[i * 3 + 1], V[j * 3 + 2] - V[i * 3 + 2])); }
+    floor[i] = Math.log(Math.max(1e-30, FIT_FLOOR * m));
+  }
+  const lam = Float64Array.from(lam0), ceil = Math.log(FIT_CEIL);
+  const apply = (x, out) => {
+    for (let i = 0; i < 2 * n; i++) out[i] = lam[i] * x[i];
+    for (let f = 0; f < T; f++) {
+      if (!wf[f]) continue;
+      const o = f * 3;
+      const da = (ca[o] * x[ia[o]] + ca[o + 1] * x[ia[o + 1]] + ca[o + 2] * x[ia[o + 2]]) * wf[f];
+      const db = (cb[o] * x[ib[o]] + cb[o + 1] * x[ib[o + 1]] + cb[o + 2] * x[ib[o + 2]]) * wf[f];
+      for (let m = 0; m < 3; m++) { out[ia[o + m]] += ca[o + m] * da; out[ib[o + m]] += cb[o + m] * db; }
+    }
+  };
+  const x = Float64Array.from(x0), rhs = new Float64Array(2 * n), dg = new Float64Array(2 * n);
+  const r = new Float64Array(2 * n), z = new Float64Array(2 * n), p = new Float64Array(2 * n), Ap = new Float64Array(2 * n);
+  for (let round = 0; round < FIT_ROUNDS; round++) {
+    // After the first round, growth and leaving the band cost more (a sharp rise past the band's edges).
+    if (round > 0) {
+      for (let u = 0; u < 2 * n; u++) {
+        const dev = x[u] - x0[u], lo = floor[u % n] - x0[u];
+        let l = dev > 0 ? lam0[u] * FIT_GROW : lam0[u];
+        if (dev < lo) l *= 1 + 200 * ((dev - lo) / 0.1) ** 2;
+        else if (dev > ceil) l *= 1 + 200 * ((dev - ceil) / 0.1) ** 2;
+        lam[u] = Math.max(lam[u], l);
+      }
+    }
+    for (let u = 0; u < 2 * n; u++) { rhs[u] = lam[u] * x0[u]; dg[u] = lam[u]; }
+    for (let f = 0; f < T; f++) {
+      if (!wf[f]) continue;
+      for (let m = 0; m < 3; m++) {
+        const o = f * 3 + m;
+        rhs[ia[o]] += wf[f] * ca[o] * ra[f]; rhs[ib[o]] += wf[f] * cb[o] * rb[f];
+        dg[ia[o]] += wf[f] * ca[o] * ca[o]; dg[ib[o]] += wf[f] * cb[o] * cb[o];
+      }
+    }
+    // Jacobi-preconditioned conjugate gradients from the current answer.
+    apply(x, Ap);
+    let rz = 0;
+    for (let u = 0; u < 2 * n; u++) { r[u] = rhs[u] - Ap[u]; z[u] = r[u] / dg[u]; p[u] = z[u]; rz += r[u] * z[u]; }
+    for (let it = 0; it < FIT_ITERATIONS && rz > 0; it++) {
+      apply(p, Ap);
+      let pAp = 0;
+      for (let u = 0; u < 2 * n; u++) pAp += p[u] * Ap[u];
+      if (!(pAp > 0)) break;
+      const alpha = rz / pAp;
+      let rz2 = 0;
+      for (let u = 0; u < 2 * n; u++) { x[u] += alpha * p[u]; r[u] -= alpha * Ap[u]; z[u] = r[u] / dg[u]; rz2 += r[u] * z[u]; }
+      const beta = rz2 / rz;
+      rz = rz2;
+      for (let u = 0; u < 2 * n; u++) p[u] = z[u] + beta * p[u];
+    }
+  }
+  const offsets = [{ dA: new Float64Array(n), dB: new Float64Array(n) }];
+  for (let i = 0; i < n; i++) { offsets[0].dA[i] = x[i] - x0[i]; offsets[0].dB[i] = x[n + i] - x0[n + i]; }
+  // Each painted level (and each small piece's boost) keeps its share of the faces: where the fit shrank steps within
+  // one, that level's steps all grow back a little, instead of the whole surface's. Coarser areas get more of the fit,
+  // so without this a painted area would lose faces to the bare ones around it.
+  if (logD) {
+    const groups = new Map();
+    for (let i = 0; i < n; i++) {
+      const g = Math.round(logD[i] * 1e4), share = A[i] / (SU[i] * SV[i]), acc = groups.get(g) || [0, 0];
+      acc[0] += share; acc[1] += share * Math.exp(-offsets[0].dA[i] - offsets[0].dB[i]);
+      groups.set(g, acc);
+    }
+    for (let i = 0; i < n; i++) {
+      const acc = groups.get(Math.round(logD[i] * 1e4)), d = 0.5 * Math.log(acc[1] / acc[0]);
+      offsets[0].dA[i] += d; offsets[0].dB[i] += d;
+    }
+  }
+  let before = 0, after = 0;
+  for (let i = 0; i < n; i++) { const share = A[i] / (SU[i] * SV[i]); before += share; after += share * Math.exp(-offsets[0].dA[i] - offsets[0].dB[i]); }
+  // Coarser levels: their children's offsets, area-weighted, swapped where a child's direction is a quarter turn off.
+  for (let l = 1; l < levels.length; l++) {
+    const C = levels[l], F = levels[l - 1], fo = offsets[l - 1], dA = new Float64Array(C.n), dB = new Float64Array(C.n);
+    for (let i = 0; i < C.n; i++) {
+      let sa = 0, sb = 0, sw = 0;
+      for (let h = 0; h < 2; h++) {
+        const c = C.up[i * 2 + h];
+        if (c < 0) continue;
+        compatOrient(C.Q, i * 3, C.N, i * 3, F.Q, c * 3, F.N, c * 3);
+        const odd = (RA[0] + RA[1]) & 1, w = F.A[c] || 1e-30;
+        sa += (odd ? fo.dB[c] : fo.dA[c]) * w; sb += (odd ? fo.dA[c] : fo.dB[c]) * w; sw += w;
+      }
+      if (sw > 0) { dA[i] = sa / sw; dB[i] = sb / sw; }
+    }
+    offsets.push({ dA, dB });
+  }
+  return { offsets, density: after / before };
+}
+function applyFit(levels, fit) {
+  if (!fit) return;
+  levels.forEach((L, l) => {
+    const o = fit.offsets[l];
+    for (let i = 0; i < L.n; i++) { L.SU[i] *= Math.exp(o.dA[i]); L.SV[i] *= Math.exp(o.dB[i]); L.S[i] = Math.sqrt(L.SU[i] * L.SV[i]); }
+  });
+}
+
 // ---------- the whole remesh ----------
 
 // mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
@@ -8343,11 +9005,12 @@ function remeshQuads(mesh, opt) {
   // Extraction gives more faces than that (a few percent on an even grid, more where sizes vary), so the first grid
   // starts that much larger; how much more the last remesh of this surface gave is remembered with the cache, and so
   // is the start each budget got, so that asking for a budget again gives the same faces.
-  const biasKey = [opt.cacheKey ?? '', opt.sharp || 0, opt.adapt || 0, opt.boundary !== false].join('|');
-  if (cache && (!cache.bias || cache.bias.key !== biasKey)) cache.bias = { key: biasKey, phi: 1.04 + 0.12 * (opt.adapt || 0), used: new Map() };
+  const biasKey = [opt.cacheKey ?? '', opt.sharp || 0, opt.adapt || 0, opt.boundary !== false, opt.fit !== false].join('|');
+  const phi0 = opt.fit === false ? 1.04 + 0.12 * (opt.adapt || 0) : 1.03 + 0.08 * (opt.adapt || 0);
+  if (cache && (!cache.bias || cache.bias.key !== biasKey)) cache.bias = { key: biasKey, phi: phi0, used: new Map() };
   let phi = cache ? cache.bias.used.get(target) : undefined;
   if (phi === undefined) {
-    phi = cache ? cache.bias.phi : 1.04 + 0.12 * (opt.adapt || 0);
+    phi = cache ? cache.bias.phi : phi0;
     if (cache) cache.bias.used.set(target, phi);
   }
   let scale = Math.sqrt((phi * weighted) / target);
@@ -8367,21 +9030,31 @@ function remeshQuads(mesh, opt) {
   const cellFactor = 2.5, splitFactor = 0.7;
   const seed = opt.seed ?? 12345;
   const bucket = opt.adapt > 0 ? step : Math.round(4 * Math.log2(scale / cellFactor));
-  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0].join('|');
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0, opt.fit !== false].join('|');
   let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
   if (work) {
     for (const L of work.levels) levelSpacings(L, scale);
+    applyFit(work.levels, work.fit);
     mark('cached');
     if (progress) progress('orientation', 1);
   } else {
-    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale);
+    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens);
     for (const L of work.levels) levelAlignment(L, 0.5);
     solveOrientations(work.levels, seed, progress);
     for (const L of work.levels) levelSpacings(L, scale);
     mark('orientation');
+    work.fit = opt.fit === false ? null : fitSteps(work.levels, work.WI);
+    applyFit(work.levels, work.fit);
+    mark('fit');
     if (cache) { cache.key = key; cache.work = work; }
   }
   const { levels, n, nC, WI } = work, L0 = levels[0];
+  // The fit changes the faces per area; the first grid is scaled for it, so the first extraction lands on the budget.
+  if (work.fit) {
+    scale *= Math.sqrt(work.fit.density);
+    for (const L of levels) levelSpacings(L, scale);
+    applyFit(levels, work.fit);
+  }
   resolvePositions(levels, seed, progress);
   mark('positions');
 
@@ -8420,11 +9093,12 @@ function remeshQuads(mesh, opt) {
     const f = Math.sqrt(count / target);
     scale *= Math.max(0.6, Math.min(1.6, f));
     for (const L of levels) levelSpacings(L, scale);
+    applyFit(levels, work.fit);
     if (progress) progress('position', 0);
     resolvePositions(levels, seed + attempt + 1);
     mark(`positions${attempt + 1}`);
   }
-  if (cache && result.count > 0) cache.bias.phi = (result.count * scale * scale) / weighted;
+  if (cache && result.count > 0) cache.bias.phi = (result.count * scale * scale) / (weighted * (work.fit ? work.fit.density : 1));
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
   const nv = even.nv, P = even.positions;
@@ -11215,8 +11889,17 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
   const d2 = (a, b) => (P[a * 3] - P[b * 3]) ** 2 + (P[a * 3 + 1] - P[b * 3 + 1]) ** 2 + (P[a * 3 + 2] - P[b * 3 + 2]) ** 2;
   const off32 = plane ? Math.fround(plane.offset) : 0;
   const onPlane = v => plane && P[v * 3 + plane.axis] === off32;
-  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane.
+  // Edges of the faces, for diagonals that already exist.
+  const edges = new Set(), ek = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  for (let f = 0; f < F; f++) {
+    const n = faces[f * 4 + 3] === QUAD_NONE ? 3 : 4;
+    for (let k = 0; k < n; k++) edges.add(ek(faces[f * 4 + k], faces[f * 4 + (k + 1) % n]));
+  }
+  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane. A diagonal
+  // that is already an edge of other faces is never taken: that edge would join three or four triangles.
   const alongAC = (a, b, c, d) => {
+    const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
+    if (acTaken !== bdTaken) return bdTaken;
     const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
     const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
     if (acFlat !== bdFlat) return bdFlat;
@@ -11230,8 +11913,9 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     if (culled && culled(a) && culled(b) && culled(c) && (d === QUAD_NONE || culled(d))) continue;
     const m = t >= 0 ? triMat[t] : base.vMat[near[a]];
     if (d === QUAD_NONE) { tris.push(vid(a, m), vid(b, m), vid(c, m)); marks.push(0); continue; }
-    if (alongAC(a, b, c, d)) tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m));
-    else tris.push(vid(b, m), vid(c, m), vid(d, m), vid(b, m), vid(d, m), vid(a, m));
+    // The chosen diagonal is an edge from now on, for the quads after this one.
+    if (alongAC(a, b, c, d)) { tris.push(vid(a, m), vid(b, m), vid(c, m), vid(a, m), vid(c, m), vid(d, m)); edges.add(ek(a, c)); }
+    else { tris.push(vid(b, m), vid(c, m), vid(d, m), vid(b, m), vid(d, m), vid(a, m)); edges.add(ek(b, d)); }
     marks.push(1, 2);
     quads++;
   }
