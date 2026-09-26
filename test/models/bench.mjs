@@ -4,6 +4,7 @@
 //        [--mirror] [--json=out.json]
 //   --tris / --quads   budgets in faces (0 skips the mode); quads are counted as faces, as the app shows them
 //   --mirror           also remeshes into quads with the model's mirror plane (models whose manifest entry has one)
+//   --thin=0           remeshes without Keep thin parts
 //   --save=dir         writes each result there as an OBJ (quads kept as quads), to look at or open in the app
 //   --measure [--pin]  only loads and welds: counts, UV islands, open edges, and the best mirror plane of models tagged
 //                      symmetric; --pin writes the counts and planes into manifest.json
@@ -258,7 +259,7 @@ for (const m of pick(process.argv.slice(2))) {
   const runs = [...trisBudgets.map(f => ['tris', f, null]), ...quadBudgets.map(f => ['quads', f, null])];
   if (mirror && m.mirror) runs.push(...quadBudgets.map(f => ['quads', f, m.mirror]));
   for (const [topology, faces, plane] of runs) {
-    const st = { ...settings, targetTris: topology === 'quads' ? faces * 2 : faces, topology, uvMode: 'auto', deferUV: true, quadAdapt: 0.75, quadSharp: core.QUAD_SHARP, symmetry: plane ? { ...plane, keepPositive: true } : null };
+    const st = { ...settings, targetTris: topology === 'quads' ? faces * 2 : faces, topology, uvMode: 'auto', deferUV: true, quadAdapt: 0.75, quadSharp: core.QUAD_SHARP, quadThin: arg('thin', '1') !== '0', symmetry: plane ? { ...plane, keepPositive: true } : null };
     t0 = Date.now();
     const { result: r, info } = core.runReduction(S, ctx, null, st, { normals: 'smooth', creaseAngle: 30 });
     // Mirrored, only the kept half is measured: the other is its copy, and the original is never quite symmetric.

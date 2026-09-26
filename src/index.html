@@ -872,6 +872,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       <p class="note">Rebuilds the surface as quads whose edges follow its shape, and bakes the texture onto new UVs. Paint More or Less detail to change the quad size there; Keep asks for the smallest quads.</p>
       <label class="field"><span>Follow the shape <output id="quadAdaptOut"></output></span><input type="range" id="quadAdapt" min="0" max="1" step="0.05" aria-label="Follow the shape" title="Quads sized and stretched by the shape: long along chains, straps, strands and folds with more edges around them, big and square where the surface is flat. Higher follows the shape more closely but adds poles."></label>
       <label class="check"><input type="checkbox" id="quadSharp"><span>Keep sharp edges<small>Edges sharper than 45° that run a few quads long become edge loops, so rims and corners stay crisp</small></span></label>
+      <label class="check"><input type="checkbox" id="quadThin"><span>Keep thin parts<small>Lips, eyelids, ears, fingers and cables get quads small enough to stay whole, from up to a tenth of the budget; adds a few poles</small></span></label>
       <label class="check"><input type="checkbox" id="prune2"><span>Remove tiny floating parts<small>Otherwise every separate piece keeps at least a few quads</small></span></label>
     </details>
 

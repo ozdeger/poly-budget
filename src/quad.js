@@ -662,6 +662,9 @@ function extractGraph(L) {
 }
 
 const has = (list, x) => list.indexOf(x) >= 0;
+// A part's cross-section spans at least this many grid steps where the budget allows, from up to this share of the
+// faces (see formSizes).
+const THICK_STEPS = 1, THICK_SHARE = 0.1;
 // The working surface's vertices per face asked, at the most (scans come to about 12).
 const WORK_PER_FACE = 40;
 // Faces a separate piece gets at the least (a flat open one more, for its strokes; see pieceFloor), and where the budget
@@ -1522,9 +1525,17 @@ function repairFaces(faces, P, nv, keepOpen) {
         if (!closed || loop.length < 3 || loop.every(x => keepOpen(x)) || (loop.length >= 32 && loop.some(x => keepOpen(x)))) continue;
         for (const st of steps) usedHalf.add(st);
         for (const l of simpleLoops(loop)) {
-          if (l.length & 1) {
-            const q = l.length > 3 ? evenToQuads(P, l.slice(0, l.length - 1), taken).quads : [];
-            list.push(...q, l.length > 3 ? [l[l.length - 2], l[l.length - 1], l[0]] : l);
+          if (l.length === 3) list.push(l);
+          else if (l.length & 1) {
+            // Quads and one triangle, which goes where the cut beside it isn't already an edge (that edge would join
+            // three faces) and the quads come out best.
+            let best = null;
+            for (let r = 0; r < l.length; r++) {
+              const rot = [...l.slice(r), ...l.slice(0, r)], even = evenToQuads(P, rot.slice(0, rot.length - 1), taken);
+              const score = even.score + (taken(rot[rot.length - 2], rot[0]) ? 1000 : 0);
+              if (!best || score < best.score) best = { score, faces: [...even.quads, [rot[rot.length - 2], rot[rot.length - 1], rot[0]]] };
+            }
+            list.push(...best.faces);
           } else list.push(...evenToQuads(P, l, taken).quads);
         }
         filled++;
@@ -1597,6 +1608,42 @@ class SurfaceGrid {
       }
     }
     return o;
+  }
+  // Distance along the unit direction (dx, dy, dz) from (px, py, pz) to the first triangle further than smin, or
+  // Infinity past smax: a 3D DDA through the cells (Amanatides and Woo, "A Fast Voxel Traversal Algorithm", 1987) and
+  // the Möller–Trumbore test. backOnly: only triangles met from behind (the far wall of a solid) count.
+  ray(px, py, pz, dx, dy, dz, smin, smax, backOnly = false) {
+    const q = ++this.query, P = this.P, idx = this.index, h = this.h;
+    let best = smax, i = this.cx(px), j = this.cy(py), k = this.cz(pz);
+    const si = dx > 0 ? 1 : -1, sj = dy > 0 ? 1 : -1, sk = dz > 0 ? 1 : -1;
+    let tx = dx !== 0 ? (this.x0 + (i + (dx > 0 ? 1 : 0)) * h - px) / dx : Infinity;
+    let ty = dy !== 0 ? (this.y0 + (j + (dy > 0 ? 1 : 0)) * h - py) / dy : Infinity;
+    let tz = dz !== 0 ? (this.z0 + (k + (dz > 0 ? 1 : 0)) * h - pz) / dz : Infinity;
+    const ex = dx !== 0 ? h / Math.abs(dx) : Infinity, ey = dy !== 0 ? h / Math.abs(dy) : Infinity, ez = dz !== 0 ? h / Math.abs(dz) : Infinity;
+    for (;;) {
+      const c = (k * this.ny + j) * this.nx + i;
+      for (let s = this.start[c]; s < this.start[c + 1]; s++) {
+        const t = this.items[s];
+        if (this.seen[t] === q) continue;
+        this.seen[t] = q;
+        const a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, e = idx[t * 3 + 2] * 3;
+        const e1x = P[b] - P[a], e1y = P[b + 1] - P[a + 1], e1z = P[b + 2] - P[a + 2], e2x = P[e] - P[a], e2y = P[e + 1] - P[a + 1], e2z = P[e + 2] - P[a + 2];
+        const qx = dy * e2z - dz * e2y, qy = dz * e2x - dx * e2z, qz = dx * e2y - dy * e2x, det = e1x * qx + e1y * qy + e1z * qz;
+        if (Math.abs(det) < 1e-30 || (backOnly && det > 0)) continue;
+        const inv = 1 / det, ox = px - P[a], oy = py - P[a + 1], oz = pz - P[a + 2], u = (ox * qx + oy * qy + oz * qz) * inv;
+        if (u < 0 || u > 1) continue;
+        const rx = oy * e1z - oz * e1y, ry = oz * e1x - ox * e1z, rz = ox * e1y - oy * e1x, v = (dx * rx + dy * ry + dz * rz) * inv;
+        if (v < 0 || u + v > 1) continue;
+        const d = (e2x * rx + e2y * ry + e2z * rz) * inv;
+        if (d > smin && d < best) best = d;
+      }
+      const next = Math.min(tx, ty, tz);
+      if (next >= best) break;
+      if (tx === next) { i += si; tx += ex; if (i < 0 || i >= this.nx) break; }
+      else if (ty === next) { j += sj; ty += ey; if (j < 0 || j >= this.ny) break; }
+      else { k += sk; tz += ez; if (k < 0 || k >= this.nz) break; }
+    }
+    return best < smax ? best : Infinity;
   }
   visit(c, px, py, pz, q) {
     const o = this.out, P = this.P, idx = this.index;
@@ -2223,7 +2270,8 @@ function tangentEigen(Tm, o, nx, ny, nz, out) {
 // The surface's principal curvatures, per cluster: normal-cycle tensors (sharp edges past opt.sharp degrees left out,
 // since they become edge loops) summed over clusters of opt.cell × the model's diagonal, plus half of each neighbouring
 // cluster facing the same way. Returns the clusters, their neighbours (CSR) and, per cluster, the larger and smaller
-// principal curvature (magnitudes) and the direction that bends least; worked out once per surface.
+// principal curvature (magnitudes), the direction that bends least and the thickness (how far a ray into the surface
+// runs to its other side, Infinity when it leaves); worked out once per surface.
 export function formAnalysis(P, index, N, A, opt = {}) {
   const V = P.length / 3;
   if (!N || !A) ({ N, A } = normalsAndAreas(P, index));
@@ -2272,7 +2320,25 @@ export function formAnalysis(P, index, N, A, opt = {}) {
   }
   let area = 0;
   for (let c = 0; c < C; c++) area += cl.area[c];
-  return { cl, nstart, nid, kb, ks, dir, area, V };
+  // Thickness from each cluster's surface point straight inward to the solid's far wall (a triangle met from behind).
+  // Only inward: across a gap between parts (fingers side by side) the working surface has no edges, so the grid can't
+  // join them; through a part it can.
+  const T = index.length / 3, diag = Math.hypot(x1 - x0, y1 - y0, z1 - z0) || 1;
+  const rays = new SurfaceGrid(P, index, 2 * Math.sqrt((4 * area) / (Math.sqrt(3) * Math.max(1, T))));
+  // Up to five members per cluster, each along its own normal; the median of their hits (a miss counts as none), and no
+  // thickness unless most of them hit: on a scanned beard single rays met the fringes of the noise.
+  const thick = new Float32Array(C), got = new Uint8Array(C), hits = new Float32Array(C * 5);
+  for (let v = 0; v < V; v++) {
+    const c = cl.of[v];
+    if (c < 0 || got[c] >= 5) continue;
+    const l = Math.hypot(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]) || 1;
+    hits[c * 5 + got[c]++] = rays.ray(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], -N[v * 3] / l, -N[v * 3 + 1] / l, -N[v * 3 + 2] / l, 1e-6 * diag, 0.2 * diag, true);
+  }
+  for (let c = 0; c < C; c++) {
+    const list = Array.from(hits.subarray(c * 5, c * 5 + got[c])).sort((a, b) => a - b);
+    thick[c] = list.length ? list[Math.floor((list.length - 1) / 2)] : Infinity;
+  }
+  return { cl, nstart, nid, kb, ks, dir, area, V, thick };
 }
 
 // The largest metric inside both ellipses A and B (2×2 symmetric as a, b, d), by simultaneous reduction, into out;
@@ -2323,9 +2389,11 @@ export function formSizes(an, target, strength, opt = {}) {
   const { cl, nstart, nid, kb, ks, dir, area, V } = an, C = cl.count, CN = cl.normals, CP = cl.positions;
   const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 4, grade = opt.grade ?? 0.3;
   const h0 = Math.sqrt(area / target);
-  const h1 = new Float64Array(C), h2 = new Float64Array(C);
+  // held: sizes kept for a thin part (see below).
+  const h1 = new Float64Array(C), h2 = new Float64Array(C), held = new Uint8Array(C);
   const sizes = c => {
     for (let i = 0; i < C; i++) {
+      if (held[i]) continue;
       let s1 = kb[i] > 0 ? c / Math.sqrt(kb[i]) : Infinity, s2 = ks[i] > 0 ? c / Math.sqrt(ks[i]) : Infinity;
       s1 = Math.min(hMax * h0, Math.max(hMin * h0, s1));
       s2 = Math.min(hMax * h0, Math.max(s1, Math.min(alpha * s1, s2)));
@@ -2342,6 +2410,53 @@ export function formSizes(an, target, strength, opt = {}) {
     if (n > target) lo = mid; else hi = mid;
   }
   sizes(Math.exp(hi));
+  // Thin parts: no edge longer than the part's thickness / THICK_STEPS (nor shorter than half what the shape asks for,
+  // or hMin × the even size), so its cross-section spans that many grid steps (thinner than about one step, parts came
+  // apart: 43-96% of them). Where the sizes above ask for longer edges, the connected thin regions are held to it whole,
+  // cheapest first (lips, eyelids and fingertips before the spokes of a wheel), while the extra faces stay within
+  // THICK_SHARE of the target; then c is found again for the rest. Per cluster, by how little refinement it needs, the
+  // budget went to regions barely thin enough to matter, while the parts that came apart kept coming apart; and a fifth
+  // of the budget taken from the rest coarsened a road bike's tyres until they came apart at 10k.
+  if (an.thick && opt.thick !== false) {
+    const hT = new Float64Array(C), cost = new Float64Array(C), want = new Uint8Array(C);
+    for (let i = 0; i < C; i++) {
+      hT[i] = Math.max(hMin * h0, h1[i] / 2, an.thick[i] / THICK_STEPS);
+      if (!(hT[i] < h1[i])) continue;
+      want[i] = 1;
+      cost[i] = cl.area[i] / (hT[i] * Math.min(h2[i], alpha * hT[i])) - cl.area[i] / (h1[i] * h2[i]);
+    }
+    const regions = [], seen = new Uint8Array(C);
+    for (let i = 0; i < C; i++) {
+      if (!want[i] || seen[i]) continue;
+      const list = [i];
+      let sum = 0;
+      seen[i] = 1;
+      for (let k = 0; k < list.length; k++) {
+        const u = list[k];
+        sum += cost[u];
+        for (let l = nstart[u]; l < nstart[u + 1]; l++) { const v = nid[l]; if (want[v] && !seen[v]) { seen[v] = 1; list.push(v); } }
+      }
+      regions.push([sum, i, list]);
+    }
+    regions.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+    let extra = 0;
+    for (const [sum, , list] of regions) {
+      if (extra + sum > THICK_SHARE * target) break;
+      extra += sum;
+      for (const i of list) { h2[i] = Math.min(h2[i], alpha * hT[i]); h1[i] = hT[i]; held[i] = 1; }
+    }
+    if (extra > 0) {
+      lo = -40; hi = 40;
+      for (let it = 0; it < 60; it++) {
+        const mid = (lo + hi) / 2;
+        sizes(Math.exp(mid));
+        let n = 0;
+        for (let i = 0; i < C; i++) n += cl.area[i] / (h1[i] * h2[i]);
+        if (n > target) lo = mid; else hi = mid;
+      }
+      sizes(Math.exp(hi));
+    }
+  }
   // Per cluster, the metric in its tangent basis (s, t from tangents()) as a, b, d.
   const M2 = new Float64Array(C * 3), basis = new Float64Array(C * 6);
   for (let i = 0; i < C; i++) {
@@ -2697,8 +2812,9 @@ function applyFit(levels, fit) {
 // opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), adapt: how far face sizes and
 //        directions follow the surface's curvature (0 even squares … 1, see formSizes), boundary: align open borders (true),
 //        plane: { axis, offset } whose border is kept exactly on the plane, sharp: the angle past which long sharp
-//        edges become edge loops (0: off), pure: all quads (true), seed, relax: iterations, progress(stage, f),
-//        cache and cacheKey: where to keep the working surface and direction field between calls }
+//        edges become edge loops (0: off), thin: parts thinner than a grid step get smaller steps (true; see
+//        formSizes), pure: all quads (true), seed, relax: iterations, progress(stage, f), cache and cacheKey: where to
+//        keep the working surface and direction field between calls }
 // Returns { positions (Float32Array), faces (Uint32Array, 4 per face, NONE in the 4th for a triangle), faceCount,
 //           hit: { tri (Int32Array), bary (Float32Array, 3 per vertex) }: where each vertex sits on the input surface,
 //           faceTri (Int32Array): the input triangle under each face's middle, stats }.
@@ -2718,7 +2834,7 @@ export function remeshQuads(mesh, opt) {
   const step = Math.round(4 * Math.log2(target));
   let Msrc = null;
   if (opt.adapt > 0) {
-    const anKey = `${V0}|${srcIdx.length}|${opt.sharp || 0}`, formKey = `${anKey}|${opt.adapt}|${step}`;
+    const anKey = `${V0}|${srcIdx.length}|${opt.sharp || 0}`, formKey = `${anKey}|${opt.adapt}|${step}|${opt.thin === false ? 0 : 1}`;
     Msrc = cache && cache.form && cache.form.key === formKey ? cache.form.m : null;
     if (!Msrc) {
       let an = cache && cache.analysis && cache.analysis.key === anKey ? cache.analysis.an : null;
@@ -2726,7 +2842,7 @@ export function remeshQuads(mesh, opt) {
         an = formAnalysis(srcP, srcIdx, srcN, srcA, { sharp: opt.sharp });
         if (cache) cache.analysis = { key: anKey, an };
       }
-      Msrc = formSizes(an, 2 ** (step / 4), opt.adapt);
+      Msrc = formSizes(an, 2 ** (step / 4), opt.adapt, { thick: opt.thin !== false });
       if (cache) cache.form = { key: formKey, m: Msrc };
     }
     mark('form');
@@ -2772,7 +2888,7 @@ export function remeshQuads(mesh, opt) {
   // Extraction gives more faces than that (a few percent on an even grid, more where sizes vary), so the first grid
   // starts that much larger; how much more the last remesh of this surface gave is remembered with the cache, and so
   // is the start each budget got, so that asking for a budget again gives the same faces.
-  const biasKey = [opt.cacheKey ?? '', opt.sharp || 0, opt.adapt || 0, opt.boundary !== false, opt.fit !== false].join('|');
+  const biasKey = [opt.cacheKey ?? '', opt.sharp || 0, opt.adapt || 0, opt.boundary !== false, opt.fit !== false, opt.thin !== false].join('|');
   const phi0 = opt.fit === false ? 1.04 + 0.12 * (opt.adapt || 0) : 1.03 + 0.08 * (opt.adapt || 0);
   if (cache && (!cache.bias || cache.bias.key !== biasKey)) cache.bias = { key: biasKey, phi: phi0, used: new Map() };
   let phi = cache ? cache.bias.used.get(target) : undefined;
@@ -2797,7 +2913,7 @@ export function remeshQuads(mesh, opt) {
   const cellFactor = 2.5, splitFactor = 0.7;
   const seed = opt.seed ?? 12345;
   const bucket = opt.adapt > 0 ? step : Math.round(4 * Math.log2(scale / cellFactor));
-  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0, opt.fit !== false, floorKey].join('|');
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0, opt.fit !== false, floorKey, opt.thin !== false].join('|');
   let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
   if (work) {
     for (const L of work.levels) levelSpacings(L, scale);

@@ -2412,7 +2412,7 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
   const rq = remeshQuads({ positions: base.positions, index, normals: smooth }, {
     targetFaces: quads, density, plane: sym ? { axis: sym.axis, offset: Math.fround(sym.offset) } : null, progress,
     cache: holder.quadCache, cacheKey: `${st.prune ? 1 : 0}|${index.length}|${density ? hashFloats(density) : 'even'}|${st.quadAdapt || 0}`,
-    sharp: st.quadSharp ?? QUAD_SHARP, adapt: st.quadAdapt || 0,
+    sharp: st.quadSharp ?? QUAD_SHARP, adapt: st.quadAdapt || 0, thin: st.quadThin !== false,
   });
   // Triangles the prune dropped don't exist for the lookups either.
   // Culled surface is remeshed like the lowest Less level and its finished faces dropped: cutting it out first leaves

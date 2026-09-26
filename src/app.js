@@ -38,7 +38,7 @@ function loadTangents() {
 // ---------- settings ----------
 const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
-  targetPct: 10, topology: 'quads', quadSharp: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
+  targetPct: 10, topology: 'quads', quadSharp: true, quadThin: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, normalFormat: 'opengl',
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
@@ -67,7 +67,7 @@ function saveSettings() {
 // ---------- tabs ----------
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
-const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'quadAdapt', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
+const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'quadThin', 'quadAdapt', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
   'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'bakeNormals', 'colorDetail', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
@@ -2572,7 +2572,7 @@ function reduceSettings(target) {
     targetTris: target ?? targetTris(), maxError: Number(settings.maxError), lockBorder: settings.lockBorder,
     permissive: settings.permissive, prune: settings.prune, regularize: settings.regularize, normalWeight: settings.normalWeight,
     uvWeight: settings.uvWeight, optimizePositions: settings.optimizePositions,
-    uvMode: settings.uvMode, deferUV: true, hardAngle: settings.hardAngle, topology: settings.topology, quadSharp: settings.quadSharp ? QUAD_SHARP : 0, quadAdapt: settings.quadAdapt,
+    uvMode: settings.uvMode, deferUV: true, hardAngle: settings.hardAngle, topology: settings.topology, quadSharp: settings.quadSharp ? QUAD_SHARP : 0, quadThin: settings.quadThin, quadAdapt: settings.quadAdapt,
     symmetry: settings.symmetry && symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset, keepPositive: settings.symSide !== '-' } : null,
   };
 }
@@ -3911,6 +3911,7 @@ function syncControls() {
   pressSeg('topoSeg', 'topo', settings.topology);
   $('prune2').checked = settings.prune;
   $('quadSharp').checked = settings.quadSharp;
+  $('quadThin').checked = settings.quadThin;
   if (document.activeElement !== $('quadAdapt')) $('quadAdapt').value = String(settings.quadAdapt);
   $('quadAdaptOut').textContent = settings.quadAdapt > 0 ? `${Math.round(settings.quadAdapt * 100)}%` : 'off';
   $('secQuads').hidden = !q;
@@ -4022,6 +4023,7 @@ bindCheck('lockBorder', 'lockBorder', () => scheduleReduce());
 bindCheck('prune', 'prune', () => scheduleReduce());
 bindCheck('prune2', 'prune', () => scheduleReduce());
 bindCheck('quadSharp', 'quadSharp', () => scheduleReduce());
+bindCheck('quadThin', 'quadThin', () => scheduleReduce());
 bindRange('quadAdapt', 'quadAdapt', () => scheduleReduce());
 bindCheck('bakeNormals', 'bakeNormals', () => { refreshBake(); updateUVPanel(); updateExportPanel(); });
 bindRange('colorDetail', 'colorDetail', () => { refreshBake(); updateUVPanel(); });
