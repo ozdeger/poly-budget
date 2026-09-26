@@ -523,7 +523,6 @@ function resolvePositions(levels, seed, progress = null) {
 // corner are merged, and those one grid step apart are joined.
 function extractGraph(L) {
   const { n, start, id, N, V, Q, O, SU, SV } = L;
-  const Cw = L.Cw;
   const parent = new Int32Array(n);
   for (let i = 0; i < n; i++) parent[i] = i;
   const find = x => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
@@ -626,7 +625,7 @@ function extractGraph(L) {
     for (let d = 0; d < 3; d++) { P[v * 3 + d] += O[i3 + d] * wt; NN[v * 3 + d] += N[i3 + d] * wt; }
     SS[v] += s * wt;
     weight[v] += wt;
-    if (Cw && Cw[i] > 0) fixed[v] = 1;
+    if (L.Cb && L.Cb[i]) fixed[v] = 1;
     if (d2 < repD[v]) { repD[v] = d2; rep[v] = i; }
   }
   for (let v = 0; v < nv; v++) {
@@ -1557,7 +1556,7 @@ function normalsAndAreas(P, index) {
 // step, and edges still longer than 0.7 of a step along their direction split so the grid can't step over a vertex;
 // then its normals (smoothed a little, keeping sharp edges), metric (Msrc, per source vertex), the open borders as
 // constraints, and the hierarchy. scale: the grid scale the metric is read with.
-function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens) {
+function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens, crease) {
   let weighted = 0;
   for (let v = 0; v < V0; v++) { const s = sizeAt(v); weighted += srcA[v] / (s * s); }
   const expected = cellFactor * cellFactor * weighted;
@@ -1613,8 +1612,8 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   if (progress) progress('prepare', 0.5);
 
   // Open borders of the input (and the mirror plane's cut) are constraints: edges run along them and the grid passes
-  // through them.
-  L0.CQ = new Float64Array(n * 3); L0.CO = new Float64Array(n * 3); L0.Cw = new Float32Array(n);
+  // through them. Cb marks the border ones, whose loops stay open.
+  L0.CQ = new Float64Array(n * 3); L0.CO = new Float64Array(n * 3); L0.Cw = new Float32Array(n); L0.Cb = new Uint8Array(n);
   let borderEdges = 0;
   if (opt.boundary !== false) {
     const SE = edgesOf(srcIdx, V0);
@@ -1630,9 +1629,31 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
       for (const v of [a, b]) {
         L0.CO[v * 3] = Pw[v * 3]; L0.CO[v * 3 + 1] = Pw[v * 3 + 1]; L0.CO[v * 3 + 2] = Pw[v * 3 + 2];
         L0.CQ[v * 3] = dx; L0.CQ[v * 3 + 1] = dy; L0.CQ[v * 3 + 2] = dz;
-        L0.Cw[v] = 1;
+        L0.Cw[v] = 1; L0.Cb[v] = 1;
       }
       borderEdges++;
+    }
+  }
+  // Kept sharp edges are constraints the same way, for the vertices on either side of them: otherwise the direction
+  // field only sees one side's normal there, and on a flat face beside a crease it runs any way at all, so the grid
+  // meets the crease at an angle and its corners get bevelled. The line passes through the crease itself.
+  let creaseEdges = 0;
+  if (crease && crease.segs.length) {
+    const segs = crease.segs;
+    for (let s = 0; s < segs.length; s += 2) {
+      const sa = segs[s], sb = segs[s + 1];
+      let dx = srcP[sb * 3] - srcP[sa * 3], dy = srcP[sb * 3 + 1] - srcP[sa * 3 + 1], dz = srcP[sb * 3 + 2] - srcP[sa * 3 + 2];
+      const l = Math.hypot(dx, dy, dz);
+      if (!(l > 0)) continue;
+      dx /= l; dy /= l; dz /= l;
+      for (const sv of [sa, sb]) {
+        const v = wOf[sv];
+        if (v < 0 || L0.Cb[v]) continue;
+        L0.CO[v * 3] = srcP[sv * 3]; L0.CO[v * 3 + 1] = srcP[sv * 3 + 1]; L0.CO[v * 3 + 2] = srcP[sv * 3 + 2];
+        L0.CQ[v * 3] = dx; L0.CQ[v * 3 + 1] = dy; L0.CQ[v * 3 + 2] = dz;
+        L0.Cw[v] = 1;
+      }
+      creaseEdges++;
     }
   }
   // Smoother normals for the fields, so bumps smaller than a quad don't pull the directions around: each normal is
@@ -1654,7 +1675,7 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
     L0.N.set(Nn);
   }
   const levels = buildHierarchy(L0);
-  if (borderEdges) propagateConstraints(levels);
+  if (borderEdges || creaseEdges) propagateConstraints(levels);
   mark('hierarchy');
   if (progress) progress('prepare', 1);
   return { levels, n, nC, WI };
@@ -1996,7 +2017,9 @@ function intersect2(a1, b1, d1, a2, b2, d2, out) {
 // even squares (0) to that (1) in log space; c is found for the target. Then no edge length may grow by more than
 // grade × the distance from a neighbour's, along each of the neighbour's directions (Frédéric Alauzet, "Size gradation
 // control of anisotropic meshes", 2010): along a tube the long edges then stay even all around it, as a grid of
-// closed loops needs, and sizes change slowly enough for the grid to follow. The result is scaled back to the target.
+// closed loops needs, and sizes change slowly enough for the grid to follow. Across a sharp edge only the step along
+// the edge is graded, since the faces on its two sides share that edge loop's vertices: the small steps around a
+// cylinder carry onto its flat cap instead of meeting its big quads at the rim. The result is scaled back to the target.
 export function formSizes(an, target, strength, opt = {}) {
   const { cl, nstart, nid, kb, ks, dir, area, V } = an, C = cl.count, CN = cl.normals, CP = cl.positions;
   const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 4, grade = opt.grade ?? 0.3;
@@ -2038,7 +2061,36 @@ export function formSizes(an, target, strength, opt = {}) {
         const i = sweep % 2 ? C - 1 - k : k, si = i * 6;
         for (let l = nstart[i]; l < nstart[i + 1]; l++) {
           const j = nid[l], sj = j * 6;
-          if (CN[i * 3] * CN[j * 3] + CN[i * 3 + 1] * CN[j * 3 + 1] + CN[i * 3 + 2] * CN[j * 3 + 2] < 0.5) continue;
+          if (CN[i * 3] * CN[j * 3] + CN[i * 3 + 1] * CN[j * 3 + 1] + CN[i * 3 + 2] * CN[j * 3 + 2] < 0.5) {
+            // Across a sharp edge only the step along the edge is shared (both sides meet on one edge loop), so only
+            // that one is graded: the direction where the two tangent planes meet. It shrinks at most threefold, and
+            // the quad stays at most alpha times longer than wide, so a dense web of small creases can't take over.
+            let cx = CN[i * 3 + 1] * CN[j * 3 + 2] - CN[i * 3 + 2] * CN[j * 3 + 1], cy = CN[i * 3 + 2] * CN[j * 3] - CN[i * 3] * CN[j * 3 + 2], cz = CN[i * 3] * CN[j * 3 + 1] - CN[i * 3 + 1] * CN[j * 3];
+            const cl2 = Math.hypot(cx, cy, cz);
+            if (cl2 < 0.3) continue;
+            cx /= cl2; cy /= cl2; cz /= cl2;
+            const uj = cx * basis[sj] + cy * basis[sj + 1] + cz * basis[sj + 2], wj = cx * basis[sj + 3] + cy * basis[sj + 4] + cz * basis[sj + 5];
+            const mj = M2[j * 3] * uj * uj + 2 * M2[j * 3 + 1] * uj * wj + M2[j * 3 + 2] * wj * wj;
+            if (!(mj > 0)) continue;
+            const dist = Math.hypot(CP[i * 3] - CP[j * 3], CP[i * 3 + 1] - CP[j * 3 + 1], CP[i * 3 + 2] - CP[j * 3 + 2]);
+            const need = mj / (1 + grade * dist * Math.sqrt(mj)) ** 2;
+            let ui = cx * basis[si] + cy * basis[si + 1] + cz * basis[si + 2], wi = cx * basis[si + 3] + cy * basis[si + 4] + cz * basis[si + 5];
+            const il = Math.hypot(ui, wi) || 1;
+            ui /= il; wi /= il;
+            const has = M2[i * 3] * ui * ui + 2 * M2[i * 3 + 1] * ui * wi + M2[i * 3 + 2] * wi * wi;
+            const want = Math.min(need, has * 9);
+            if (has < want) {
+              const add = want - has;
+              M2[i * 3] += add * ui * ui; M2[i * 3 + 1] += add * ui * wi; M2[i * 3 + 2] += add * wi * wi;
+              const a0 = M2[i * 3], b0 = M2[i * 3 + 1], d0 = M2[i * 3 + 2], m = (a0 + d0) / 2, r = Math.sqrt(((a0 - d0) / 2) ** 2 + b0 * b0);
+              const big = m + r, low = big / (alpha * alpha);
+              if (m - r < low) {
+                const ph = 0.5 * Math.atan2(2 * b0, a0 - d0), cp = Math.cos(ph), sp = Math.sin(ph);
+                M2[i * 3] = big * cp * cp + low * sp * sp; M2[i * 3 + 1] = (big - low) * cp * sp; M2[i * 3 + 2] = big * sp * sp + low * cp * cp;
+              }
+            }
+            continue;
+          }
           // j's metric read in i's basis.
           const a = M2[j * 3], b = M2[j * 3 + 1], d = M2[j * 3 + 2];
           const us = basis[si] * basis[sj] + basis[si + 1] * basis[sj + 1] + basis[si + 2] * basis[sj + 2];
@@ -2428,7 +2480,7 @@ export function remeshQuads(mesh, opt) {
     mark('cached');
     if (progress) progress('orientation', 1);
   } else {
-    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens);
+    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens, crease);
     for (const L of work.levels) levelAlignment(L, 0.5);
     solveOrientations(work.levels, seed, progress);
     for (const L of work.levels) levelSpacings(L, scale);
@@ -2451,8 +2503,12 @@ export function remeshQuads(mesh, opt) {
   const grid = new SurfaceGrid(srcP, srcIdx, sizeRef());
   const attempts = [];
   mark('grid');
+  // Up to four tries at the budget; the closest one is kept. Faces fall about as scale⁻² on a smooth surface; from the
+  // second correction on, the exponent is measured from the last two tries, since pieces that vanish or appear as the
+  // grid changes make the count respond more steeply (many small parts) or less.
   let result = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const tried = [];
+  for (let attempt = 0; attempt < 4; attempt++) {
     const G = extractGraph(L0);
     cleanGraph(G);
     const polys = extractFaces(G);
@@ -2475,19 +2531,26 @@ export function remeshQuads(mesh, opt) {
       : evenFaces(polys, G.P, G.nv);
     if (progress) progress('extract', 1);
     const count = even.faces.length;
-    result = { G, even, count };
+    if (!result || !(result.count > 0) || (count > 0 && Math.abs(Math.log(count / target)) < Math.abs(Math.log(result.count / target)))) result = { G, even, count, scale };
     attempts.push(count);
     mark(`extract${attempt}`);
-    // Close enough to the budget, or out of attempts: keep it. Otherwise resize the grid and solve positions again.
-    if (Math.abs(count / target - 1) < 0.04 || attempt === 2 || count === 0) break;
-    const f = Math.sqrt(count / target);
-    scale *= Math.max(0.6, Math.min(1.6, f));
+    // Close enough to the budget, or out of tries: keep the closest. Otherwise resize the grid and solve positions again.
+    if (Math.abs(count / target - 1) < 0.04 || attempt === 3 || count === 0) break;
+    tried.push([Math.log(scale), Math.log(count)]);
+    let p = 2;
+    if (tried.length >= 2) {
+      const [s1, c1] = tried[tried.length - 2], [s2, c2] = tried[tried.length - 1];
+      if (Math.abs(s2 - s1) > 1e-6) p = Math.min(6, Math.max(1, -(c2 - c1) / (s2 - s1)));
+    }
+    scale *= Math.exp(Math.max(Math.log(0.5), Math.min(Math.log(2), (Math.log(count) - Math.log(target)) / p)));
     for (const L of levels) levelSpacings(L, scale);
     applyFit(levels, work.fit);
     if (progress) progress('position', 0);
     resolvePositions(levels, seed + attempt + 1);
     mark(`positions${attempt + 1}`);
   }
+  // Later steps size things by the kept try's grid.
+  scale = result.scale;
   if (cache && result.count > 0) cache.bias.phi = (result.count * scale * scale) / (weighted * (work.fit ? work.fit.density : 1));
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;

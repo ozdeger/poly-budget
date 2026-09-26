@@ -121,6 +121,29 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
   check(crisp < 0.005 && crisp < round / 4 && shaped < 0.005, `sharp edges: the box's edges stay within ${crisp.toFixed(4)} of the remesh (${shaped.toFixed(4)} following the shape, ${round.toFixed(4)} without sharp edges)`);
 }
 
+// Sharp rims with the quads following the shape: the side of a cylinder wants small steps around it and its flat caps
+// big ones, but both meet on the rim's edge loop. The step along the rim is graded across it and the rim is a
+// constraint for the direction field, so an edge loop lies on each rim instead of the rim being notched.
+{
+  const wc = core.smartWeld(sceneOf(new THREE.CylinderGeometry(0.5, 0.5, 1.5, 96, 60)), { keepUV: false, hardAngle: 180 });
+  const rq = remeshQuads({ positions: wc.positions, index: wc.index }, { targetFaces: 1200, adapt: 1, sharp: 45 });
+  const P = rq.positions, nv = P.length / 3, edges = new Set();
+  for (let f = 0; f < rq.faceCount; f++) {
+    const p = [...rq.faces.subarray(f * 4, f * 4 + 4)].filter(v => v !== QUAD_NONE);
+    for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length]; edges.add(a < b ? a * nv + b : b * nv + a); }
+  }
+  let sum = 0;
+  const E = [...edges].map(k => { const a = Math.floor(k / nv), b = k - a * nv; sum += Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]); return [a, b]; });
+  const h = sum / E.length, near = (x, y, z) => E.some(([a, b]) => {
+    const dx = P[b * 3] - P[a * 3], dy = P[b * 3 + 1] - P[a * 3 + 1], dz = P[b * 3 + 2] - P[a * 3 + 2], ll = dx * dx + dy * dy + dz * dz;
+    const t = Math.max(0, Math.min(1, ((x - P[a * 3]) * dx + (y - P[a * 3 + 1]) * dy + (z - P[a * 3 + 2]) * dz) / (ll || 1)));
+    return Math.hypot(P[a * 3] + dx * t - x, P[a * 3 + 1] + dy * t - y, P[a * 3 + 2] + dz * t - z) < 0.1 * h;
+  });
+  let on = 0, total = 0;
+  for (const y of [-0.75, 0.75]) for (let k = 0; k < 360; k++) { total++; if (near(0.5 * Math.cos(k * Math.PI / 180), y, 0.5 * Math.sin(k * Math.PI / 180))) on++; }
+  check(on / total > 0.95, `sharp rims: ${(100 * on / total).toFixed(0)}% of a cylinder's rims lie on an edge loop with the quads following the shape`);
+}
+
 // Bumps that the mirror plane only grazes: the cut loop there is smaller than a quad and sags off the plane unless the
 // whole loop is put back on it, which left gaps along the seam.
 {
