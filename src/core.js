@@ -2173,8 +2173,8 @@ export function unwrapResult(mesh, plane, labels, size) {
 export const QUAD_DENSITY = { 0: 1, 1: 2, 2: 4, 3: 8, '-1': 0.5, '-2': 0.25, '-3': 0.125, 100: 8, 50: 1, '-100': 0.125 };
 // Edges sharper than this (degrees) stay edge loops in Quads mode, when they run long enough to be features.
 export const QUAD_SHARP = 45;
-// Every separate piece gets at least this many quads (while that takes no more than a fifth of the budget).
-const MIN_PIECE_QUADS = 24;
+// Separate pieces with less surface than this many quads' worth are left out of a remesh.
+const SPECK_QUADS = 1 / 50;
 
 // The welded surface with the vertices that share a position and part merged (UV seams, hard edges and material
 // borders no longer cut it), for remeshing. rep: the welded vertex each merged one stands for; triMat: each triangle's
@@ -2223,41 +2223,33 @@ function hashFloats(a) {
   return (h >>> 0).toString(36);
 }
 
-// Density per vertex that gives each separate piece at least MIN_PIECE_QUADS quads, on top of the painted density.
-function pieceDensity(mesh, density, quads) {
+// The index without separate pieces too small for SPECK_QUADS of a quad at this budget (scan dust): no face could cover
+// them, and sizing the grid for them made steps of up to 1e48 times the rest's. The rest keep at least a few faces
+// each (see remeshQuads).
+function dropSpecks(mesh, density, quads) {
   const V = mesh.vertexCount, idx = mesh.index, P = mesh.positions, uf = new UnionFind(V);
   for (let t = 0; t < idx.length; t += 3) { uf.union(idx[t], idx[t + 1]); uf.union(idx[t + 1], idx[t + 2]); }
   const { labels, count } = uf.labels(V);
-  if (count < 2) return density;
-  const area = new Float64Array(count), weighted = new Float64Array(count);
+  if (count < 2) return idx;
+  const weighted = new Float64Array(count);
+  let total = 0;
   for (let t = 0; t < idx.length; t += 3) {
     const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
     const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
     const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
-    const ar = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2, k = labels[idx[t]];
-    area[k] += ar;
-    weighted[k] += density ? (ar * (density[idx[t]] + density[idx[t + 1]] + density[idx[t + 2]])) / 3 : ar;
+    const ar = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+    const w = density ? (ar * (density[idx[t]] + density[idx[t + 1]] + density[idx[t + 2]])) / 3 : ar;
+    weighted[labels[idx[t]]] += w;
+    total += w;
   }
-  let total = 0;
-  for (let k = 0; k < count; k++) total += weighted[k];
-  // Quads a piece would get, and the boost that lifts it to the minimum; the boosts together stay within a fifth.
-  let min = MIN_PIECE_QUADS, extra = 0;
-  const boost = new Float64Array(count).fill(1);
-  for (let pass = 0; pass < 2; pass++) {
-    extra = 0;
-    for (let k = 0; k < count; k++) {
-      const share = (quads * weighted[k]) / total;
-      // In powers of two, so a small change of budget leaves the densities (and the remesher's cache) as they were.
-      boost[k] = share > 0 && share < min ? 2 ** Math.ceil(Math.log2(min / share)) : 1;
-      if (boost[k] > 1) extra += share * (boost[k] - 1);
-    }
-    if (extra <= quads * 0.2) break;
-    min *= (quads * 0.2) / extra;
-  }
-  if (!boost.some(b => b > 1)) return density;
-  const out = new Float32Array(V);
-  for (let v = 0; v < V; v++) out[v] = (density ? density[v] : 1) * boost[labels[v]];
-  return out;
+  const keep = new Uint8Array(count);
+  let dropped = 0;
+  for (let k = 0; k < count; k++) { keep[k] = (quads * weighted[k]) / total >= SPECK_QUADS ? 1 : 0; if (!keep[k] && weighted[k] > 0) dropped++; }
+  if (!dropped) return idx;
+  const out = new Uint32Array(idx.length);
+  let n = 0;
+  for (let t = 0; t < idx.length; t += 3) if (keep[labels[idx[t]]]) { out[n++] = idx[t]; out[n++] = idx[t + 1]; out[n++] = idx[t + 2]; }
+  return out.slice(0, n);
 }
 
 // The remesher's quads as the result mesh: two consecutive triangles per quad (quad marks as in validatePairs), split
@@ -2413,7 +2405,7 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     for (let v = 0; v < V; v++) { const l = labels[welded(v)]; density[v] = QUAD_DENSITY[l] ?? 1; if (l && l !== LABEL.PLAIN) any = true; }
     if (!any) density = null;
   }
-  density = pieceDensity({ positions: base.positions, index, vertexCount: V }, density, quads);
+  index = dropSpecks({ positions: base.positions, index, vertexCount: V }, density, quads);
   // The remesher keeps its working surface and direction field per variant (whole or kept half) between budgets.
   const holder = sym ? halfFor(geo, sym) : geo;
   if (!holder.quadCache) holder.quadCache = {};

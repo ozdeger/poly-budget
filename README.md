@@ -48,7 +48,7 @@ The toggle at the top of the budget picks what comes out.
 - **Quads** rebuilds the surface as a new mesh of quads, at the budget's triangle count divided by two. The edges run along the shape, around limbs and across faces, so the result can be edited, subdivided and rigged. Unity still counts it as triangles (two per quad), so the budget means the same in both modes.
 - In Quads mode the budget is typed and shown in quads (`12500`, `12.5k`); a percentage is still of the original triangles. Remeshing can't hit an exact count: it lands within a few percent, which counts as on budget.
 - Every face is a quad. The result card adds the quad count and the poles: vertices where other than four quads meet, which is where edge loops start and end.
-- Painting sets the quad size: More detail gives 2, 4 or 8 times as many quads per area, Less detail ½, ¼ or ⅛, and Keep the smallest quads (8 times). Separate small pieces always keep at least a few quads, unless Remove tiny floating parts is on.
+- Painting sets the quad size: More detail gives 2, 4 or 8 times as many quads per area, Less detail ½, ¼ or ⅛, and Keep the smallest quads (8 times). Separate small pieces keep at least 24 quads, and flat lettering enough for its strokes to be two and a half quads across, from up to a fifth of the budget; on a model of hundreds of parts the smallest get just enough to be there. Specks smaller than a fiftieth of a quad are left out, and so are tiny floating parts when Remove tiny floating parts is on.
 - Quads come out evenly sized, while a triangle reduction crowds its triangles onto the detail. At game budgets, paint More detail on faces and hands in Quads mode, or eyes and lips smooth away.
 - **Keep sharp edges** (on by default) turns edges sharper than 45° into edge loops, so the rims and corners of hard-surface parts stay crisp instead of being bevelled. Short sharp runs, which on scans and AI meshes are surface noise, are ignored; "short" is measured in the local quad size, so where quads get small, shorter edges count.
   - Edges on both sides run along a kept sharp edge, and a grid line passes through it. On a flat face beside a crease, the edges used to run any way at all and meet the crease at an angle.
@@ -198,7 +198,7 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 - Skinned meshes are reduced in their bind pose and exported without bones. Animations are not kept.
 - One UV set per model.
 - Memory is the browser's: a model of 1.5 million triangles with 4K textures works on a desktop, phones may run out.
-- Quads mode doesn't reach the quality of dedicated retopology tools on every model. Expect some poles: about one vertex in nine with even quads, and one in five following the shape on organic models. Parts much thinner than a quad edge (fingers, strands of hair at low budgets) come out rough, spokes and cables break up, and small separate parts such as lettering on a base can vanish.
+- Quads mode doesn't reach the quality of dedicated retopology tools on every model. Expect some poles: about one vertex in nine with even quads, and one in five following the shape on organic models. Parts much thinner than a quad edge (fingers, strands of hair at low budgets) come out rough, and spokes and cables break up.
 
 ## Project layout
 

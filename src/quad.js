@@ -592,6 +592,18 @@ function extractGraph(L) {
   let nv = 0, avg = 0;
   for (let i = 0; i < n; i++) if (parent[i] === i && nbr[i].length) { vid[i] = nv++; avg += collapses[i]; }
   avg /= Math.max(1, nv);
+  // The same per piece (groups never span two).
+  const pieceOf = new Int32Array(nv).fill(-1), pieceSum = new Map(), pieceN = new Map();
+  if (L.piece) {
+    for (let i = 0; i < n; i++) {
+      if (vid[i] < 0) continue;
+      const p = L.piece[i];
+      pieceOf[vid[i]] = p;
+      pieceSum.set(p, (pieceSum.get(p) || 0) + collapses[i]);
+      pieceN.set(p, (pieceN.get(p) || 0) + 1);
+    }
+  }
+  const avgOf = v => (pieceOf[v] < 0 ? avg : Math.min(avg, pieceSum.get(pieceOf[v]) / pieceN.get(pieceOf[v])));
   const adj = new Array(nv), weight = new Float64Array(nv), removed = new Uint8Array(nv);
   const count = new Int32Array(nv);
   for (let i = 0; i < n; i++) {
@@ -601,9 +613,10 @@ function extractGraph(L) {
     adj[v] = [...set];
     count[v] = collapses[i];
   }
-  // Groups that barely merged anything sit on grid corners that no input vertex really owns.
+  // Groups that barely merged anything sit on grid corners that no input vertex really owns (against their own piece:
+  // on a piece narrower than a grid step every corner merges less).
   for (let v = 0; v < nv; v++) {
-    if (count[v] > avg / 10) continue;
+    if (count[v] > avgOf(v) / 10) continue;
     for (const u of adj[v]) { const a = adj[u], k = a.indexOf(v); if (k >= 0) a.splice(k, 1); }
     adj[v] = [];
     removed[v] = 1;
@@ -641,6 +654,9 @@ function extractGraph(L) {
 }
 
 const has = (list, x) => list.indexOf(x) >= 0;
+// Faces a separate piece gets at the least (a flat open one more, for its strokes; see pieceFloor), and where the budget
+// can't give every piece that many, enough to be there at all.
+const MIN_PIECE_QUADS = 24, PRESENT_QUADS = 4;
 // A loop that passes one vertex twice, as the simple loops it is made of (three corners or more each).
 function simpleLoops(loop) {
   const out = [], stack = [loop];
@@ -896,14 +912,15 @@ function extractFaces(G) {
     }
   }
   // Flaps: a face hanging off the surface by one edge (two or more of its corners belong to no other face) is dropped,
-  // so the hole it covers gets filled properly.
+  // so the hole it covers gets filled properly. Corners on real open borders don't count: along them a strip one face
+  // wide (a letter's stroke) is all such faces.
   for (let round = 0; round < 3; round++) {
     const uses = new Int32Array(nv);
     for (const p of faces) for (const v of p) uses[v]++;
     let dropped = 0;
     for (let f = faces.length - 1; f >= 0; f--) {
       const p = faces[f];
-      if (p.filter(v => uses[v] === 1).length < 2) continue;
+      if (p.filter(v => uses[v] === 1 && !G.fixed[v]).length < 2) continue;
       unuse(p);
       faces.splice(f, 1);
       dropped++;
@@ -1432,7 +1449,7 @@ function repairFaces(faces, P, nv, keepOpen) {
     const uses = new Int32Array(nv);
     for (const p of list) for (const v of p) uses[v]++;
     const before = list.length;
-    list = list.filter(p => p.filter(v => uses[v] === 1).length < 2);
+    list = list.filter(p => p.filter(v => uses[v] === 1 && !keepOpen(v)).length < 2);
     dropped += before - list.length;
     if (list.length === before) break;
   }
@@ -1721,27 +1738,86 @@ function normalsAndAreas(P, index) {
   return { N, A };
 }
 
+// The input's connected pieces: label (0 … count - 1) per vertex.
+function pieceLabels(index, V) {
+  const parent = new Int32Array(V);
+  for (let v = 0; v < V; v++) parent[v] = v;
+  const find = x => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  for (let t = 0; t < index.length; t += 3) {
+    const a = find(index[t]), b = find(index[t + 1]);
+    if (a !== b) parent[a] = b;
+    const c = find(index[t + 2]), d = find(b);
+    if (c !== d) parent[c] = d;
+  }
+  const label = new Int32Array(V).fill(-1);
+  let count = 0;
+  for (let v = 0; v < V; v++) { const r = find(v); if (label[r] < 0) label[r] = count++; label[v] = label[r]; }
+  return { label, count };
+}
+
+// How much denser each separate piece must be so that the faces it gets at this budget reach its floor: MIN_PIECE_QUADS,
+// or for a flat open piece enough for its strokes to be two and a half faces across (6.25 · area / stroke², the stroke
+// being 2 · area / outline; two across lost stroke ends at some budgets), up to four times MIN_PIECE_QUADS, whatever
+// share of the surface it has. The extra stays within a fifth of the budget (shared out as below). Worked out on the
+// metric as sized (faces per area follow curvature, so a share of the area says little) and for the budget step, so
+// the working surface can be reused within it. Returns { boost per piece, key } or null.
+function pieceFloor(srcP, srcIdx, srcA, mArea, pieces, budget) {
+  const C = pieces.count, label = pieces.label;
+  if (C < 2) return null;
+  const V = srcA.length, area = new Float64Array(C), weight = new Float64Array(C);
+  let total = 0;
+  for (let v = 0; v < V; v++) { area[label[v]] += srcA[v]; weight[label[v]] += srcA[v] * mArea[v]; total += srcA[v] * mArea[v]; }
+  const share = new Float64Array(C), small = new Uint8Array(C);
+  let any = false;
+  for (let k = 0; k < C; k++) { share[k] = (budget * weight[k]) / total; if (area[k] > 0 && share[k] < 4 * MIN_PIECE_QUADS) small[k] = 1, any = true; }
+  if (!any) return null;
+  // Outlines (open edges) of the pieces that may need a floor, from their own triangles.
+  const sub = [];
+  for (let t = 0; t < srcIdx.length; t += 3) if (small[label[srcIdx[t]]]) sub.push(srcIdx[t], srcIdx[t + 1], srcIdx[t + 2]);
+  const E = edgesOf(sub, V), outline = new Float64Array(C);
+  for (let e = 0; e < E.n; e++) {
+    if (E.count[e] !== 1) continue;
+    const a = E.a[e], b = E.b[e];
+    outline[label[a]] += Math.hypot(srcP[a * 3] - srcP[b * 3], srcP[a * 3 + 1] - srcP[b * 3 + 1], srcP[a * 3 + 2] - srcP[b * 3 + 2]);
+  }
+  const want = new Float64Array(C);
+  for (let k = 0; k < C; k++) if (small[k]) want[k] = Math.max(MIN_PIECE_QUADS, Math.min(4 * MIN_PIECE_QUADS, (1.5625 * outline[k] * outline[k]) / area[k]));
+  // First every piece gets enough to be there at all (PRESENT_QUADS, or what fits of it), then whole floors go to the
+  // pieces that need the least extra for them. A fraction of every floor instead left each of a road bike's 700 parts a
+  // few faces that couldn't close (its open edges at 30k: 4,329 against 1,508).
+  const need = [], cap = budget * 0.2, got = Float64Array.from(share);
+  for (let k = 0; k < C; k++) if (share[k] > 0 && share[k] < want[k]) need.push(k);
+  let extra = 0;
+  for (const k of need) extra += Math.max(0, PRESENT_QUADS - share[k]);
+  const g = extra > cap ? cap / extra : 1;
+  extra = 0;
+  for (const k of need) { const add = Math.max(0, PRESENT_QUADS - share[k]) * g; got[k] += add; extra += add; }
+  need.sort((x, y) => want[x] - got[x] - (want[y] - got[y]) || x - y);
+  for (const k of need) {
+    if (extra + want[k] - got[k] > cap) break;
+    extra += want[k] - got[k];
+    got[k] = want[k];
+  }
+  const boost = new Float64Array(C).fill(1), parts = [];
+  for (const k of need) if (got[k] > share[k]) { boost[k] = got[k] / share[k]; parts.push(`${k}:${boost[k].toPrecision(6)}`); }
+  if (!parts.length) return null;
+  let h = 0x811c9dc5;
+  const text = parts.join(',');
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+  return { boost, key: `${parts.length}:${(h >>> 0).toString(36)}` };
+}
+
 // The working surface for the fields: a dense input clustered to about two and a half vertices per (shortest) grid
 // step, and edges still longer than 0.7 of a step along their direction split so the grid can't step over a vertex;
 // then its normals (smoothed a little, keeping sharp edges), metric (Msrc, per source vertex), the open borders as
 // constraints, and the hierarchy. scale: the grid scale the metric is read with.
-function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens, crease) {
+function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens, crease, piece) {
   let weighted = 0;
   for (let v = 0; v < V0; v++) { const s = sizeAt(v); weighted += srcA[v] / (s * s); }
   const expected = cellFactor * cellFactor * weighted;
   let wP, wN, wA, wIdx, wOf = null, wRep = null;
   if (V0 > expected * 1.5) {
-    // The input's connected pieces: a cluster never spans two of them.
-    const piece = new Int32Array(V0);
-    for (let v = 0; v < V0; v++) piece[v] = v;
-    const find = x => { while (piece[x] !== x) { piece[x] = piece[piece[x]]; x = piece[x]; } return x; };
-    for (let t = 0; t < srcIdx.length; t += 3) {
-      const a = find(srcIdx[t]), b = find(srcIdx[t + 1]);
-      if (a !== b) piece[a] = b;
-      const c = find(srcIdx[t + 2]), d = find(b);
-      if (c !== d) piece[c] = d;
-    }
-    for (let v = 0; v < V0; v++) piece[v] = find(v);
+    // A cluster never spans two of the input's connected pieces.
     const cl = clusterSurface(srcP, srcIdx, srcN, srcA, v => sizeAt(v) / cellFactor, piece);
     wP = cl.positions; wN = cl.normals; wA = cl.area; wIdx = cl.index; wOf = cl.of; wRep = cl.rep;
   } else {
@@ -1762,6 +1838,10 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   L0.N.set(wN.subarray(0, nC * 3));
   L0.S.set(sub.size);
   L0.M = sub.metric;
+  // Each working vertex's piece; a split vertex's is its parents'.
+  L0.piece = new Int32Array(n);
+  for (let k = 0; k < nC; k++) L0.piece[k] = piece[wRep[k]];
+  for (let v = nC; v < n; v++) L0.piece[v] = L0.piece[sub.parentA[v]];
   // The painted density at each working vertex (log), which the step fit leaves as asked; a split vertex takes the
   // mean of its two parents'.
   if (dens) {
@@ -2544,6 +2624,14 @@ function fitSteps(levels, WI) {
       offsets[0].dA[i] += d; offsets[0].dB[i] += d;
     }
   }
+  // At most ten times past the band: a working vertex with next to no data weight runs away otherwise (a speck's group
+  // by hundreds of log units; on a clean scan a sliver's, to 4e6 times the mean edge). Near the band the solver's soft
+  // edges hold, and clamping to them exactly makes the grid worse.
+  const past = Math.LN10;
+  for (let i = 0; i < n; i++) {
+    offsets[0].dA[i] = Math.min(ceil + past, Math.max(floor[i] - x0[i] - past, offsets[0].dA[i]));
+    offsets[0].dB[i] = Math.min(ceil + past, Math.max(floor[i] - x0[n + i] - past, offsets[0].dB[i]));
+  }
   let before = 0, after = 0;
   for (let i = 0; i < n; i++) { const share = A[i] / (SU[i] * SV[i]); before += share; after += share * Math.exp(-offsets[0].dA[i] - offsets[0].dB[i]); }
   // Coarser levels: their children's offsets, area-weighted, swapped where a child's direction is a quarter turn off.
@@ -2612,9 +2700,11 @@ export function remeshQuads(mesh, opt) {
     }
     mark('form');
   }
+  let ownM = false;
   if (!Msrc || dens) {
     const base = Msrc;
     Msrc = new Float32Array(V0 * 6);
+    ownM = true;
     for (let v = 0; v < V0; v++) {
       const f = dens ? dens[v] : 1;
       if (base) for (let k = 0; k < 6; k++) Msrc[v * 6 + k] = base[v * 6 + k] * f;
@@ -2627,6 +2717,22 @@ export function remeshQuads(mesh, opt) {
     tangentEigen(Msrc, v * 6, srcN[v * 3], srcN[v * 3 + 1], srcN[v * 3 + 2], EG);
     const m1 = Math.max(1e-12, Math.abs(EG.big)), m2 = Math.max(1e-12, Math.abs(EG.small));
     mMax[v] = m1; mArea[v] = Math.sqrt(m1 * m2);
+  }
+  // Separate pieces (a cluster of the working surface never spans two), each with at least its floor of faces.
+  const pieces = pieceLabels(srcIdx, V0);
+  const pieceMin = pieceFloor(srcP, srcIdx, srcA, mArea, pieces, 2 ** (step / 4));
+  let densFit = dens, floorKey = '';
+  if (pieceMin) {
+    if (!ownM) Msrc = Float32Array.from(Msrc);
+    densFit = new Float32Array(V0);
+    for (let v = 0; v < V0; v++) {
+      const f = pieceMin.boost[pieces.label[v]];
+      densFit[v] = (dens ? dens[v] : 1) * f;
+      if (f === 1) continue;
+      for (let k = 0; k < 6; k++) Msrc[v * 6 + k] *= f;
+      mMax[v] *= f; mArea[v] *= f;
+    }
+    floorKey = pieceMin.key;
   }
 
   // Surface area weighted by faces per area sets the grid scale: faces ≈ Σ area·density / scale².
@@ -2660,7 +2766,7 @@ export function remeshQuads(mesh, opt) {
   const cellFactor = 2.5, splitFactor = 0.7;
   const seed = opt.seed ?? 12345;
   const bucket = opt.adapt > 0 ? step : Math.round(4 * Math.log2(scale / cellFactor));
-  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0, opt.fit !== false].join('|');
+  const key = [opt.cacheKey ?? '', bucket, opt.boundary !== false, seed, opt.sharp || 0, opt.adapt || 0, opt.fit !== false, floorKey].join('|');
   let work = cache && cache.key === key && opt.cacheKey !== undefined ? cache.work : null;
   if (work) {
     for (const L of work.levels) levelSpacings(L, scale);
@@ -2668,7 +2774,7 @@ export function remeshQuads(mesh, opt) {
     mark('cached');
     if (progress) progress('orientation', 1);
   } else {
-    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens, crease);
+    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, densFit, crease, pieces.label);
     for (const L of work.levels) levelAlignment(L, 0.5);
     solveOrientations(work.levels, seed, progress);
     for (const L of work.levels) levelSpacings(L, scale);
