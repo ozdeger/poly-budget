@@ -3348,13 +3348,18 @@ function formAnalysis(P, index, N, A, opt = {}) {
   const T = index.length / 3, diag = Math.hypot(x1 - x0, y1 - y0, z1 - z0) || 1;
   const rays = new SurfaceGrid(P, index, 2 * Math.sqrt((4 * area) / (Math.sqrt(3) * Math.max(1, T))));
   // Up to five members per cluster, each along its own normal; the median of their hits (a miss counts as none), and no
-  // thickness unless most of them hit: on a scanned beard single rays met the fringes of the noise.
-  const thick = new Float32Array(C), got = new Uint8Array(C), hits = new Float32Array(C * 5);
+  // thickness unless most of them hit: on a scanned beard single rays met the fringes of the noise. Rays stop at 0.06 √area:
+  // a part that thick is thicker than the longest edge 1,700 faces or more would ask for (through a solid statue the rays
+  // ran far and took most of the analysis's time).
+  // Three misses settle the median, so a cluster stops there.
+  const thick = new Float32Array(C), got = new Uint8Array(C), missed = new Uint8Array(C), hits = new Float32Array(C * 5), reach = 0.06 * Math.sqrt(area);
   for (let v = 0; v < V; v++) {
     const c = cl.of[v];
-    if (c < 0 || got[c] >= 5) continue;
+    if (c < 0 || got[c] >= 5 || missed[c] >= 3) continue;
     const l = Math.hypot(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]) || 1;
-    hits[c * 5 + got[c]++] = rays.ray(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], -N[v * 3] / l, -N[v * 3 + 1] / l, -N[v * 3 + 2] / l, 1e-6 * diag, 0.2 * diag, true);
+    const d = rays.ray(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], -N[v * 3] / l, -N[v * 3 + 1] / l, -N[v * 3 + 2] / l, 1e-6 * diag, reach, true);
+    hits[c * 5 + got[c]++] = d;
+    if (d === Infinity) missed[c]++;
   }
   for (let c = 0; c < C; c++) {
     const list = Array.from(hits.subarray(c * 5, c * 5 + got[c])).sort((a, b) => a - b);
@@ -9497,13 +9502,18 @@ function formAnalysis(P, index, N, A, opt = {}) {
   const T = index.length / 3, diag = Math.hypot(x1 - x0, y1 - y0, z1 - z0) || 1;
   const rays = new SurfaceGrid(P, index, 2 * Math.sqrt((4 * area) / (Math.sqrt(3) * Math.max(1, T))));
   // Up to five members per cluster, each along its own normal; the median of their hits (a miss counts as none), and no
-  // thickness unless most of them hit: on a scanned beard single rays met the fringes of the noise.
-  const thick = new Float32Array(C), got = new Uint8Array(C), hits = new Float32Array(C * 5);
+  // thickness unless most of them hit: on a scanned beard single rays met the fringes of the noise. Rays stop at 0.06 √area:
+  // a part that thick is thicker than the longest edge 1,700 faces or more would ask for (through a solid statue the rays
+  // ran far and took most of the analysis's time).
+  // Three misses settle the median, so a cluster stops there.
+  const thick = new Float32Array(C), got = new Uint8Array(C), missed = new Uint8Array(C), hits = new Float32Array(C * 5), reach = 0.06 * Math.sqrt(area);
   for (let v = 0; v < V; v++) {
     const c = cl.of[v];
-    if (c < 0 || got[c] >= 5) continue;
+    if (c < 0 || got[c] >= 5 || missed[c] >= 3) continue;
     const l = Math.hypot(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]) || 1;
-    hits[c * 5 + got[c]++] = rays.ray(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], -N[v * 3] / l, -N[v * 3 + 1] / l, -N[v * 3 + 2] / l, 1e-6 * diag, 0.2 * diag, true);
+    const d = rays.ray(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], -N[v * 3] / l, -N[v * 3 + 1] / l, -N[v * 3 + 2] / l, 1e-6 * diag, reach, true);
+    hits[c * 5 + got[c]++] = d;
+    if (d === Infinity) missed[c]++;
   }
   for (let c = 0; c < C; c++) {
     const list = Array.from(hits.subarray(c * 5, c * 5 + got[c])).sort((a, b) => a - b);

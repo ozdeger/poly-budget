@@ -531,19 +531,24 @@
         {
           "url": "https://upload.wikimedia.org/wikipedia/commons/6/64/Body_female_realistic_by_Dan_Ulrich_%28CC0%29.stl",
           "name": "body-female.stl",
-          "bytes": 270976084
+          "bytes": 270976084,
+          "sha256": "780b369c97e027a7fe9a6a55bd5976780da51390c525f6f04312dedec5d01f7c"
         }
       ],
       "open": "body-female.stl",
-      "vertices": null,
+      "vertices": 2709762,
       "triangles": 5419520,
-      "counts": "triangles from the file size",
+      "counts": "measured",
       "tags": [
         "symmetric",
         "fingers",
         "STL"
       ],
-      "tests": "A clean A-pose body with spread fingers and toes: the cleanest mirror-mode test, and fingers that must not fuse."
+      "tests": "A clean A-pose body with spread fingers and toes: the cleanest mirror-mode test, and fingers that must not fuse.",
+      "mirror": {
+        "axis": 0,
+        "offset": -1.34008
+      }
     },
     {
       "id": "smk-kore",
