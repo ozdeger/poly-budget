@@ -66,7 +66,7 @@ The toggle at the top of the budget picks what comes out.
 - Normals are taken from the original surface where each new vertex sits (Original or Smooth), or creased at an angle.
 - FBX and OBJ store the faces as quads. GLB can only hold triangles, so it gets two per quad.
 
-Quads mode takes longer than a reduction, with the progress in the result card. For the example models at 10,000 quads it took 9 to 23 seconds; some shapes in the test collection take up to about two minutes (in Node on an Apple M5 Pro).
+Quads mode takes longer than a reduction, with the progress in the result card. For the example models at 10,000 quads it took 5 to 11 seconds, and 3 to 28 seconds for the other test models at 10,000 and 30,000 quads, apart from two torture cases: a restaurant interior of many small parts and a ball of hair strands (in Node on an Apple M5 Pro).
 
 ### Paint where detail matters
 

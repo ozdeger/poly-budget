@@ -2715,7 +2715,9 @@ export function remeshQuads(mesh, opt) {
   // vertices go onto it however far they sagged, or the mirrored half would leave a gap there.
   const onCut = cutVertices(faces, P, nv, plane, 0.75 * sizeRef());
   const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
-  for (let v = 0; v < nv; v++) { project(v); snapPlane(v); }
+  // Vertices no face uses (grid corners extraction dropped, still at the origin) are left alone: projecting them made the
+  // surface search scan every input triangle once the origin lay outside the model, most of the time on some models.
+  for (let v = 0; v < nv; v++) { if (!nbr[v].length) continue; project(v); snapPlane(v); }
   // Sharp edges: corners take the nearest vertex and hold it; vertices close to an edge move onto it and afterwards only
   // slide along it. Distances count in the local face size (the mean length of a vertex's edges), which varies where
   // density follows the shape or paint.
@@ -2781,7 +2783,7 @@ export function remeshQuads(mesh, opt) {
       tmp[v * 3] += (cx - nx * d) * 0.8; tmp[v * 3 + 1] += (cy - ny * d) * 0.8; tmp[v * 3 + 2] += (cz - nz * d) * 0.8;
     }
     P.set(tmp);
-    for (let v = 0; v < nv; v++) if (!border[v]) {
+    for (let v = 0; v < nv; v++) if (!border[v] && nbr[v].length) {
       if (sharpV[v]) { const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2]; project(v); P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z; }
       else project(v);
     }
