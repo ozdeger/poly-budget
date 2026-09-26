@@ -13102,7 +13102,7 @@ function loadTangents() {
 // ---------- settings ----------
 const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
-  targetPct: 10, topology: 'tris', quadSharp: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
+  targetPct: 10, topology: 'quads', quadSharp: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, normalFormat: 'opengl',
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
@@ -13110,10 +13110,17 @@ const DEFAULTS = {
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
 };
 const settings = { ...DEFAULTS };
-// Only settings the tool still has are read back, so options removed since they were saved drop out.
+// Only settings the tool still has are read back, so options removed since they were saved drop out. Settings saved while
+// Triangles was the default open in Quads, the default now, once; the toggle still picks Triangles after that.
+const QUADS_DEFAULT = 'poly-budget:quads-default';
 try {
   const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
   for (const key of Object.keys(DEFAULTS)) if (key in saved) settings[key] = saved[key];
+  if (!localStorage.getItem(QUADS_DEFAULT)) {
+    settings.topology = 'quads';
+    if ('topology' in saved) localStorage.setItem(STORE, JSON.stringify({ ...saved, topology: 'quads' }));
+    localStorage.setItem(QUADS_DEFAULT, '1');
+  }
 } catch { /* storage unavailable */ }
 let saveTimer = 0;
 function saveSettings() {

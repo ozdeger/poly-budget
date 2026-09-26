@@ -7,7 +7,7 @@ Bring heavy 3D models down to a triangle budget in the browser, without losing t
 > [!NOTE]
 > **Written by AI, not maintained by hand.** Everything in this repository, the code, the tests and this README, is written and revised by an AI coding assistant (Claude, working in Claude Code) from its owner's requests. None of it is written or kept up to date by hand. Treat it as generated code: check what it produces before you rely on it, and read the code before you reuse it.
 
-Poly Budget is for models that are far too dense for real-time use: scans, sculpts and AI-generated meshes that arrive with a million or more triangles, split vertices and thousands of UV islands. Set a triangle budget, paint where the detail matters (surface no one can see gets less on its own), and export a model whose textures still fit. Switch the budget to **Quads** and the model is rebuilt as quads whose edges follow its shape instead, ready for editing, subdivision and rigging.
+Poly Budget is for models that are far too dense for real-time use: scans, sculpts and AI-generated meshes that arrive with a million or more triangles, split vertices and thousands of UV islands. Set a budget, paint where the detail matters (surface no one can see gets less on its own), and the model is rebuilt as quads whose edges follow its shape, ready for editing, subdivision and rigging, with its textures baked onto the new surface. Switch the budget to **Triangles** to reduce the model's own triangles instead, which can keep its original UVs.
 
 Everything runs in your browser. Models and textures are never uploaded.
 
@@ -42,10 +42,10 @@ The pictures show these models reduced and remeshed by Poly Budget: Bearded guy 
 
 ### Triangles or quads
 
-The toggle at the top of the budget picks what comes out.
+The toggle at the top of the budget picks what comes out; Quads is the default.
 
-- **Triangles** reduces the model's own triangles, as described above. It keeps the most shape for the fewest triangles.
 - **Quads** rebuilds the surface as a new mesh of quads, at the budget's triangle count divided by two. The edges run along the shape, around limbs and across faces, so the result can be edited, subdivided and rigged. Unity still counts it as triangles (two per quad), so the budget means the same in both modes.
+- **Triangles** reduces the model's own triangles, as described above. It keeps the most shape for the fewest triangles.
 - In Quads mode the budget is typed and shown in quads (`12500`, `12.5k`); a percentage is still of the original triangles. Remeshing can't hit an exact count: it lands within a few percent, which counts as on budget.
 - Every face is a quad. The result card adds the quad count and the poles: vertices where other than four quads meet, which is where edge loops start and end.
 - Painting sets the quad size: More detail gives 2, 4 or 8 times as many quads per area, Less detail ½, ¼ or ⅛, and Keep the smallest quads (8 times). Separate small pieces keep at least 24 quads, and flat lettering enough for its strokes to be two and a half quads across, from up to a fifth of the budget; on a model of hundreds of parts the smallest get just enough to be there. Specks smaller than a fiftieth of a quad are left out, and so are tiny floating parts when Remove tiny floating parts is on.
