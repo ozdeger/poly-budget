@@ -4,53 +4,14 @@
 //        [--mirror] [--json=out.json]
 //   --tris / --quads   budgets in faces (0 skips the mode); quads are counted as faces, as the app shows them
 //   --mirror           also remeshes into quads with the model's mirror plane (models whose manifest entry has one)
+//   --save=dir         writes each result there as an OBJ (quads kept as quads), to look at or open in the app
 //   --measure [--pin]  only loads and welds: counts, UV islands, open edges, and the best mirror plane of models tagged
 //                      symmetric; --pin writes the counts and planes into manifest.json
 import fs from 'fs';
 import path from 'path';
-import { THREE, core, collectScene, S, settings, context } from '../helpers.js';
-import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
-import { MeshoptDecoder } from 'meshoptimizer';
+import { core, collectScene, S, settings, context } from '../helpers.js';
 import { pick, modelPath, manifest } from './fetch.mjs';
-
-// The glTF loader reads browser globals (self.URL) for embedded images.
-globalThis.self ??= globalThis;
-// glTF waits for its textures to load; here they are empty stand-ins, handed over at once. Its buffers next to the file
-// are read from disk, which fetch() can't do here.
-THREE.TextureLoader.prototype.load = function (url, onLoad) { const t = new THREE.Texture(); t.name = url; if (onLoad) queueMicrotask(() => onLoad(t)); return t; };
-const fileLoad = THREE.FileLoader.prototype.load;
-THREE.FileLoader.prototype.load = function (url, onLoad, onProgress, onError) {
-  if (/^(https?|data|blob):/.test(url)) return fileLoad.call(this, url, onLoad, onProgress, onError);
-  try {
-    const buf = fs.readFileSync(decodeURIComponent(url));
-    const data = this.responseType === 'arraybuffer' ? buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) : buf.toString('utf8');
-    queueMicrotask(() => onLoad(this.responseType === 'json' ? JSON.parse(data) : data));
-  } catch (e) { if (onError) onError(e); else throw e; }
-};
-
-// As the app opens it: normals dropped where the file has none of its own (OBJ without vn, STL, PLY without normals),
-// so smooth ones are worked out instead of flat ones that split every vertex.
-async function load(file) {
-  const ext = path.extname(file).slice(1).toLowerCase(), buf = fs.readFileSync(file);
-  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  if (ext === 'fbx') return new FBXLoader().parse(ab, '');
-  if (ext === 'glb' || ext === 'gltf') return (await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).parseAsync(ext === 'glb' ? ab : buf.toString('utf8'), path.dirname(file) + '/')).scene;
-  if (ext === 'obj') {
-    const text = buf.toString('utf8'), root = new OBJLoader().parse(text);
-    if (!/^vn\s/m.test(text)) root.traverse(o => { if (o.isMesh) o.geometry.deleteAttribute('normal'); });
-    return root;
-  }
-  if (ext === 'stl' || ext === 'ply') {
-    const geo = ext === 'stl' ? new STLLoader().parse(ab) : new PLYLoader().parse(ab), n = geo.attributes.normal;
-    if (ext === 'stl' || !n || !n.array.some(v => v !== 0)) geo.deleteAttribute('normal');
-    return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ name: 'Material', vertexColors: !!geo.attributes.color }));
-  }
-  throw new Error(`can't open .${ext}`);
-}
+import { load } from './load.mjs';
 
 // Area-weighted points on a triangle mesh (deterministic).
 function samples(P, I, K) {
@@ -245,6 +206,21 @@ function degenerate(P, I) {
   return n;
 }
 
+// A result as OBJ text: corners at one position become one vertex, a quad's two triangles one face.
+function resultObj(r, note) {
+  const P = r.positions, id = new Map(), g = new Int32Array(r.vertexCount), out = [`# ${note}`];
+  for (let v = 0; v < r.vertexCount; v++) {
+    const k = `${P[v * 3]} ${P[v * 3 + 1]} ${P[v * 3 + 2]}`;
+    if (!id.has(k)) { id.set(k, id.size + 1); out.push(`v ${k}`); }
+    g[v] = id.get(k);
+  }
+  for (let t = 0; t < r.triCount; t++) {
+    const q = r.quad && r.quad[t] === 1 ? core.quadCorners(r.index, t) : null;
+    if (q) { out.push(`f ${q.map(v => g[v]).join(' ')}`); t++; } else out.push(`f ${g[r.index[t * 3]]} ${g[r.index[t * 3 + 1]]} ${g[r.index[t * 3 + 2]]}`);
+  }
+  return out.join('\n') + '\n';
+}
+
 function keptHalf(pts, plane) {
   const out = [];
   for (let i = 0; i < pts.length; i += 3) if (pts[i + plane.axis] >= plane.offset) out.push(pts[i], pts[i + 1], pts[i + 2]);
@@ -290,6 +266,11 @@ for (const m of pick(process.argv.slice(2))) {
     const dev = pct(distances(r.positions, r.index, plane ? keptHalf(pts, plane) : pts), b.diag);
     const row = { id: m.id, mode: plane ? 'mirrored quads' : topology, budget: faces, faces: got, ms, deviation: dev, open: oe.open, nonManifold: oe.nonManifold, degenerate: degenerate(r.positions, r.index), poles: info.poles ? info.poles.count / info.poles.inner : null, uv: r.uvLayout || 'kept' };
     rows.push(row);
+    const saveDir = arg('save', null);
+    if (saveDir) {
+      fs.mkdirSync(saveDir, { recursive: true });
+      fs.writeFileSync(path.join(saveDir, `${m.id}-${row.mode.replace(' ', '-')}-${faces}.obj`), resultObj(r, `${m.name}: ${row.mode}, ${got} faces for ${faces} asked (Poly Budget bench)`));
+    }
     console.log(`     ${row.mode.padEnd(14)} ${String(faces).padStart(6)} -> ${String(got).padStart(6)} faces ${String(ms).padStart(6)} ms | off the original: mean ${dev.mean.toFixed(3)}% p99 ${dev.p99.toFixed(3)}% max ${dev.max.toFixed(2)}% of the diagonal | ${oe.open} open, ${oe.nonManifold} non-manifold edges${row.degenerate ? `, ${row.degenerate} flat triangles` : ''}${row.poles != null ? ` | poles ${(100 * row.poles).toFixed(1)}%` : ''}${topology === 'tris' ? ` | UVs ${row.uv === 'pending' ? 'new' : 'kept'}` : ''}`);
   }
 }

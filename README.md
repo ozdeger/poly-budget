@@ -11,6 +11,18 @@ Poly Budget is for models that are far too dense for real-time use: scans, sculp
 
 Everything runs in your browser. Models and textures are never uploaded.
 
+## Examples
+
+Scans of a million triangles and more, each shown as the original, reduced to 20,000 triangles, and remeshed into 10,000 quads. The numbers under each result are its faces, the time it took (in Node on an Apple M5 Pro), and how far the original's surface lies from it: at the 99th percentile and at worst, as a share of the model's diagonal. The models are in the [test collection](#develop).
+
+![Bearded guy HD, a head scan: the original, 20,000 triangles and 10,000 quads](docs/examples/artec-bearded-guy.jpg)
+
+![Lion statue: the original, 20,000 triangles and 10,000 quads](docs/examples/artec-lion.jpg)
+
+![Happy Buddha: the original, 20,000 triangles and 10,000 quads](docs/examples/stanford-happy-buddha.jpg)
+
+The pictures show these models reduced and remeshed by Poly Budget: Bearded guy HD and the lion statue by Artec 3D (CC BY 3.0), and the Happy Buddha from the Stanford 3D Scanning Repository (Stanford Computer Graphics Laboratory).
+
 ## What it does
 
 ### Open a model
@@ -54,7 +66,7 @@ The toggle at the top of the budget picks what comes out.
 - Normals are taken from the original surface where each new vertex sits (Original or Smooth), or creased at an angle.
 - FBX and OBJ store the faces as quads. GLB can only hold triangles, so it gets two per quad.
 
-Quads mode takes longer than a reduction: about 2 to 4 seconds for a model of a million triangles, with the progress in the result card.
+Quads mode takes longer than a reduction, with the progress in the result card. For the example models at 10,000 quads it took 9 to 23 seconds; some shapes in the test collection take up to about two minutes (in Node on an Apple M5 Pro).
 
 ### Paint where detail matters
 
@@ -186,7 +198,7 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 - Skinned meshes are reduced in their bind pose and exported without bones. Animations are not kept.
 - One UV set per model.
 - Memory is the browser's: a model of 1.5 million triangles with 4K textures works on a desktop, phones may run out.
-- Quads mode doesn't reach the quality of dedicated retopology tools on every model. Expect some poles: about one vertex in nine with even quads, and one in five following the shape on organic models. Parts much thinner than a quad edge (fingers, strands of hair at low budgets) come out rough.
+- Quads mode doesn't reach the quality of dedicated retopology tools on every model. Expect some poles: about one vertex in nine with even quads, and one in five following the shape on organic models. Parts much thinner than a quad edge (fingers, strands of hair at low budgets) come out rough, spokes and cables break up, and small separate parts such as lettering on a base can vanish.
 
 ## Project layout
 
@@ -214,4 +226,5 @@ Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with
 - `test/models/manifest.json` lists free models of 500k vertices and more for real-world testing, each with its source, licence, credit and what it tests: scans, characters and figures, textured photogrammetry with fragmented atlases, a PBR set with a normal map, hard-surface parts, scenes and stress cases. The files aren't in the repo:
   - `node test/models/fetch.mjs --tier=core` downloads the 14 core models (0.86 GB) into `testdata/models/`; `--tier=extended` and `--tier=stress` add 13 more, `--list` shows them all and `--check` asks the servers whether the files are still there. Models inside a large archive are read out of it in pieces, so only their own bytes are downloaded.
   - `node --max-old-space-size=16384 test/models/bench.mjs --tier=core` runs each fetched model through Triangles and Quads mode as the app does (`--mirror` adds mirrored quads) and prints the time, faces against the budget, how far the original's surface lies from the result, poles and open edges. `--json=file` keeps the rows for comparing two versions.
+  - The pictures in [Examples](#examples) come from the same runs: `bench.mjs --tier=core --tris=20000 --quads=10000 --mirror --save=testdata/models/results --json=testdata/models/results/runs.json` keeps every result, `node test/models/render.mjs --tier=core` draws them next to the original from each model's `view` in the manifest, and `python3 test/models/sheets.py --examples=docs/examples` (needs Pillow) adds the labels and writes the JPEGs.
 - `testdata/` and `local/` are ignored by git, for your own models and helper scripts.

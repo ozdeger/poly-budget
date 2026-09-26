@@ -27,7 +27,13 @@
         "high genus",
         "fine folds"
       ],
-      "tests": "A closed statuette full of tiny tunnels: whether reduction and remeshing keep or pop small handles."
+      "tests": "A closed statuette full of tiny tunnels: whether reduction and remeshing keep or pop small handles.",
+      "view": {
+        "up": "y",
+        "yaw": 0.3,
+        "pitch": 0.05
+      },
+      "example": true
     },
     {
       "id": "stanford-asian-dragon",
@@ -55,7 +61,12 @@
         "fine detail",
         "thin parts"
       ],
-      "tests": "A clean closed surface covered in 0.1 mm scales: how much fine detail each budget keeps, and quads on smooth organic flow."
+      "tests": "A clean closed surface covered in 0.1 mm scales: how much fine detail each budget keeps, and quads on smooth organic flow.",
+      "view": {
+        "up": "y",
+        "yaw": 0.5,
+        "pitch": 0.25
+      }
     },
     {
       "id": "bangor-welsh-dragon",
@@ -82,7 +93,12 @@
         "open borders",
         "thin parts"
       ],
-      "tests": "A laser scan with open borders: boundary loops through heavy reduction. Served over plain HTTP only, so the checksum matters."
+      "tests": "A laser scan with open borders: boundary loops through heavy reduction. Served over plain HTTP only, so the checksum matters.",
+      "view": {
+        "up": "z",
+        "yaw": -0.6,
+        "pitch": 0.15
+      }
     },
     {
       "id": "stanford-manuscript",
@@ -110,7 +126,12 @@
         "open borders",
         "fine relief"
       ],
-      "tests": "A nearly flat page with fine relief and one long border: flat-area quads, and baking relief into a normal map."
+      "tests": "A nearly flat page with fine relief and one long border: flat-area quads, and baking relief into a normal map.",
+      "view": {
+        "up": "y",
+        "yaw": 0.25,
+        "pitch": 0.15
+      }
     },
     {
       "id": "artec-bearded-guy",
@@ -139,7 +160,13 @@
         "clothing folds",
         "untextured"
       ],
-      "tests": "A real head at about 1M vertices: whether eyes, lips, ears and the beard outline survive at 10k-30k faces."
+      "tests": "A real head at about 1M vertices: whether eyes, lips, ears and the beard outline survive at 10k-30k faces.",
+      "view": {
+        "up": "z",
+        "yaw": 0.45,
+        "pitch": 0.05
+      },
+      "example": true
     },
     {
       "id": "smk-artemision",
@@ -172,6 +199,11 @@
       "mirror": {
         "axis": 0,
         "offset": 75.1208
+      },
+      "view": {
+        "up": "y",
+        "yaw": 3.4416,
+        "pitch": 0.05
       }
     },
     {
@@ -200,7 +232,13 @@
         "thin parts",
         "untextured"
       ],
-      "tests": "A quadruped with a deep mane, open mouth and thin tail: how far 5M triangles can drop before the face and paws go."
+      "tests": "A quadruped with a deep mane, open mouth and thin tail: how far 5M triangles can drop before the face and paws go.",
+      "view": {
+        "up": "z",
+        "yaw": 0.5,
+        "pitch": 0.15
+      },
+      "example": true
     },
     {
       "id": "rwtt-wooden-dragon",
@@ -232,7 +270,12 @@
         "thin parts",
         "high genus"
       ],
-      "tests": "98,620 UV charts in one 4K atlas, like a generated character's: keeping or rebuilding UVs and baking at low budgets."
+      "tests": "98,620 UV charts in one 4K atlas, like a generated character's: keeping or rebuilding UVs and baking at low budgets.",
+      "view": {
+        "up": "z",
+        "yaw": 0.8,
+        "pitch": 0.1
+      }
     },
     {
       "id": "rwtt-amarna-princess",
@@ -268,6 +311,11 @@
       "mirror": {
         "axis": 0,
         "offset": 0.0158463
+      },
+      "view": {
+        "up": "z",
+        "yaw": 0.35,
+        "pitch": 0.05
       }
     },
     {
@@ -305,6 +353,11 @@
       "mirror": {
         "axis": 0,
         "offset": 1.40178
+      },
+      "view": {
+        "up": "z",
+        "yaw": 0.7,
+        "pitch": 0.3
       }
     },
     {
@@ -358,7 +411,12 @@
         "PBR",
         "open borders"
       ],
-      "tests": "A full PBR set (base colour, OpenGL normal, AO/roughness/metal): baking a normal map and several maps onto a remesh."
+      "tests": "A full PBR set (base colour, OpenGL normal, AO/roughness/metal): baking a normal map and several maps onto a remesh.",
+      "view": {
+        "up": "y",
+        "yaw": 0,
+        "pitch": 1.2
+      }
     },
     {
       "id": "road-bike",
@@ -386,7 +444,12 @@
         "thin parts",
         "many parts"
       ],
-      "tests": "Many small mechanical parts with thin spokes, cables and toothed chainrings: thin parts and crisp teeth at a budget."
+      "tests": "Many small mechanical parts with thin spokes, cables and toothed chainrings: thin parts and crisp teeth at a budget.",
+      "view": {
+        "up": "y",
+        "yaw": 1.5708,
+        "pitch": 0.15
+      }
     },
     {
       "id": "hairball",
@@ -413,7 +476,12 @@
         "thin parts",
         "hidden inside"
       ],
-      "tests": "Dense overlapping strands, most of them out of sight: the worst case for thin parts and for Hidden areas."
+      "tests": "Dense overlapping strands, most of them out of sight: the worst case for thin parts and for Hidden areas.",
+      "view": {
+        "up": "y",
+        "yaw": 0.3,
+        "pitch": 0.2
+      }
     },
     {
       "id": "bistro-interior",
@@ -442,7 +510,13 @@
         "hard edges",
         "open borders"
       ],
-      "tests": "A game interior with many objects and materials (textures not included): per-material borders, missing textures, many small parts."
+      "tests": "A game interior with many objects and materials (textures not included): per-material borders, missing textures, many small parts.",
+      "view": {
+        "up": "y",
+        "yaw": 0.6,
+        "pitch": 0.95,
+        "clip": 0.55
+      }
     },
     {
       "id": "blender-body-female",
