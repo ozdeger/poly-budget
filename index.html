@@ -1933,11 +1933,38 @@ function extractFaces(G) {
 
 // ---------- all quads ----------
 
+// The mirror plane's cut among a face set's open borders: the loops that mostly run within `reach` of the plane. Returns
+// 1 per vertex on it. After mirroring, a vertex there with k edges into the face set has 2 + 2k, so it is regular only
+// with exactly one; the passes below keep that.
+function cutVertices(faces, P, nv, plane, reach) {
+  const cut = new Uint8Array(nv);
+  if (!plane) return cut;
+  const edgeUse = new Map(), border = new Uint8Array(nv), root = new Int32Array(nv);
+  for (const p of faces) for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; edgeUse.set(key, (edgeUse.get(key) || 0) + 1); }
+  for (let v = 0; v < nv; v++) root[v] = v;
+  const find = x => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+  for (const [key, c] of edgeUse) {
+    if (c !== 1) continue;
+    const a = Math.floor(key / nv), b = key - a * nv, ra = find(a), rb = find(b);
+    border[a] = border[b] = 1;
+    if (ra !== rb) root[ra] = rb;
+  }
+  const near = new Map(), total = new Map();
+  for (let v = 0; v < nv; v++) {
+    if (!border[v]) continue;
+    const r = find(v);
+    total.set(r, (total.get(r) || 0) + 1);
+    if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < reach) near.set(r, (near.get(r) || 0) + 1);
+  }
+  for (let v = 0; v < nv; v++) if (border[v] && (near.get(find(v)) || 0) * 2 >= total.get(find(v))) cut[v] = 1;
+  return cut;
+}
+
 // Odd faces side by side (a triangle beside a pentagon is how a misplaced grid step shows), or with one quad between
 // them, are merged into one even polygon and cut into quads again, with the cut that leaves the fewest poles (sum of
 // (valence - 4)²) among cuts whose corners stay under 160°. Nothing is added, unlike pairing them through a split
 // strip; a merge is taken unless it raises that sum by more than 2, about what a strip costs. Returns the faces.
-function mergeOddPairs(faces, P, nv) {
+function mergeOddPairs(faces, P, nv, cut = null) {
   const F = faces.length, alive = new Uint8Array(F).fill(1), key = (a, b) => (a < b ? a * nv + b : b * nv + a);
   const edgeFaces = new Map(), deg = new Int32Array(nv), border = new Uint8Array(nv);
   faces.forEach((p, f) => {
@@ -1976,7 +2003,9 @@ function mergeOddPairs(faces, P, nv) {
     }
     return out;
   };
-  const energy = (v, d) => (border[v] ? 0 : (d - 4) * (d - 4));
+  // On the mirror cut a vertex of d edges has d - 2 inside; mirrored, its (valence - 4)² counts once while inner
+  // vertices count twice, so here it weighs 2 (d - 3)².
+  const energy = (v, d) => (cut && cut[v] ? 2 * (d - 3) * (d - 3) : border[v] ? 0 : (d - 4) * (d - 4));
   const sets = [];
   for (let f = 0; f < F; f++) {
     if (!(faces[f].length & 1)) continue;
@@ -2027,11 +2056,51 @@ function mergeOddPairs(faces, P, nv) {
   return out;
 }
 
+// A triangle with an edge on the mirror cut, whose two corners there have one edge inward each (the triangle's own),
+// goes away by merging those corners at the middle of the edge: the merged vertex keeps one edge inward (both ran to the
+// third corner), where pairing the triangle with the cut would leave a vertex with none. The third corner loses an edge,
+// so this is done only where it has five or more; at four it would become a pole. Returns the faces; P moves the merged
+// corners.
+function collapseCutTriangles(faces, P, nv, cut) {
+  const nbr = Array.from({ length: nv }, () => new Set()), edgeUse = new Map(), key = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  for (const p of faces) for (let k = 0; k < p.length; k++) {
+    const a = p[k], b = p[(k + 1) % p.length];
+    nbr[a].add(b); nbr[b].add(a);
+    edgeUse.set(key(a, b), (edgeUse.get(key(a, b)) || 0) + 1);
+  }
+  const at = Array.from({ length: nv }, () => []);
+  faces.forEach((p, f) => { for (const v of p) at[v].push(f); });
+  const alive = new Uint8Array(faces.length).fill(1), busy = new Uint8Array(nv);
+  const out = faces.map(p => p.slice());
+  for (let f = 0; f < faces.length; f++) {
+    const p = faces[f];
+    if (p.length !== 3) continue;
+    for (let k = 0; k < 3; k++) {
+      const a = p[k], b = p[(k + 1) % 3], c = p[(k + 2) % 3];
+      if (!cut[a] || !cut[b] || edgeUse.get(key(a, b)) !== 1 || busy[a] || busy[b] || busy[c]) continue;
+      if (nbr[a].size !== 3 || nbr[b].size !== 3 || nbr[c].size < 5) continue;
+      // No other shared neighbour, or merging would double an edge.
+      let shared = 0;
+      for (const x of nbr[a]) if (x !== b && nbr[b].has(x)) shared++;
+      if (shared !== 1) continue;
+      for (let d = 0; d < 3; d++) P[a * 3 + d] = (P[a * 3 + d] + P[b * 3 + d]) / 2;
+      for (const g of at[b]) if (g !== f) out[g] = out[g].map(x => (x === b ? a : x));
+      alive[f] = 0;
+      busy[a] = busy[b] = busy[c] = 1;
+      for (const x of nbr[a]) busy[x] = 1;
+      for (const x of nbr[b]) busy[x] = 1;
+      break;
+    }
+  }
+  return out.filter((_, f) => alive[f]);
+}
+
 // Pairs each odd face (triangle, pentagon) with the nearest other odd face or an open border, and splits every edge
 // that the paths between them cross an odd number of times; afterwards every face has an even number of sides and is
 // cut into quads. Returns the new faces; P grows by the edge midpoints.
-function evenFaces(faces, P, nv) {
-  faces = mergeOddPairs(faces, P, nv);
+function evenFaces(faces, P, nv, cut = null) {
+  faces = mergeOddPairs(faces, P, nv, cut);
+  if (cut) faces = collapseCutTriangles(faces, P, nv, cut);
   const F = faces.length;
   const half = new Map(); // directed edge a*nv+b -> face
   for (let f = 0; f < F; f++) {
@@ -2062,6 +2131,10 @@ function evenFaces(faces, P, nv) {
   for (const f of odd) unpaired[f] = 1;
   const dist = new Int32Array(F), src = new Int32Array(F), via = new Int32Array(F), parent = new Int32Array(F);
   const toggleBack = f => { while (via[f] >= 0) { split[via[f]] ^= 1; f = parent[f]; } };
+  // An odd face paired with the mirror cut through its own edge there puts a vertex on the cut with no edge inward: a
+  // vertex of two edges once mirrored. So a path to the cut counts two faces longer, and another odd face that close is
+  // taken instead (ruling the cut out altogether sends the paths so far that they cost more poles than they save).
+  const onCut = e => cut && eFace1[e] < 0 && cut[eA[e]] && cut[eB[e]];
   for (let round = 0; round < 50 && odd.length; round++) {
     dist.fill(-1); via.fill(-1);
     const queue = new Int32Array(F);
@@ -2074,7 +2147,7 @@ function evenFaces(faces, P, nv) {
         if (eMany[e]) continue;
         const g = eFace0[e] === f ? eFace1[e] : eFace0[e];
         if (g === f) continue;
-        if (g < 0) { cand.push([dist[f] + 1, src[f], -1, f, -1, e]); continue; }
+        if (g < 0) { cand.push([dist[f] + 1 + (onCut(e) ? 2 : 0), src[f], -1, f, -1, e]); continue; }
         if (dist[g] < 0) { dist[g] = dist[f] + 1; src[g] = src[f]; via[g] = e; parent[g] = f; queue[qt++] = g; }
         else if (src[g] !== src[f] && src[f] < src[g]) cand.push([dist[f] + dist[g] + 1, src[f], src[g], f, g, e]);
       }
@@ -2128,7 +2201,17 @@ function evenFaces(faces, P, nv) {
     out.push(...evenToQuads(P2x, poly, taken).quads);
   }
   const clean = removeDoublets(out, n);
-  return { faces: clean.faces, positions: P2x, nv: n, unpaired: odd.length, doublets: clean.removed };
+  // A split cut edge's midpoint is on the cut too.
+  let cut2 = null;
+  if (cut) {
+    cut2 = new Uint8Array(n);
+    cut2.set(cut.subarray(0, nv));
+    for (let e = 0; e < E; e++) if (mid[e] >= 0 && onCut(e)) cut2[mid[e]] = 1;
+  }
+  // Midpoints of split open-border edges, with the edge's ends: [mid, a, b, ...].
+  const borderMid = [];
+  for (let e = 0; e < E; e++) if (mid[e] >= 0 && eFace1[e] < 0) borderMid.push(mid[e], eA[e], eB[e]);
+  return { faces: clean.faces, positions: P2x, nv: n, unpaired: odd.length, doublets: clean.removed, cut: cut2, borderMid };
 }
 
 // Removes doublets: an inner vertex with only two edges, between two quads that share both, is dropped and the two
@@ -2166,8 +2249,10 @@ function removeDoublets(faces, nv) {
 // which moves one edge's worth of valence from its two ends to two other corners; and a quad whose opposite corners
 // both have three edges while the other two have five can close up, merging the two three-edge corners. Either is
 // taken when it lowers the sum of (valence - 4)² and the new quads stay convex (Tarini et al., "Practical quad mesh
-// simplification", 2010, use the same moves). Faces touching an open border are left alone.
-function optimizeValence(faces, P) {
+// simplification", 2010, use the same moves). Faces touching an open border are left alone, except on the mirror
+// plane's cut (cut): there a vertex of d edges counts as it will once mirrored, 2 (d - 3)², so rotations can give a
+// vertex with no edge inward one from its neighbour with two; no edge may join two cut vertices across the inside.
+function optimizeValence(faces, P, cut = null) {
   const nv = P.length / 3;
   const newell = q => {
     let x = 0, y = 0, z = 0;
@@ -2206,7 +2291,8 @@ function optimizeValence(faces, P) {
     });
     const border = new Uint8Array(nv);
     for (const [key, l] of edgeFaces) if (l.length !== 2) { const a = Math.floor(key / nv); border[a] = border[key - a * nv] = 1; }
-    const deg = v => nbr[v].size, E = d => (d - 4) * (d - 4);
+    const seam = v => cut !== null && v < cut.length && cut[v] === 1;
+    const deg = v => nbr[v].size, E = (v, d) => (seam(v) ? 2 * (d - 3) * (d - 3) : (d - 4) * (d - 4));
     const touched = new Uint8Array(faces.length);
     let changed = 0;
     for (const [key, l] of edgeFaces) {
@@ -2224,15 +2310,20 @@ function optimizeValence(faces, P) {
       if (q2[(i2 + 1) % 4] !== u) continue;
       const p = q1[(i1 + 2) % 4], q = q1[(i1 + 3) % 4], r = q2[(i2 + 2) % 4], s2 = q2[(i2 + 3) % 4];
       const hex = [u, r, s2, v, p, q];
-      if (new Set(hex).size !== 6 || hex.some(x => border[x])) continue;
+      if (new Set(hex).size !== 6 || hex.some(x => border[x] && !seam(x))) continue;
       const n = newell(q1), n2 = newell(q2);
       n[0] += n2[0]; n[1] += n2[1]; n[2] += n2[2];
-      const before = E(deg(u)) + E(deg(v));
+      const before = E(u, deg(u)) + E(v, deg(v));
       let best = 0, pick = null;
       for (const [x, y, A, B] of [[r, p, [r, s2, v, p], [p, q, u, r]], [s2, q, [s2, v, p, q], [q, u, r, s2]]]) {
-        if (nbr[x].has(y)) continue;
-        const gain = before + E(deg(x)) + E(deg(y)) - (E(deg(u) - 1) + E(deg(v) - 1) + E(deg(x) + 1) + E(deg(y) + 1));
-        if (gain > best && deg(u) > 3 && deg(v) > 3 && convex(A, n) && convex(B, n)) { best = gain; pick = [A, B]; }
+        if (nbr[x].has(y) || (seam(x) && seam(y))) continue;
+        let gain = before + E(x, deg(x)) + E(y, deg(y)) - (E(u, deg(u) - 1) + E(v, deg(v) - 1) + E(x, deg(x) + 1) + E(y, deg(y) + 1));
+        // A rotation that gives a cut vertex with no edge inward its edge is taken whatever the shape: the quad it fixes
+        // is already folded (three corners on the cut's line), and relaxing moves the inner corners into place. It counts
+        // a little even at equal sum, as that folded quad is gone (u and v keep an edge inward, so it can't come back).
+        const fixesCut = (seam(x) && deg(x) === 2) || (seam(y) && deg(y) === 2);
+        if (fixesCut) gain += 0.5;
+        if (gain > best && deg(u) > 3 && deg(v) > 3 && (fixesCut || (convex(A, n) && convex(B, n)))) { best = gain; pick = [A, B]; }
       }
       if (!pick) continue;
       const [A] = pick, x = A[0], y = A[3];
@@ -2248,7 +2339,26 @@ function optimizeValence(faces, P) {
     const done = new Uint8Array(faces.length);
     for (let f = 0; f < faces.length; f++) {
       const q = faces[f];
-      if (!q || q.length !== 4 || done[f] || q.some(x => border[x])) continue;
+      if (!q || q.length !== 4 || done[f]) continue;
+      // On the cut: a vertex with no edge inward whose quad's opposite corner has three edges takes that corner's place,
+      // and with it one edge inward; its two neighbours on the cut each lose the edge they had to the corner.
+      if (cut !== null) {
+        const i = q.findIndex(x => seam(x) && deg(x) === 2);
+        if (i >= 0) {
+          const pv = q[i], a = q[(i + 3) % 4], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+          const around = at[c].filter(g => g !== f && faces[g]);
+          if (!border[c] && deg(c) === 3 && seam(a) && seam(b) && !around.some(g => done[g]) &&
+            E(pv, 2) - E(pv, 3) + E(c, 3) + E(a, deg(a)) - E(a, deg(a) - 1) + E(b, deg(b)) - E(b, deg(b) - 1) > 0) {
+            for (const g of around) { faces[g] = faces[g].map(x => (x === c ? pv : x)); done[g] = 1; }
+            for (const g of [...at[a], ...at[b]]) done[g] = 1;
+            faces[f] = null;
+            done[f] = 1;
+            changed++;
+            continue;
+          }
+        }
+      }
+      if (q.some(x => border[x])) continue;
       for (const o of [0, 1]) {
         const a = q[o], b = q[o + 1], c = q[o + 2], d = q[(o + 3) % 4];
         if (deg(a) !== 3 || deg(c) !== 3 || deg(b) < 5 || deg(d) < 5) continue;
@@ -2653,6 +2763,14 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
         L0.Cw[v] = 1; L0.Cb[v] = 1;
       }
       borderEdges++;
+    }
+    // A long border edge split into pieces: its new vertices are on the border too, or a border that runs along few long
+    // input edges (a flat cap cut by the mirror plane) looks like a tear to the extraction and gets closed. They are only
+    // marked: as constraints they crowd the coarser levels, which bends the grid beside the border.
+    if (borderEdges && n > nC) {
+      const WE = edgesOf(WI, n), onBorder = new Uint8Array(n);
+      for (let e = 0; e < WE.n; e++) if (WE.count[e] === 1) onBorder[WE.a[e]] = onBorder[WE.b[e]] = 1;
+      for (let v = nC; v < n; v++) if (onBorder[v] && L0.Cb[sub.parentA[v]] && L0.Cb[sub.parentB[v]]) L0.Cb[v] = 1;
     }
   }
   // Kept sharp edges are constraints the same way, for the vertices on either side of them: otherwise the direction
@@ -3547,9 +3665,10 @@ function remeshQuads(mesh, opt) {
       agree += nx * vx + ny * vy + nz * vz > 0 ? 1 : -1;
     }
     if (agree < 0) for (const p of polys) p.reverse();
+    const cut = opt.plane ? cutVertices(polys, G.P, G.nv, opt.plane, 0.75 * sizeRef()) : null;
     const even = opt.pure === false
-      ? { faces: polys.flatMap(p => (p.length === 5 ? pentagonSplit(G.P, p) : [p])), positions: G.P, nv: G.nv, unpaired: 0 }
-      : evenFaces(polys, G.P, G.nv);
+      ? { faces: polys.flatMap(p => (p.length === 5 ? pentagonSplit(G.P, p) : [p])), positions: G.P, nv: G.nv, unpaired: 0, cut }
+      : evenFaces(polys, G.P, G.nv, cut);
     if (progress) progress('extract', 1);
     const count = even.faces.length;
     if (!result || !(result.count > 0) || (count > 0 && Math.abs(Math.log(count / target)) < Math.abs(Math.log(result.count / target)))) result = { G, even, count, scale };
@@ -3576,9 +3695,17 @@ function remeshQuads(mesh, opt) {
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
   const nv = even.nv, P = even.positions;
-  const tidy = optimizeValence(even.faces, P);
-  // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open.
-  const keepOpen = v => v < result.G.nv && result.G.fixed[v] === 1;
+  // The cut goes onto the plane now rather than only after relaxing, so the moves below judge its quads as they will be.
+  if (opt.plane && even.cut) for (let v = 0; v < nv; v++) if (even.cut[v]) P[v * 3 + opt.plane.axis] = opt.plane.offset;
+  const tidy = optimizeValence(even.faces, P, even.cut);
+  // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open: so are the
+  // midpoints the all-quad pass put on border edges between two of them, and the mirror plane's cut.
+  const open = new Uint8Array(nv);
+  open.set(result.G.fixed.subarray(0, Math.min(nv, result.G.nv)));
+  const bm = even.borderMid || [];
+  for (let k = 0; k < bm.length; k += 3) if (open[bm[k + 1]] && open[bm[k + 2]]) open[bm[k]] = 1;
+  if (even.cut) for (let v = 0; v < nv; v++) if (even.cut[v]) open[v] = 1;
+  const keepOpen = v => open[v] === 1;
   const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
   const faces = repaired.dropped || repaired.filled ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
   mark('valence');
@@ -3607,25 +3734,7 @@ function remeshQuads(mesh, opt) {
   };
   // The mirror plane's cut: open borders that mostly run within 0.75 grid steps of the plane are the cut, and all their
   // vertices go onto it however far they sagged, or the mirrored half would leave a gap there.
-  const onCut = new Uint8Array(nv);
-  if (plane) {
-    const root = new Int32Array(nv);
-    for (let v = 0; v < nv; v++) root[v] = v;
-    const find = x => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
-    for (const [key, c] of edgeUse) {
-      if (c !== 1) continue;
-      const a = Math.floor(key / nv), b = key - a * nv, ra = find(a), rb = find(b);
-      if (ra !== rb) root[ra] = rb;
-    }
-    const near = new Map(), total = new Map();
-    for (let v = 0; v < nv; v++) {
-      if (!border[v]) continue;
-      const r = find(v);
-      total.set(r, (total.get(r) || 0) + 1);
-      if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < 0.75 * sizeRef()) near.set(r, (near.get(r) || 0) + 1);
-    }
-    for (let v = 0; v < nv; v++) if (border[v] && (near.get(find(v)) || 0) * 2 >= total.get(find(v))) onCut[v] = 1;
-  }
+  const onCut = cutVertices(faces, P, nv, plane, 0.75 * sizeRef());
   const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
   for (let v = 0; v < nv; v++) { project(v); snapPlane(v); }
   // Sharp edges: corners take the nearest vertex and hold it; vertices close to an edge move onto it and afterwards only
@@ -7585,11 +7694,38 @@ function extractFaces(G) {
 
 // ---------- all quads ----------
 
+// The mirror plane's cut among a face set's open borders: the loops that mostly run within `reach` of the plane. Returns
+// 1 per vertex on it. After mirroring, a vertex there with k edges into the face set has 2 + 2k, so it is regular only
+// with exactly one; the passes below keep that.
+function cutVertices(faces, P, nv, plane, reach) {
+  const cut = new Uint8Array(nv);
+  if (!plane) return cut;
+  const edgeUse = new Map(), border = new Uint8Array(nv), root = new Int32Array(nv);
+  for (const p of faces) for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; edgeUse.set(key, (edgeUse.get(key) || 0) + 1); }
+  for (let v = 0; v < nv; v++) root[v] = v;
+  const find = x => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+  for (const [key, c] of edgeUse) {
+    if (c !== 1) continue;
+    const a = Math.floor(key / nv), b = key - a * nv, ra = find(a), rb = find(b);
+    border[a] = border[b] = 1;
+    if (ra !== rb) root[ra] = rb;
+  }
+  const near = new Map(), total = new Map();
+  for (let v = 0; v < nv; v++) {
+    if (!border[v]) continue;
+    const r = find(v);
+    total.set(r, (total.get(r) || 0) + 1);
+    if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < reach) near.set(r, (near.get(r) || 0) + 1);
+  }
+  for (let v = 0; v < nv; v++) if (border[v] && (near.get(find(v)) || 0) * 2 >= total.get(find(v))) cut[v] = 1;
+  return cut;
+}
+
 // Odd faces side by side (a triangle beside a pentagon is how a misplaced grid step shows), or with one quad between
 // them, are merged into one even polygon and cut into quads again, with the cut that leaves the fewest poles (sum of
 // (valence - 4)²) among cuts whose corners stay under 160°. Nothing is added, unlike pairing them through a split
 // strip; a merge is taken unless it raises that sum by more than 2, about what a strip costs. Returns the faces.
-function mergeOddPairs(faces, P, nv) {
+function mergeOddPairs(faces, P, nv, cut = null) {
   const F = faces.length, alive = new Uint8Array(F).fill(1), key = (a, b) => (a < b ? a * nv + b : b * nv + a);
   const edgeFaces = new Map(), deg = new Int32Array(nv), border = new Uint8Array(nv);
   faces.forEach((p, f) => {
@@ -7628,7 +7764,9 @@ function mergeOddPairs(faces, P, nv) {
     }
     return out;
   };
-  const energy = (v, d) => (border[v] ? 0 : (d - 4) * (d - 4));
+  // On the mirror cut a vertex of d edges has d - 2 inside; mirrored, its (valence - 4)² counts once while inner
+  // vertices count twice, so here it weighs 2 (d - 3)².
+  const energy = (v, d) => (cut && cut[v] ? 2 * (d - 3) * (d - 3) : border[v] ? 0 : (d - 4) * (d - 4));
   const sets = [];
   for (let f = 0; f < F; f++) {
     if (!(faces[f].length & 1)) continue;
@@ -7679,11 +7817,51 @@ function mergeOddPairs(faces, P, nv) {
   return out;
 }
 
+// A triangle with an edge on the mirror cut, whose two corners there have one edge inward each (the triangle's own),
+// goes away by merging those corners at the middle of the edge: the merged vertex keeps one edge inward (both ran to the
+// third corner), where pairing the triangle with the cut would leave a vertex with none. The third corner loses an edge,
+// so this is done only where it has five or more; at four it would become a pole. Returns the faces; P moves the merged
+// corners.
+function collapseCutTriangles(faces, P, nv, cut) {
+  const nbr = Array.from({ length: nv }, () => new Set()), edgeUse = new Map(), key = (a, b) => (a < b ? a * nv + b : b * nv + a);
+  for (const p of faces) for (let k = 0; k < p.length; k++) {
+    const a = p[k], b = p[(k + 1) % p.length];
+    nbr[a].add(b); nbr[b].add(a);
+    edgeUse.set(key(a, b), (edgeUse.get(key(a, b)) || 0) + 1);
+  }
+  const at = Array.from({ length: nv }, () => []);
+  faces.forEach((p, f) => { for (const v of p) at[v].push(f); });
+  const alive = new Uint8Array(faces.length).fill(1), busy = new Uint8Array(nv);
+  const out = faces.map(p => p.slice());
+  for (let f = 0; f < faces.length; f++) {
+    const p = faces[f];
+    if (p.length !== 3) continue;
+    for (let k = 0; k < 3; k++) {
+      const a = p[k], b = p[(k + 1) % 3], c = p[(k + 2) % 3];
+      if (!cut[a] || !cut[b] || edgeUse.get(key(a, b)) !== 1 || busy[a] || busy[b] || busy[c]) continue;
+      if (nbr[a].size !== 3 || nbr[b].size !== 3 || nbr[c].size < 5) continue;
+      // No other shared neighbour, or merging would double an edge.
+      let shared = 0;
+      for (const x of nbr[a]) if (x !== b && nbr[b].has(x)) shared++;
+      if (shared !== 1) continue;
+      for (let d = 0; d < 3; d++) P[a * 3 + d] = (P[a * 3 + d] + P[b * 3 + d]) / 2;
+      for (const g of at[b]) if (g !== f) out[g] = out[g].map(x => (x === b ? a : x));
+      alive[f] = 0;
+      busy[a] = busy[b] = busy[c] = 1;
+      for (const x of nbr[a]) busy[x] = 1;
+      for (const x of nbr[b]) busy[x] = 1;
+      break;
+    }
+  }
+  return out.filter((_, f) => alive[f]);
+}
+
 // Pairs each odd face (triangle, pentagon) with the nearest other odd face or an open border, and splits every edge
 // that the paths between them cross an odd number of times; afterwards every face has an even number of sides and is
 // cut into quads. Returns the new faces; P grows by the edge midpoints.
-function evenFaces(faces, P, nv) {
-  faces = mergeOddPairs(faces, P, nv);
+function evenFaces(faces, P, nv, cut = null) {
+  faces = mergeOddPairs(faces, P, nv, cut);
+  if (cut) faces = collapseCutTriangles(faces, P, nv, cut);
   const F = faces.length;
   const half = new Map(); // directed edge a*nv+b -> face
   for (let f = 0; f < F; f++) {
@@ -7714,6 +7892,10 @@ function evenFaces(faces, P, nv) {
   for (const f of odd) unpaired[f] = 1;
   const dist = new Int32Array(F), src = new Int32Array(F), via = new Int32Array(F), parent = new Int32Array(F);
   const toggleBack = f => { while (via[f] >= 0) { split[via[f]] ^= 1; f = parent[f]; } };
+  // An odd face paired with the mirror cut through its own edge there puts a vertex on the cut with no edge inward: a
+  // vertex of two edges once mirrored. So a path to the cut counts two faces longer, and another odd face that close is
+  // taken instead (ruling the cut out altogether sends the paths so far that they cost more poles than they save).
+  const onCut = e => cut && eFace1[e] < 0 && cut[eA[e]] && cut[eB[e]];
   for (let round = 0; round < 50 && odd.length; round++) {
     dist.fill(-1); via.fill(-1);
     const queue = new Int32Array(F);
@@ -7726,7 +7908,7 @@ function evenFaces(faces, P, nv) {
         if (eMany[e]) continue;
         const g = eFace0[e] === f ? eFace1[e] : eFace0[e];
         if (g === f) continue;
-        if (g < 0) { cand.push([dist[f] + 1, src[f], -1, f, -1, e]); continue; }
+        if (g < 0) { cand.push([dist[f] + 1 + (onCut(e) ? 2 : 0), src[f], -1, f, -1, e]); continue; }
         if (dist[g] < 0) { dist[g] = dist[f] + 1; src[g] = src[f]; via[g] = e; parent[g] = f; queue[qt++] = g; }
         else if (src[g] !== src[f] && src[f] < src[g]) cand.push([dist[f] + dist[g] + 1, src[f], src[g], f, g, e]);
       }
@@ -7780,7 +7962,17 @@ function evenFaces(faces, P, nv) {
     out.push(...evenToQuads(P2x, poly, taken).quads);
   }
   const clean = removeDoublets(out, n);
-  return { faces: clean.faces, positions: P2x, nv: n, unpaired: odd.length, doublets: clean.removed };
+  // A split cut edge's midpoint is on the cut too.
+  let cut2 = null;
+  if (cut) {
+    cut2 = new Uint8Array(n);
+    cut2.set(cut.subarray(0, nv));
+    for (let e = 0; e < E; e++) if (mid[e] >= 0 && onCut(e)) cut2[mid[e]] = 1;
+  }
+  // Midpoints of split open-border edges, with the edge's ends: [mid, a, b, ...].
+  const borderMid = [];
+  for (let e = 0; e < E; e++) if (mid[e] >= 0 && eFace1[e] < 0) borderMid.push(mid[e], eA[e], eB[e]);
+  return { faces: clean.faces, positions: P2x, nv: n, unpaired: odd.length, doublets: clean.removed, cut: cut2, borderMid };
 }
 
 // Removes doublets: an inner vertex with only two edges, between two quads that share both, is dropped and the two
@@ -7818,8 +8010,10 @@ function removeDoublets(faces, nv) {
 // which moves one edge's worth of valence from its two ends to two other corners; and a quad whose opposite corners
 // both have three edges while the other two have five can close up, merging the two three-edge corners. Either is
 // taken when it lowers the sum of (valence - 4)² and the new quads stay convex (Tarini et al., "Practical quad mesh
-// simplification", 2010, use the same moves). Faces touching an open border are left alone.
-function optimizeValence(faces, P) {
+// simplification", 2010, use the same moves). Faces touching an open border are left alone, except on the mirror
+// plane's cut (cut): there a vertex of d edges counts as it will once mirrored, 2 (d - 3)², so rotations can give a
+// vertex with no edge inward one from its neighbour with two; no edge may join two cut vertices across the inside.
+function optimizeValence(faces, P, cut = null) {
   const nv = P.length / 3;
   const newell = q => {
     let x = 0, y = 0, z = 0;
@@ -7858,7 +8052,8 @@ function optimizeValence(faces, P) {
     });
     const border = new Uint8Array(nv);
     for (const [key, l] of edgeFaces) if (l.length !== 2) { const a = Math.floor(key / nv); border[a] = border[key - a * nv] = 1; }
-    const deg = v => nbr[v].size, E = d => (d - 4) * (d - 4);
+    const seam = v => cut !== null && v < cut.length && cut[v] === 1;
+    const deg = v => nbr[v].size, E = (v, d) => (seam(v) ? 2 * (d - 3) * (d - 3) : (d - 4) * (d - 4));
     const touched = new Uint8Array(faces.length);
     let changed = 0;
     for (const [key, l] of edgeFaces) {
@@ -7876,15 +8071,20 @@ function optimizeValence(faces, P) {
       if (q2[(i2 + 1) % 4] !== u) continue;
       const p = q1[(i1 + 2) % 4], q = q1[(i1 + 3) % 4], r = q2[(i2 + 2) % 4], s2 = q2[(i2 + 3) % 4];
       const hex = [u, r, s2, v, p, q];
-      if (new Set(hex).size !== 6 || hex.some(x => border[x])) continue;
+      if (new Set(hex).size !== 6 || hex.some(x => border[x] && !seam(x))) continue;
       const n = newell(q1), n2 = newell(q2);
       n[0] += n2[0]; n[1] += n2[1]; n[2] += n2[2];
-      const before = E(deg(u)) + E(deg(v));
+      const before = E(u, deg(u)) + E(v, deg(v));
       let best = 0, pick = null;
       for (const [x, y, A, B] of [[r, p, [r, s2, v, p], [p, q, u, r]], [s2, q, [s2, v, p, q], [q, u, r, s2]]]) {
-        if (nbr[x].has(y)) continue;
-        const gain = before + E(deg(x)) + E(deg(y)) - (E(deg(u) - 1) + E(deg(v) - 1) + E(deg(x) + 1) + E(deg(y) + 1));
-        if (gain > best && deg(u) > 3 && deg(v) > 3 && convex(A, n) && convex(B, n)) { best = gain; pick = [A, B]; }
+        if (nbr[x].has(y) || (seam(x) && seam(y))) continue;
+        let gain = before + E(x, deg(x)) + E(y, deg(y)) - (E(u, deg(u) - 1) + E(v, deg(v) - 1) + E(x, deg(x) + 1) + E(y, deg(y) + 1));
+        // A rotation that gives a cut vertex with no edge inward its edge is taken whatever the shape: the quad it fixes
+        // is already folded (three corners on the cut's line), and relaxing moves the inner corners into place. It counts
+        // a little even at equal sum, as that folded quad is gone (u and v keep an edge inward, so it can't come back).
+        const fixesCut = (seam(x) && deg(x) === 2) || (seam(y) && deg(y) === 2);
+        if (fixesCut) gain += 0.5;
+        if (gain > best && deg(u) > 3 && deg(v) > 3 && (fixesCut || (convex(A, n) && convex(B, n)))) { best = gain; pick = [A, B]; }
       }
       if (!pick) continue;
       const [A] = pick, x = A[0], y = A[3];
@@ -7900,7 +8100,26 @@ function optimizeValence(faces, P) {
     const done = new Uint8Array(faces.length);
     for (let f = 0; f < faces.length; f++) {
       const q = faces[f];
-      if (!q || q.length !== 4 || done[f] || q.some(x => border[x])) continue;
+      if (!q || q.length !== 4 || done[f]) continue;
+      // On the cut: a vertex with no edge inward whose quad's opposite corner has three edges takes that corner's place,
+      // and with it one edge inward; its two neighbours on the cut each lose the edge they had to the corner.
+      if (cut !== null) {
+        const i = q.findIndex(x => seam(x) && deg(x) === 2);
+        if (i >= 0) {
+          const pv = q[i], a = q[(i + 3) % 4], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+          const around = at[c].filter(g => g !== f && faces[g]);
+          if (!border[c] && deg(c) === 3 && seam(a) && seam(b) && !around.some(g => done[g]) &&
+            E(pv, 2) - E(pv, 3) + E(c, 3) + E(a, deg(a)) - E(a, deg(a) - 1) + E(b, deg(b)) - E(b, deg(b) - 1) > 0) {
+            for (const g of around) { faces[g] = faces[g].map(x => (x === c ? pv : x)); done[g] = 1; }
+            for (const g of [...at[a], ...at[b]]) done[g] = 1;
+            faces[f] = null;
+            done[f] = 1;
+            changed++;
+            continue;
+          }
+        }
+      }
+      if (q.some(x => border[x])) continue;
       for (const o of [0, 1]) {
         const a = q[o], b = q[o + 1], c = q[o + 2], d = q[(o + 3) % 4];
         if (deg(a) !== 3 || deg(c) !== 3 || deg(b) < 5 || deg(d) < 5) continue;
@@ -8305,6 +8524,14 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
         L0.Cw[v] = 1; L0.Cb[v] = 1;
       }
       borderEdges++;
+    }
+    // A long border edge split into pieces: its new vertices are on the border too, or a border that runs along few long
+    // input edges (a flat cap cut by the mirror plane) looks like a tear to the extraction and gets closed. They are only
+    // marked: as constraints they crowd the coarser levels, which bends the grid beside the border.
+    if (borderEdges && n > nC) {
+      const WE = edgesOf(WI, n), onBorder = new Uint8Array(n);
+      for (let e = 0; e < WE.n; e++) if (WE.count[e] === 1) onBorder[WE.a[e]] = onBorder[WE.b[e]] = 1;
+      for (let v = nC; v < n; v++) if (onBorder[v] && L0.Cb[sub.parentA[v]] && L0.Cb[sub.parentB[v]]) L0.Cb[v] = 1;
     }
   }
   // Kept sharp edges are constraints the same way, for the vertices on either side of them: otherwise the direction
@@ -9199,9 +9426,10 @@ function remeshQuads(mesh, opt) {
       agree += nx * vx + ny * vy + nz * vz > 0 ? 1 : -1;
     }
     if (agree < 0) for (const p of polys) p.reverse();
+    const cut = opt.plane ? cutVertices(polys, G.P, G.nv, opt.plane, 0.75 * sizeRef()) : null;
     const even = opt.pure === false
-      ? { faces: polys.flatMap(p => (p.length === 5 ? pentagonSplit(G.P, p) : [p])), positions: G.P, nv: G.nv, unpaired: 0 }
-      : evenFaces(polys, G.P, G.nv);
+      ? { faces: polys.flatMap(p => (p.length === 5 ? pentagonSplit(G.P, p) : [p])), positions: G.P, nv: G.nv, unpaired: 0, cut }
+      : evenFaces(polys, G.P, G.nv, cut);
     if (progress) progress('extract', 1);
     const count = even.faces.length;
     if (!result || !(result.count > 0) || (count > 0 && Math.abs(Math.log(count / target)) < Math.abs(Math.log(result.count / target)))) result = { G, even, count, scale };
@@ -9228,9 +9456,17 @@ function remeshQuads(mesh, opt) {
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
   const { even } = result;
   const nv = even.nv, P = even.positions;
-  const tidy = optimizeValence(even.faces, P);
-  // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open.
-  const keepOpen = v => v < result.G.nv && result.G.fixed[v] === 1;
+  // The cut goes onto the plane now rather than only after relaxing, so the moves below judge its quads as they will be.
+  if (opt.plane && even.cut) for (let v = 0; v < nv; v++) if (even.cut[v]) P[v * 3 + opt.plane.axis] = opt.plane.offset;
+  const tidy = optimizeValence(even.faces, P, even.cut);
+  // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open: so are the
+  // midpoints the all-quad pass put on border edges between two of them, and the mirror plane's cut.
+  const open = new Uint8Array(nv);
+  open.set(result.G.fixed.subarray(0, Math.min(nv, result.G.nv)));
+  const bm = even.borderMid || [];
+  for (let k = 0; k < bm.length; k += 3) if (open[bm[k + 1]] && open[bm[k + 2]]) open[bm[k]] = 1;
+  if (even.cut) for (let v = 0; v < nv; v++) if (even.cut[v]) open[v] = 1;
+  const keepOpen = v => open[v] === 1;
   const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
   const faces = repaired.dropped || repaired.filled ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
   mark('valence');
@@ -9259,25 +9495,7 @@ function remeshQuads(mesh, opt) {
   };
   // The mirror plane's cut: open borders that mostly run within 0.75 grid steps of the plane are the cut, and all their
   // vertices go onto it however far they sagged, or the mirrored half would leave a gap there.
-  const onCut = new Uint8Array(nv);
-  if (plane) {
-    const root = new Int32Array(nv);
-    for (let v = 0; v < nv; v++) root[v] = v;
-    const find = x => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
-    for (const [key, c] of edgeUse) {
-      if (c !== 1) continue;
-      const a = Math.floor(key / nv), b = key - a * nv, ra = find(a), rb = find(b);
-      if (ra !== rb) root[ra] = rb;
-    }
-    const near = new Map(), total = new Map();
-    for (let v = 0; v < nv; v++) {
-      if (!border[v]) continue;
-      const r = find(v);
-      total.set(r, (total.get(r) || 0) + 1);
-      if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < 0.75 * sizeRef()) near.set(r, (near.get(r) || 0) + 1);
-    }
-    for (let v = 0; v < nv; v++) if (border[v] && (near.get(find(v)) || 0) * 2 >= total.get(find(v))) onCut[v] = 1;
-  }
+  const onCut = cutVertices(faces, P, nv, plane, 0.75 * sizeRef());
   const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
   for (let v = 0; v < nv; v++) { project(v); snapPlane(v); }
   // Sharp edges: corners take the nearest vertex and hold it; vertices close to an edge move onto it and afterwards only

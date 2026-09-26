@@ -164,6 +164,54 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
   check(gaps === 0, `mirror seam: no gaps where the plane grazes small bumps (${gaps} open edges)`);
 }
 
+// Valences of the result's vertices on the mirror plane, a quad's two triangles counting as one face.
+const seamValences = (r, axis, offset) => {
+  const P = r.positions, id = new Map(), g = new Int32Array(r.vertexCount);
+  for (let v = 0; v < r.vertexCount; v++) { const k = `${P[v * 3]},${P[v * 3 + 1]},${P[v * 3 + 2]}`; if (!id.has(k)) id.set(k, id.size); g[v] = id.get(k); }
+  const G = id.size, edges = new Set(), onPlane = new Uint8Array(G), deg = new Int32Array(G);
+  const add = (a, b) => { a = g[a]; b = g[b]; if (a !== b) edges.add(a < b ? a * G + b : b * G + a); };
+  for (let t = 0; t < r.triCount; t++) {
+    const q = r.quad[t] === 1 ? core.quadCorners(r.index, t) : null;
+    if (q) { for (let k = 0; k < 4; k++) add(q[k], q[(k + 1) % 4]); t++; continue; }
+    for (let k = 0; k < 3; k++) add(r.index[t * 3 + k], r.index[t * 3 + (k + 1) % 3]);
+  }
+  for (const k of edges) { const a = Math.floor(k / G); deg[a]++; deg[k - a * G]++; }
+  for (let v = 0; v < r.vertexCount; v++) if (Math.abs(P[v * 3 + axis] - offset) < 1e-6) onPlane[g[v]] = 1;
+  return [...deg].filter((d, v) => onPlane[v] && d > 0);
+};
+
+// A drum cut through both caps: there the cut runs along a few long input edges, which the grid took for a tear and
+// closed (a gap all along the plane), and odd faces paired with the cut left seam vertices with only two edges.
+{
+  const wd = core.smartWeld(sceneOf(new THREE.CylinderGeometry(0.6, 0.6, 1, 96, 30)), { keepUV: false, hardAngle: 30 });
+  let fewest = Infinity, open = 0, seam = 0, pinched = 0;
+  for (const target of [2000, 3400, 4400, 5600, 7200]) {
+    const { result: r, info } = run(wd, { targetTris: target, symmetry: { axis: 0, offset: 0, keepPositive: true } });
+    fewest = Math.min(fewest, info.symmetry.seamVertices);
+    open += openEdges(r).open;
+    const val = seamValences(r, 0, 0);
+    seam += val.length;
+    pinched += val.filter(d => d === 2).length;
+  }
+  check(fewest >= 20 && open === 0, `mirrored drum: the cut stays an edge loop at every budget (${fewest} vertices on it at least, ${open} open edges)`);
+  check(pinched <= 0.08 * seam, `mirrored drum: ${pinched} of ${seam} seam vertices with only two edges`);
+}
+
+// A sheet of two triangles: its border runs along four long edges, which the grid took for a tear and closed.
+{
+  const ws = core.smartWeld(sceneOf(new THREE.PlaneGeometry(1, 1, 1, 1)), { keepUV: false, hardAngle: 180 });
+  const rows = [60, 150].map(target => {
+    const rq = remeshQuads({ positions: ws.positions, index: ws.index }, { targetFaces: target });
+    const nv = rq.positions.length / 3, edges = new Map();
+    for (let f = 0; f < rq.faceCount; f++) {
+      const p = [...rq.faces.subarray(f * 4, f * 4 + 4)].filter(v => v !== QUAD_NONE);
+      for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length], key = a < b ? a * nv + b : b * nv + a; edges.set(key, (edges.get(key) || 0) + 1); }
+    }
+    return { faces: rq.faceCount, open: [...edges.values()].filter(c => c === 1).length };
+  });
+  check(rows.every(r => r.open >= 3 * Math.sqrt(r.faces)), `open sheet: the border stays open (${rows.map(r => `${r.open} open edges around ${r.faces} quads`).join(', ')})`);
+}
+
 // Following the shape: a thin ridge around a sphere's middle bends far more than the rest, so with the density following
 // curvature it gets a larger share of the same budget, and the ridge's worst gap to the original shrinks.
 {
