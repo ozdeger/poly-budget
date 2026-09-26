@@ -2574,9 +2574,11 @@ function closestOnTriangle(px, py, pz, P, ia, ib, ic) {
 
 // Vertices of a dense surface merged on a grid whose cell follows the local grid size, for a working surface of even
 // density. Within a cell, vertices join only while their normals stay within 75° of the group's, so the two sides of a
-// thin part stay apart. cellOf(v): the cell size at source vertex v. Returns the clusters (position: the member nearest
-// their mean, normal and area: sums over members), triangles between them, and the cluster of each source vertex.
-function clusterSurface(P, index, N, A, cellOf) {
+// thin part stay apart, and with `piece` (a label per vertex) only within one piece, so parts that merely touch (a tyre
+// tucked into its rim) stay apart too. cellOf(v): the cell size at source vertex v. Returns the clusters (position: the
+// member nearest their mean, normal and area: sums over members), triangles between them, and the cluster of each source
+// vertex.
+function clusterSurface(P, index, N, A, cellOf, piece = null) {
   const V = P.length / 3;
   const cls = new Int32Array(V), kx = new Int32Array(V), ky = new Int32Array(V), kz = new Int32Array(V);
   for (let v = 0; v < V; v++) {
@@ -2591,11 +2593,12 @@ function clusterSurface(P, index, N, A, cellOf) {
   let cells = 0;
   const cellRep = [];
   for (let v = 0; v < V; v++) {
-    let h = (Math.imul(kx[v], 73856093) ^ Math.imul(ky[v], 19349663) ^ Math.imul(kz[v], 83492791) ^ Math.imul(cls[v], 2654435761)) & mask;
+    const pc = piece ? piece[v] : 0;
+    let h = (Math.imul(kx[v], 73856093) ^ Math.imul(ky[v], 19349663) ^ Math.imul(kz[v], 83492791) ^ Math.imul(cls[v], 2654435761) ^ Math.imul(pc, 40503)) & mask;
     for (;;) {
       const r = table[h];
       if (r < 0) { table[h] = v; cellOfV[v] = cells++; cellRep.push(v); break; }
-      if (kx[r] === kx[v] && ky[r] === ky[v] && kz[r] === kz[v] && cls[r] === cls[v]) { cellOfV[v] = cellOfV[r]; break; }
+      if (kx[r] === kx[v] && ky[r] === ky[v] && kz[r] === kz[v] && cls[r] === cls[v] && (!piece || piece[r] === pc)) { cellOfV[v] = cellOfV[r]; break; }
       h = (h + 1) & mask;
     }
   }
@@ -2693,7 +2696,18 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   const expected = cellFactor * cellFactor * weighted;
   let wP, wN, wA, wIdx, wOf = null, wRep = null;
   if (V0 > expected * 1.5) {
-    const cl = clusterSurface(srcP, srcIdx, srcN, srcA, v => sizeAt(v) / cellFactor);
+    // The input's connected pieces: a cluster never spans two of them.
+    const piece = new Int32Array(V0);
+    for (let v = 0; v < V0; v++) piece[v] = v;
+    const find = x => { while (piece[x] !== x) { piece[x] = piece[piece[x]]; x = piece[x]; } return x; };
+    for (let t = 0; t < srcIdx.length; t += 3) {
+      const a = find(srcIdx[t]), b = find(srcIdx[t + 1]);
+      if (a !== b) piece[a] = b;
+      const c = find(srcIdx[t + 2]), d = find(b);
+      if (c !== d) piece[c] = d;
+    }
+    for (let v = 0; v < V0; v++) piece[v] = find(v);
+    const cl = clusterSurface(srcP, srcIdx, srcN, srcA, v => sizeAt(v) / cellFactor, piece);
     wP = cl.positions; wN = cl.normals; wA = cl.area; wIdx = cl.index; wOf = cl.of; wRep = cl.rep;
   } else {
     wP = Float64Array.from(srcP); wN = Float64Array.from(srcN); wA = srcA; wIdx = srcIdx;
@@ -8337,9 +8351,11 @@ function closestOnTriangle(px, py, pz, P, ia, ib, ic) {
 
 // Vertices of a dense surface merged on a grid whose cell follows the local grid size, for a working surface of even
 // density. Within a cell, vertices join only while their normals stay within 75° of the group's, so the two sides of a
-// thin part stay apart. cellOf(v): the cell size at source vertex v. Returns the clusters (position: the member nearest
-// their mean, normal and area: sums over members), triangles between them, and the cluster of each source vertex.
-function clusterSurface(P, index, N, A, cellOf) {
+// thin part stay apart, and with `piece` (a label per vertex) only within one piece, so parts that merely touch (a tyre
+// tucked into its rim) stay apart too. cellOf(v): the cell size at source vertex v. Returns the clusters (position: the
+// member nearest their mean, normal and area: sums over members), triangles between them, and the cluster of each source
+// vertex.
+function clusterSurface(P, index, N, A, cellOf, piece = null) {
   const V = P.length / 3;
   const cls = new Int32Array(V), kx = new Int32Array(V), ky = new Int32Array(V), kz = new Int32Array(V);
   for (let v = 0; v < V; v++) {
@@ -8354,11 +8370,12 @@ function clusterSurface(P, index, N, A, cellOf) {
   let cells = 0;
   const cellRep = [];
   for (let v = 0; v < V; v++) {
-    let h = (Math.imul(kx[v], 73856093) ^ Math.imul(ky[v], 19349663) ^ Math.imul(kz[v], 83492791) ^ Math.imul(cls[v], 2654435761)) & mask;
+    const pc = piece ? piece[v] : 0;
+    let h = (Math.imul(kx[v], 73856093) ^ Math.imul(ky[v], 19349663) ^ Math.imul(kz[v], 83492791) ^ Math.imul(cls[v], 2654435761) ^ Math.imul(pc, 40503)) & mask;
     for (;;) {
       const r = table[h];
       if (r < 0) { table[h] = v; cellOfV[v] = cells++; cellRep.push(v); break; }
-      if (kx[r] === kx[v] && ky[r] === ky[v] && kz[r] === kz[v] && cls[r] === cls[v]) { cellOfV[v] = cellOfV[r]; break; }
+      if (kx[r] === kx[v] && ky[r] === ky[v] && kz[r] === kz[v] && cls[r] === cls[v] && (!piece || piece[r] === pc)) { cellOfV[v] = cellOfV[r]; break; }
       h = (h + 1) & mask;
     }
   }
@@ -8456,7 +8473,18 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   const expected = cellFactor * cellFactor * weighted;
   let wP, wN, wA, wIdx, wOf = null, wRep = null;
   if (V0 > expected * 1.5) {
-    const cl = clusterSurface(srcP, srcIdx, srcN, srcA, v => sizeAt(v) / cellFactor);
+    // The input's connected pieces: a cluster never spans two of them.
+    const piece = new Int32Array(V0);
+    for (let v = 0; v < V0; v++) piece[v] = v;
+    const find = x => { while (piece[x] !== x) { piece[x] = piece[piece[x]]; x = piece[x]; } return x; };
+    for (let t = 0; t < srcIdx.length; t += 3) {
+      const a = find(srcIdx[t]), b = find(srcIdx[t + 1]);
+      if (a !== b) piece[a] = b;
+      const c = find(srcIdx[t + 2]), d = find(b);
+      if (c !== d) piece[c] = d;
+    }
+    for (let v = 0; v < V0; v++) piece[v] = find(v);
+    const cl = clusterSurface(srcP, srcIdx, srcN, srcA, v => sizeAt(v) / cellFactor, piece);
     wP = cl.positions; wN = cl.normals; wA = cl.area; wIdx = cl.index; wOf = cl.of; wRep = cl.rep;
   } else {
     wP = Float64Array.from(srcP); wN = Float64Array.from(srcN); wA = srcA; wIdx = srcIdx;
