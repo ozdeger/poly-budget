@@ -93,29 +93,37 @@ function edgesOf(index, V) {
 // grid can't step over a vertex. With a metric (6 floats per vertex, see formSizes) and the grid scale, an edge counts
 // as long when it spans more than factor of the grid step along its own direction, so edges along the long side of
 // stretched faces stay whole. New vertices remember the two they were made between, take the smaller size and the
-// mean metric.
-function splitLongEdges(P, index, size, factor = 0.5, maxPasses = 6, metric = null, scale = 1) {
+// mean metric. maxV caps the vertices: then the edges furthest over their length go first.
+function splitLongEdges(P, index, size, factor = 0.5, maxPasses = 6, metric = null, scale = 1, maxV = Infinity) {
   let pos = P, idx = index, V = P.length / 3, sz = size, met = metric;
   let pa = new Int32Array(V), pb = new Int32Array(V);
   for (let i = 0; i < V; i++) pa[i] = pb[i] = i;
-  const tooLong = (a, b, dx, dy, dz) => {
-    if (!met) { const s = factor * Math.min(sz[a], sz[b]); return dx * dx + dy * dy + dz * dz > s * s; }
+  // An edge's squared length (in the metric) and the most it may be, in OV; over that it is split.
+  const OV = new Float64Array(2);
+  const measure = (a, b, dx, dy, dz) => {
+    if (!met) { const s = factor * Math.min(sz[a], sz[b]); OV[0] = dx * dx + dy * dy + dz * dz; OV[1] = s * s; return; }
     let worst = 0;
     for (const o of [a * 6, b * 6]) {
       const q = dx * (met[o] * dx + met[o + 1] * dy + met[o + 2] * dz) + dy * (met[o + 1] * dx + met[o + 3] * dy + met[o + 4] * dz) + dz * (met[o + 2] * dx + met[o + 4] * dy + met[o + 5] * dz);
       if (q > worst) worst = q;
     }
-    return worst > factor * factor * scale * scale;
+    OV[0] = worst; OV[1] = factor * factor * scale * scale;
   };
-  for (let pass = 0; pass < maxPasses; pass++) {
+  for (let pass = 0; pass < maxPasses && V < maxV; pass++) {
     const E = edgesOf(idx, V);
-    const mid = new Map();
-    let add = 0;
+    const long = [];
     for (let e = 0; e < E.n; e++) {
       const a = E.a[e], b = E.b[e];
-      const dx = pos[a * 3] - pos[b * 3], dy = pos[a * 3 + 1] - pos[b * 3 + 1], dz = pos[a * 3 + 2] - pos[b * 3 + 2];
-      if (tooLong(a, b, dx, dy, dz)) { mid.set(a * V + b, V + add); add++; }
+      measure(a, b, pos[a * 3] - pos[b * 3], pos[a * 3 + 1] - pos[b * 3 + 1], pos[a * 3 + 2] - pos[b * 3 + 2]);
+      if (OV[0] > OV[1]) long.push([OV[0] / OV[1], e]);
     }
+    if (!long.length) break;
+    // Past maxV vertices, only the edges furthest over their length are split.
+    if (V + long.length > maxV) { long.sort((x, y) => y[0] - x[0] || x[1] - y[1]); long.length = maxV - V; }
+    long.sort((x, y) => x[1] - y[1]);
+    const mid = new Map();
+    let add = 0;
+    for (const [, e] of long) { mid.set(E.a[e] * V + E.b[e], V + add); add++; }
     if (!add) break;
     const np = new Float64Array((V + add) * 3);
     np.set(pos.subarray(0, V * 3));
@@ -654,6 +662,8 @@ function extractGraph(L) {
 }
 
 const has = (list, x) => list.indexOf(x) >= 0;
+// The working surface's vertices per face asked, at the most (scans come to about 12).
+const WORK_PER_FACE = 40;
 // Faces a separate piece gets at the least (a flat open one more, for its strokes; see pieceFloor), and where the budget
 // can't give every piece that many, enough to be there at all.
 const MIN_PIECE_QUADS = 24, PRESENT_QUADS = 4;
@@ -687,15 +697,34 @@ const drop = (list, x) => { const k = list.indexOf(x); if (k >= 0) list.splice(k
 function cleanGraph(G) {
   const { P, N, S, adj, fixed } = G;
   const dist = (a, b) => Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]);
+  const dist2 = (a, b) => (P[a * 3] - P[b * 3]) ** 2 + (P[a * 3 + 1] - P[b * 3 + 1]) ** 2 + (P[a * 3 + 2] - P[b * 3 + 2]) ** 2;
+  // Only vertices within two edges of a change can start a new candidate (a triple i-j-k depends on i's and j's edges
+  // and the three positions), so after the first pass over all vertices each pass scans just those, in the same order:
+  // the candidates, and so the result, are the same.
+  const touched = new Uint8Array(G.nv), mark = new Int32Array(G.nv).fill(-1);
+  let touchedList = [], full = true, stamp = 0;
+  const touch = v => { if (!touched[v]) { touched[v] = 1; touchedList.push(v); } };
+  const around = () => {
+    const out = [];
+    stamp++;
+    const add = v => { if (mark[v] !== stamp) { mark[v] = stamp; out.push(v); } };
+    for (const v of touchedList) { add(v); for (const u of adj[v]) { add(u); for (const w of adj[u]) add(w); } touched[v] = 0; }
+    touchedList = [];
+    return out.sort((x, y) => x - y);
+  };
   for (let round = 0; round < 20; round++) {
     let changed = false;
     for (let inner = 0; inner < 20; inner++) {
       let changedInner = false;
-      const cand = [];
-      for (let i = 0; i < G.nv; i++) {
+      const cand = [], list = full ? null : around(), count = full ? G.nv : list.length;
+      for (let n = 0; n < count; n++) {
+        const i = full ? n : list[n];
         for (const j of adj[i]) {
           for (const k of adj[j]) {
             if (k === i) continue;
+            // j-k clearly not the longest side (the margin leaves near ties to the exact lengths below).
+            const a2 = dist2(j, k);
+            if (a2 < Math.max(dist2(i, j), dist2(i, k)) * (1 - 1e-9)) continue;
             const a = dist(j, k), b = dist(i, j), c = dist(i, k);
             if (a > Math.max(b, c)) {
               const s = 0.5 * (a + b + c), h = (2 * Math.sqrt(Math.max(0, s * (s - a) * (s - b) * (s - c)))) / a;
@@ -714,6 +743,8 @@ function cleanGraph(G) {
         const thresh = 0.3 * (S[i] + S[j] + S[k]) / 3;
         if (b < thresh || c < thresh) {
           const m = b < thresh ? j : k;
+          touch(i); touch(m);
+          for (const u of adj[m]) touch(u);
           for (let d = 0; d < 3; d++) { P[i * 3 + d] = (P[i * 3 + d] + P[m * 3 + d]) / 2; N[i * 3 + d] = (N[i * 3 + d] + N[m * 3 + d]) / 2; }
           const nl = Math.hypot(N[i * 3], N[i * 3 + 1], N[i * 3 + 2]) || 1;
           for (let d = 0; d < 3; d++) N[i * 3 + d] /= nl;
@@ -733,6 +764,7 @@ function cleanGraph(G) {
           if (fixed[m]) fixed[i] = 1;
           G.removed[m] = 1;
         } else {
+          touch(i); touch(j); touch(k);
           for (let d = 0; d < 3; d++) { P[i * 3 + d] = (P[j * 3 + d] + P[k * 3 + d]) / 2; N[i * 3 + d] = N[j * 3 + d] + N[k * 3 + d]; }
           const nl = Math.hypot(N[i * 3], N[i * 3 + 1], N[i * 3 + 2]) || 1;
           for (let d = 0; d < 3; d++) N[i * 3 + d] /= nl;
@@ -742,6 +774,7 @@ function cleanGraph(G) {
         }
         changed = changedInner = true;
       }
+      full = false;
       if (!changedInner) break;
     }
     // Diagonals: an edge whose two ends share exactly two neighbours splits a quad into two triangles.
@@ -750,12 +783,9 @@ function cleanGraph(G) {
       for (const j of adj[i]) {
         if (j < i) continue;
         let tris = 0, length = 0;
-        for (const k of adj[i]) {
-          if (k === j || !has(adj[j], k)) continue;
-          tris++;
-          length += dist(k, i) + dist(k, j);
-        }
+        for (const k of adj[i]) if (k !== j && has(adj[j], k)) tris++;
         if (tris === 2) {
+          for (const k of adj[i]) if (k !== j && has(adj[j], k)) length += dist(k, i) + dist(k, j);
           const expected = (length / 4) * Math.SQRT2, diag = dist(i, j);
           cand.push([Math.abs((diag - expected) / Math.min(diag, expected)), i, j]);
         }
@@ -767,6 +797,7 @@ function cleanGraph(G) {
       for (const k of adj[i]) if (k !== j && has(adj[j], k)) tris++;
       if (tris !== 2) continue;
       drop(adj[i], j); drop(adj[j], i);
+      touch(i); touch(j);
       changed = true;
     }
     if (!changed) break;
@@ -1811,7 +1842,7 @@ function pieceFloor(srcP, srcIdx, srcA, mArea, pieces, budget) {
 // step, and edges still longer than 0.7 of a step along their direction split so the grid can't step over a vertex;
 // then its normals (smoothed a little, keeping sharp edges), metric (Msrc, per source vertex), the open borders as
 // constraints, and the hierarchy. scale: the grid scale the metric is read with.
-function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens, crease, piece) {
+function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, dens, crease, piece, maxWork) {
   let weighted = 0;
   for (let v = 0; v < V0; v++) { const s = sizeAt(v); weighted += srcA[v] / (s * s); }
   const expected = cellFactor * cellFactor * weighted;
@@ -1831,7 +1862,7 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
   mark('cluster');
   const cMet = new Float64Array(nC * 6);
   for (let k = 0; k < nC; k++) for (let d = 0; d < 6; d++) cMet[k * 6 + d] = Msrc[wRep[k] * 6 + d];
-  const sub = splitLongEdges(wP, wIdx, cSize, splitFactor, 6, cMet, scale);
+  const sub = splitLongEdges(wP, wIdx, cSize, splitFactor, 6, cMet, scale, Math.max(nC, maxWork));
   const n = sub.positions.length / 3, WI = sub.index;
   const L0 = { n, V: sub.positions, N: new Float64Array(n * 3), A: new Float64Array(n), S: new Float64Array(n), ...adjacency(n, ...edgeArgs(WI, n)) };
   // A split vertex takes the mean normal of its two parents.
@@ -2774,7 +2805,9 @@ export function remeshQuads(mesh, opt) {
     mark('cached');
     if (progress) progress('orientation', 1);
   } else {
-    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, densFit, crease, pieces.label);
+    // At most WORK_PER_FACE working vertices per face asked (the clusters themselves aside): where steps are wanted
+    // shorter than the input's own edges (across strands, most of a hairball) splitting would multiply the input.
+    work = buildWorking(srcP, srcIdx, fieldN, srcA, sizeAt, cellFactor, splitFactor, opt, V0, mark, progress, Msrc, scale, densFit, crease, pieces.label, WORK_PER_FACE * target);
     for (const L of work.levels) levelAlignment(L, 0.5);
     solveOrientations(work.levels, seed, progress);
     for (const L of work.levels) levelSpacings(L, scale);
@@ -2794,14 +2827,39 @@ export function remeshQuads(mesh, opt) {
   resolvePositions(levels, seed, progress);
   mark('positions');
 
-  const grid = new SurfaceGrid(srcP, srcIdx, sizeRef());
+  // The input surface for closest points, in cells of about two of its own edges (at most a face wide): on fine strands a
+  // face-sized cell held thousands of triangles, each tested by every query nearby.
+  const grid = new SurfaceGrid(srcP, srcIdx, Math.min(sizeRef(), 2 * Math.sqrt((4 * areaTotal) / (Math.sqrt(3) * Math.max(1, srcIdx.length / 3)))));
   const attempts = [];
   mark('grid');
+  // The valence moves and last repairs, which each try gets: on many small or thin parts they drop or add a fifth of
+  // the faces, so a try is counted as the result will be.
+  const finish = (G, even) => {
+    const nv = even.nv, P = even.positions;
+    // The cut goes onto the plane now rather than only after relaxing, so the moves below judge its quads as they will be.
+    if (opt.plane && even.cut) for (let v = 0; v < nv; v++) if (even.cut[v]) P[v * 3 + opt.plane.axis] = opt.plane.offset;
+    const tidy = optimizeValence(even.faces, P, even.cut);
+    // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open: so are
+    // the midpoints the all-quad pass put on border edges between two of them, and the mirror plane's cut.
+    const open = new Uint8Array(nv);
+    open.set(G.fixed.subarray(0, Math.min(nv, G.nv)));
+    const bm = even.borderMid || [];
+    for (let k = 0; k < bm.length; k += 3) if (open[bm[k + 1]] && open[bm[k + 2]]) open[bm[k]] = 1;
+    if (even.cut) for (let v = 0; v < nv; v++) if (even.cut[v]) open[v] = 1;
+    const keepOpen = v => open[v] === 1;
+    const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
+    const faces = repaired.dropped || repaired.filled ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
+    return { tidy, repaired, faces };
+  };
   // Up to four tries at the budget; the closest one is kept. Faces fall about as scale⁻² on a smooth surface; from the
   // second correction on, the exponent is measured from the last two tries, since pieces that vanish or appear as the
-  // grid changes make the count respond more steeply (many small parts) or less.
-  let result = null;
-  const tried = [];
+  // grid changes make the count respond more steeply (many small parts) or less. A try that doesn't close a tenth of the
+  // best one's gap ends the search: the count no longer follows the grid. Nor does the grid get finer than half the
+  // first try's, which the working surface is built for: past that the grid steps over the surface's vertices and faces
+  // fall apart rather than multiply (strands at a quarter lost all but 32). When the search ends short of the budget
+  // that way, stats.short says so (parts thinner than a face, such as strands).
+  let result = null, short = false;
+  const tried = [], minScale = scale / 2;
   for (let attempt = 0; attempt < 4; attempt++) {
     const G = extractGraph(L0);
     cleanGraph(G);
@@ -2824,20 +2882,24 @@ export function remeshQuads(mesh, opt) {
     const even = opt.pure === false
       ? { faces: polys.flatMap(p => (p.length === 5 ? pentagonSplit(G.P, p) : [p])), positions: G.P, nv: G.nv, unpaired: 0, cut }
       : evenFaces(polys, G.P, G.nv, cut);
+    const done = finish(G, even), count = done.faces.length;
     if (progress) progress('extract', 1);
-    const count = even.faces.length;
-    if (!result || !(result.count > 0) || (count > 0 && Math.abs(Math.log(count / target)) < Math.abs(Math.log(result.count / target)))) result = { G, even, count, scale };
+    const gap = count > 0 ? Math.abs(Math.log(count / target)) : Infinity, best = result && result.count > 0 ? Math.abs(Math.log(result.count / target)) : Infinity;
+    if (!result || gap < best) result = { G, even, ...done, count, scale };
     attempts.push(count);
     mark(`extract${attempt}`);
     // Close enough to the budget, or out of tries: keep the closest. Otherwise resize the grid and solve positions again.
     if (Math.abs(count / target - 1) < 0.04 || attempt === 3 || count === 0) break;
+    if (!(gap < 0.9 * best)) { short = result.count < target && count < target; break; }
     tried.push([Math.log(scale), Math.log(count)]);
     let p = 2;
     if (tried.length >= 2) {
       const [s1, c1] = tried[tried.length - 2], [s2, c2] = tried[tried.length - 1];
       if (Math.abs(s2 - s1) > 1e-6) p = Math.min(6, Math.max(1, -(c2 - c1) / (s2 - s1)));
     }
-    scale *= Math.exp(Math.max(Math.log(0.5), Math.min(Math.log(2), (Math.log(count) - Math.log(target)) / p)));
+    const next = scale * Math.exp(Math.max(Math.log(0.5), Math.min(Math.log(2), (Math.log(count) - Math.log(target)) / p)));
+    if (next < minScale && scale <= minScale * 1.0001) { short = true; break; }
+    scale = Math.max(minScale, next);
     for (const L of levels) levelSpacings(L, scale);
     applyFit(levels, work.fit);
     if (progress) progress('position', 0);
@@ -2846,24 +2908,12 @@ export function remeshQuads(mesh, opt) {
   }
   // Later steps size things by the kept try's grid.
   scale = result.scale;
-  if (cache && result.count > 0) cache.bias.phi = (result.count * scale * scale) / (weighted * (work.fit ? work.fit.density : 1));
+  short = short && result.count < target * 0.96;
+  // A search that ended short says nothing about how faces follow the grid, so it teaches the next budget nothing.
+  if (cache && result.count > 0 && !short) cache.bias.phi = (result.count * scale * scale) / (weighted * (work.fit ? work.fit.density : 1));
   // Relax: every vertex moves toward the middle of its neighbours along the surface, then back onto it.
-  const { even } = result;
+  const { even, tidy, repaired, faces } = result;
   const nv = even.nv, P = even.positions;
-  // The cut goes onto the plane now rather than only after relaxing, so the moves below judge its quads as they will be.
-  if (opt.plane && even.cut) for (let v = 0; v < nv; v++) if (even.cut[v]) P[v * 3 + opt.plane.axis] = opt.plane.offset;
-  const tidy = optimizeValence(even.faces, P, even.cut);
-  // Vertices on real open borders (their grid corner carried the border constraint), which repairs leave open: so are the
-  // midpoints the all-quad pass put on border edges between two of them, and the mirror plane's cut.
-  const open = new Uint8Array(nv);
-  open.set(result.G.fixed.subarray(0, Math.min(nv, result.G.nv)));
-  const bm = even.borderMid || [];
-  for (let k = 0; k < bm.length; k += 3) if (open[bm[k + 1]] && open[bm[k + 2]]) open[bm[k]] = 1;
-  if (even.cut) for (let v = 0; v < nv; v++) if (even.cut[v]) open[v] = 1;
-  const keepOpen = v => open[v] === 1;
-  const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
-  const faces = repaired.dropped || repaired.filled ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
-  mark('valence');
   const nbr = new Array(nv);
   for (let v = 0; v < nv; v++) nbr[v] = [];
   const edgeUse = new Map();
@@ -3034,7 +3084,7 @@ export function remeshQuads(mesh, opt) {
   });
   return {
     positions, faces: out, faceCount: faces.length, hit: { tri, bary: bc }, faceTri,
-    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, target, scale, size: sizeRef(), clusters: nC, workVertices: n, levels: levels.length, attempts, ms: Date.now() - t0, timings },
+    stats: { quads, others, unpaired: even.unpaired, valenceMoves: tidy.moves, repaired: repaired.dropped, target, scale, size: sizeRef(), clusters: nC, workVertices: n, levels: levels.length, attempts, short, ms: Date.now() - t0, timings },
   };
 }
 

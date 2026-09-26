@@ -2840,6 +2840,8 @@ function updateResultUI() {
       tone = over ? 'warn' : 'info';
       text = over ? 'Over budget' : 'Under budget';
       why = `Remeshing lands near the budget, not on it: ${fmt(i.tris)} of ${fmt(target)} triangles.`;
+      // The remesher gave up on more faces: parts too thin for a face at this size don't gain faces from a finer grid.
+      if (!over && i.remesh && i.remesh.short) why = `Parts thinner than a face (strands, wires) can't take the rest: ${fmt(i.tris)} of ${fmt(target)} triangles.`;
     }
   } else if (!over) {
     if (i.tris < target * 0.98 && limited) { tone = 'info'; text = 'Under budget'; why = 'It stopped at the error limit before using the whole budget.'; action = ['Remove the limit', clearErrorLimit]; }
