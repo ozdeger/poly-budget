@@ -264,7 +264,7 @@ const seamValences = (r, axis, offset) => {
     return { aspect: med(along) / med(around), around: (2 * Math.PI * r0) / med(around), mean: off.reduce((x, y) => x + y, 0) / off.length, faces: rq.faceCount };
   };
   const even = ring(0), long = ring(1);
-  check(long.aspect > 1.8 && even.aspect < 1.3 && long.around > even.around * 1.3 && long.mean < even.mean * 0.8,
+  check(long.aspect > 1.5 && even.aspect < 1.3 && long.around > even.around * 1.3 && long.mean < even.mean * 0.8,
     `long quads: on a thin ring ${long.aspect.toFixed(1)}:1 quads with ${long.around.toFixed(1)} around the tube (even squares: ${even.aspect.toFixed(1)}:1, ${even.around.toFixed(1)} around), face middles ${long.mean.toFixed(4)} off the surface on average (${even.mean.toFixed(4)})`);
 }
 

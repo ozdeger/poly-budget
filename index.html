@@ -3405,7 +3405,8 @@ function intersect2(a1, b1, d1, a2, b2, d2, out) {
 // κh²/8, so an even error everywhere asks for edges h = c/√κ along each principal direction: short across the
 // direction that bends most, long along the one that bends least (square faces spend √(κ1/κ2) times more, which on
 // tubes, folds and limbs is several times), and faces per area in proportion to √(κ1κ2). Edges stay within
-// [hMin, hMax] × the even size √(area / target) and the long one within alpha × the short one; strength blends from
+// [hMin, hMax] × the even size √(area / target) and the long one within alpha × the short one (twice: at four times,
+// a forearm's loops lay twice as far apart across the elbow, for a few percent of accuracy); strength blends from
 // even squares (0) to that (1) in log space; c is found for the target. Then no edge length may grow by more than
 // grade × the distance from a neighbour's, along each of the neighbour's directions (Frédéric Alauzet, "Size gradation
 // control of anisotropic meshes", 2010): along a tube the long edges then stay even all around it, as a grid of
@@ -3414,7 +3415,7 @@ function intersect2(a1, b1, d1, a2, b2, d2, out) {
 // cylinder carry onto its flat cap instead of meeting its big quads at the rim. The result is scaled back to the target.
 function formSizes(an, target, strength, opt = {}) {
   const { cl, nstart, nid, kb, ks, dir, area, V } = an, C = cl.count, CN = cl.normals, CP = cl.positions;
-  const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 4, grade = opt.grade ?? 0.3;
+  const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 2, grade = opt.grade ?? 0.3;
   const h0 = Math.sqrt(area / target);
   // held: sizes kept for a thin part (see below).
   const h1 = new Float64Array(C), h2 = new Float64Array(C), held = new Uint8Array(C);
@@ -9559,7 +9560,8 @@ function intersect2(a1, b1, d1, a2, b2, d2, out) {
 // κh²/8, so an even error everywhere asks for edges h = c/√κ along each principal direction: short across the
 // direction that bends most, long along the one that bends least (square faces spend √(κ1/κ2) times more, which on
 // tubes, folds and limbs is several times), and faces per area in proportion to √(κ1κ2). Edges stay within
-// [hMin, hMax] × the even size √(area / target) and the long one within alpha × the short one; strength blends from
+// [hMin, hMax] × the even size √(area / target) and the long one within alpha × the short one (twice: at four times,
+// a forearm's loops lay twice as far apart across the elbow, for a few percent of accuracy); strength blends from
 // even squares (0) to that (1) in log space; c is found for the target. Then no edge length may grow by more than
 // grade × the distance from a neighbour's, along each of the neighbour's directions (Frédéric Alauzet, "Size gradation
 // control of anisotropic meshes", 2010): along a tube the long edges then stay even all around it, as a grid of
@@ -9568,7 +9570,7 @@ function intersect2(a1, b1, d1, a2, b2, d2, out) {
 // cylinder carry onto its flat cap instead of meeting its big quads at the rim. The result is scaled back to the target.
 function formSizes(an, target, strength, opt = {}) {
   const { cl, nstart, nid, kb, ks, dir, area, V } = an, C = cl.count, CN = cl.normals, CP = cl.positions;
-  const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 4, grade = opt.grade ?? 0.3;
+  const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 2, grade = opt.grade ?? 0.3;
   const h0 = Math.sqrt(area / target);
   // held: sizes kept for a thin part (see below).
   const h1 = new Float64Array(C), h2 = new Float64Array(C), held = new Uint8Array(C);
