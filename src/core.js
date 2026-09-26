@@ -2297,11 +2297,20 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     const n = faces[f * 4 + 3] === QUAD_NONE ? 3 : 4;
     for (let k = 0; k < n; k++) edges.add(ek(faces[f * 4 + k], faces[f * 4 + (k + 1) % n]));
   }
-  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane. A diagonal
-  // that is already an edge of other faces is never taken: that edge would join three or four triangles.
+  // A triangle without area (three corners on one line, as along a straight crease).
+  const flat = (a, b, c) => {
+    const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2], vx = P[c * 3] - P[a * 3], vy = P[c * 3 + 1] - P[a * 3 + 1], vz = P[c * 3 + 2] - P[a * 3 + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.max(ux * ux + uy * uy + uz * uz, vx * vx + vy * vy + vz * vz, (ux - vx) ** 2 + (uy - vy) ** 2 + (uz - vz) ** 2);
+    return !(nx * nx + ny * ny + nz * nz > 1e-14 * l * l);
+  };
+  // Which diagonal a quad splits along: never one that is already an edge of other faces (that edge would join three or
+  // four triangles), then not one that leaves a triangle without area or lying wholly on the mirror plane, otherwise
+  // the shorter.
   const alongAC = (a, b, c, d) => {
     const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
     if (acTaken !== bdTaken) return bdTaken;
+    const acZero = flat(a, b, c) || flat(a, c, d), bdZero = flat(b, c, d) || flat(b, d, a);
+    if (acZero !== bdZero) return bdZero;
     const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
     const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
     if (acFlat !== bdFlat) return bdFlat;

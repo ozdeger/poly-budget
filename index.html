@@ -1662,6 +1662,30 @@ function extractGraph(L) {
 }
 
 const has = (list, x) => list.indexOf(x) >= 0;
+// A loop that passes one vertex twice, as the simple loops it is made of (three corners or more each).
+function simpleLoops(loop) {
+  const out = [], stack = [loop];
+  while (stack.length) {
+    const l = stack.pop(), seen = new Map();
+    let cut = null;
+    for (let i = 0; i < l.length && !cut; i++) { const j = seen.get(l[i]); if (j !== undefined) cut = [j, i]; else seen.set(l[i], i); }
+    if (!cut) { if (l.length >= 3) out.push(l); continue; }
+    stack.push(l.slice(cut[0], cut[1]), [...l.slice(cut[1]), ...l.slice(0, cut[0])]);
+  }
+  return out;
+}
+// Faces that repeat a corner: repeats side by side fold away ([v, v, a, b] is the triangle [v, a, b]); a face still
+// repeating one, or left with fewer than three, is dropped. Returns the faces and how many were dropped.
+function cleanCorners(faces) {
+  const out = [];
+  let dropped = 0;
+  for (const p of faces) {
+    const q = p.filter((v, k) => v !== p[(k + 1) % p.length]);
+    if (q.length < 3 || new Set(q).size !== q.length) dropped++;
+    else out.push(q);
+  }
+  return { faces: out, dropped };
+}
 const drop = (list, x) => { const k = list.indexOf(x); if (k >= 0) list.splice(k, 1); };
 
 // Snaps vertices that sit on an edge into it and removes quad diagonals (Instant Meshes' step 5).
@@ -1768,15 +1792,21 @@ function quadScore(P, q) {
   for (let k = 0; k < 4; k++) s += Math.abs(cornerAngle(P, q, k) - 90);
   return s;
 }
+// A quad with a corner under 5°: a corner lies on (or right by) the line through two others, so it folds over itself.
+// Graph cleaning puts a vertex exactly halfway along an edge it drops; a cut along that edge gives such a quad.
+function foldedQuad(P, q) {
+  for (let k = 0; k < 4; k++) if (cornerAngle(P, q, k) < 5) return true;
+  return false;
+}
 // Splits a polygon with an even number of sides into quads without new vertices, choosing the split whose quads come
 // closest to right angles overall (every split for up to ten sides; larger ones cut the best quad off first).
 // taken(a, b): an edge that already exists elsewhere; a cut along it would give that edge a third face, so it costs
-// more than any shape.
+// more than any shape, as does a folded quad.
 function evenToQuads(P, poly, taken = null) {
-  if (poly.length <= 4) return { score: poly.length === 4 ? quadScore(P, poly) : 0, quads: [poly] };
+  if (poly.length <= 4) return { score: poly.length === 4 ? quadScore(P, poly) + (foldedQuad(P, poly) ? 1000 : 0) : 0, quads: [poly] };
   const cut = i => {
     const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
-    return { q, score: quadScore(P, q) + (taken && taken(q[0], q[3]) ? 1000 : 0), rest: poly.filter((_, k) => k !== (i + 1) % poly.length && k !== (i + 2) % poly.length) };
+    return { q, score: quadScore(P, q) + (taken && taken(q[0], q[3]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0), rest: poly.filter((_, k) => k !== (i + 1) % poly.length && k !== (i + 2) % poly.length) };
   };
   if (poly.length > 10) {
     let best = null;
@@ -1795,7 +1825,8 @@ function evenToQuads(P, poly, taken = null) {
 function pentagonSplit(P, poly, taken = null) {
   let best = Infinity, bi = 0;
   for (let i = 0; i < 5; i++) {
-    const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % 5])) + (taken && taken(poly[i], poly[(i + 3) % 5]) ? 1000 : 0);
+    const q = [0, 1, 2, 3].map(k => poly[(i + k) % 5]);
+    const s = quadScore(P, q) + (taken && taken(poly[i], poly[(i + 3) % 5]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0);
     if (s < best) { best = s; bi = i; }
   }
   return [[0, 1, 2, 3].map(k => poly[(bi + k) % 5]), [poly[(bi + 3) % 5], poly[(bi + 4) % 5], poly[bi]]];
@@ -1817,7 +1848,7 @@ function extractFaces(G) {
     adj[i].sort((a, b) => ang.get(b) - ang.get(a));
   }
   let used = adj.map(a => new Uint8Array(a.length));
-  let links = adj, maxHole = 16;
+  let links = adj, maxHole = 16, faceKeys = null;
   const faces = [];
   // Walks a face from the link start → links[start][startIdx]; target: its number of sides (0: any, up to 16).
   const walk = (start, startIdx, target) => {
@@ -1842,11 +1873,14 @@ function extractFaces(G) {
   };
   const taken = (a, b) => adj[a].includes(b);
   const fill = poly => {
+    // A loop through one vertex twice would give faces that repeat a corner: its simple loops are filled instead.
+    if (new Set(poly).size !== poly.length) { for (const l of simpleLoops(poly)) if (!faceKeys || !faceKeys.has(l.slice().sort((x, y) => x - y).join(','))) fill(l); return; }
     // Odd faces keep five sides (or three) for the all-quad pass; the rest become quads.
     while (poly.length > 5 && poly.length & 1) {
       let best = Infinity, bi = 0;
       for (let i = 0; i < poly.length; i++) {
-        const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % poly.length])) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0);
+        const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
+        const s = quadScore(P, q) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0);
         if (s < best) { best = s; bi = i; }
       }
       faces.push([0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]));
@@ -1897,7 +1931,7 @@ function extractFaces(G) {
     }
     if (!dropped) break;
   }
-  const faceKeys = new Set(faces.map(p => p.slice().sort((x, y) => x - y).join(',')));
+  faceKeys = new Set(faces.map(p => p.slice().sort((x, y) => x - y).join(',')));
   // Holes: keep only the edges that a face uses on one side, and walk the loops they form; small ones are filled.
   const rimAdj = [], rimUsed = [];
   for (let i = 0; i < nv; i++) {
@@ -2024,7 +2058,7 @@ function mergeOddPairs(faces, P, nv, cut = null) {
     const onLoop = new Set(o.loop.map((v, k) => key(v, o.loop[(k + 1) % o.loop.length])));
     let best = null;
     for (const quads of cuts(o.loop)) {
-      if (!quads.every(q => [0, 1, 2, 3].every(k => cornerAngle(P, q, k) <= 160))) continue;
+      if (!quads.every(q => [0, 1, 2, 3].every(k => cornerAngle(P, q, k) <= 160) && !foldedQuad(P, q))) continue;
       const change = new Map(), add = (v, d) => change.set(v, (change.get(v) || 0) + d);
       for (const [a, b] of o.inner) { add(a, -1); add(b, -1); }
       let clash = false;
@@ -2101,6 +2135,7 @@ function collapseCutTriangles(faces, P, nv, cut) {
 function evenFaces(faces, P, nv, cut = null) {
   faces = mergeOddPairs(faces, P, nv, cut);
   if (cut) faces = collapseCutTriangles(faces, P, nv, cut);
+  faces = cleanCorners(faces).faces;
   const F = faces.length;
   const half = new Map(); // directed edge a*nv+b -> face
   for (let f = 0; f < F; f++) {
@@ -2214,8 +2249,9 @@ function evenFaces(faces, P, nv, cut = null) {
   return { faces: clean.faces, positions: P2x, nv: n, unpaired: odd.length, doublets: clean.removed, cut: cut2, borderMid };
 }
 
-// Removes doublets: an inner vertex with only two edges, between two quads that share both, is dropped and the two
-// quads become one.
+// Removes doublets: two quads that share both edges of a vertex become one without it. Usually the vertex has only
+// those two faces; where it has more (a pinch, two fans meeting at one vertex) it stays in the others, and the pair's
+// shared edge would otherwise come back as a diagonal of the faces there.
 function removeDoublets(faces, nv) {
   let removed = 0;
   for (let round = 0; round < 8; round++) {
@@ -2224,19 +2260,24 @@ function removeDoublets(faces, nv) {
     let changed = false;
     for (let v = 0; v < nv; v++) {
       const list = at[v];
-      if (list.length !== 2) continue;
-      const f1 = faces[list[0]], f2 = faces[list[1]];
-      if (!f1 || !f2 || f1.length !== 4 || f2.length !== 4) continue;
-      const r1 = f1.indexOf(v), r2 = f2.indexOf(v);
-      const a = f1[(r1 + 1) % 4], x = f1[(r1 + 2) % 4], b = f1[(r1 + 3) % 4];
-      const c = f2[(r2 + 1) % 4], y = f2[(r2 + 2) % 4], d = f2[(r2 + 3) % 4];
-      if (c !== b || d !== a || x === y) continue;
-      // Both faces must still be current (an earlier merge this round may have used one).
-      faces[list[0]] = [a, x, b, y];
-      faces[list[1]] = null;
-      for (const u of [a, x, b, y]) { const l = at[u]; if (!l.includes(list[0])) l.push(list[0]); }
-      for (const u of [c, y, d]) { const l = at[u], k = l.indexOf(list[1]); if (k >= 0) l.splice(k, 1); }
-      at[v] = [];
+      let pair = null;
+      for (let i = 0; i < list.length && !pair; i++) {
+        for (let j = i + 1; j < list.length && !pair; j++) {
+          const f1 = faces[list[i]], f2 = faces[list[j]];
+          if (!f1 || !f2 || f1.length !== 4 || f2.length !== 4) continue;
+          const r1 = f1.indexOf(v), r2 = f2.indexOf(v);
+          const a = f1[(r1 + 1) % 4], x = f1[(r1 + 2) % 4], b = f1[(r1 + 3) % 4];
+          const c = f2[(r2 + 1) % 4], y = f2[(r2 + 2) % 4], d = f2[(r2 + 3) % 4];
+          if (c === b && d === a && x !== y) pair = [list[i], list[j], a, x, b, y];
+        }
+      }
+      if (!pair) continue;
+      const [g1, g2, a, x, b, y] = pair;
+      faces[g1] = [a, x, b, y];
+      faces[g2] = null;
+      for (const u of [a, x, b, y]) { const l = at[u]; if (!l.includes(g1)) l.push(g1); }
+      for (const u of [a, y, b]) { const l = at[u], k = l.indexOf(g2); if (k >= 0) l.splice(k, 1); }
+      at[v] = list.filter(g => g !== g1 && g !== g2);
       removed++;
       changed = true;
     }
@@ -2347,7 +2388,9 @@ function optimizeValence(faces, P, cut = null) {
         if (i >= 0) {
           const pv = q[i], a = q[(i + 3) % 4], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
           const around = at[c].filter(g => g !== f && faces[g]);
+          // As for the collapse below: c's faces don't hold pv yet, and pv and c share no neighbour besides a and b.
           if (!border[c] && deg(c) === 3 && seam(a) && seam(b) && !around.some(g => done[g]) &&
+            !around.some(g => faces[g].includes(pv)) && ![...nbr[pv]].some(x => x !== a && x !== b && nbr[c].has(x)) &&
             E(pv, 2) - E(pv, 3) + E(c, 3) + E(a, deg(a)) - E(a, deg(a) - 1) + E(b, deg(b)) - E(b, deg(b) - 1) > 0) {
             for (const g of around) { faces[g] = faces[g].map(x => (x === c ? pv : x)); done[g] = 1; }
             for (const g of [...at[a], ...at[b]]) done[g] = 1;
@@ -2364,7 +2407,15 @@ function optimizeValence(faces, P, cut = null) {
         if (deg(a) !== 3 || deg(c) !== 3 || deg(b) < 5 || deg(d) < 5) continue;
         const around = at[c].filter(g => g !== f && faces[g]);
         if (around.some(g => done[g]) || at[a].some(g => done[g])) continue;
-        for (let k = 0; k < 3; k++) P[a * 3 + k] = (P[a * 3 + k] + P[c * 3 + k]) / 2;
+        // Merging c into a must not join corners already joined: no face around c holds a, and a and c share no
+        // neighbour besides b and d (on a fold, either gives faces that repeat a corner).
+        if (around.some(g => faces[g].includes(a)) || [...nbr[a]].some(x => x !== b && x !== d && nbr[c].has(x))) continue;
+        // Nor land on b or d: where one lies on the diagonal (graph cleaning leaves a vertex halfway along an edge it
+        // drops), the merged corner would sit on it.
+        const mid = [0, 1, 2].map(k => (P[a * 3 + k] + P[c * 3 + k]) / 2), gap = u => Math.hypot(mid[0] - P[u * 3], mid[1] - P[u * 3 + 1], mid[2] - P[u * 3 + 2]);
+        const side = (Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]) + Math.hypot(P[c * 3] - P[d * 3], P[c * 3 + 1] - P[d * 3 + 1], P[c * 3 + 2] - P[d * 3 + 2])) / 2;
+        if (Math.min(gap(b), gap(d)) < 0.25 * side) continue;
+        for (let k = 0; k < 3; k++) P[a * 3 + k] = mid[k];
         for (const g of around) { faces[g] = faces[g].map(x => (x === c ? a : x)); done[g] = 1; }
         for (const g of at[a]) done[g] = 1;
         faces[f] = null;
@@ -2382,7 +2433,8 @@ function optimizeValence(faces, P, cut = null) {
 // Last repairs: a face that repeats another's corners, a third face on an edge and a face hanging by one edge are
 // dropped, and the small holes that leaves are closed (with quads, and a triangle for an odd hole).
 function repairFaces(faces, P, nv, keepOpen) {
-  let list = faces.slice(), dropped = 0, filled = 0;
+  const clean = cleanCorners(faces);
+  let list = clean.faces, dropped = clean.dropped, filled = 0;
   const seen = new Set();
   list = list.filter(p => {
     const k = p.slice().sort((a, b) => a - b).join(',');
@@ -2407,7 +2459,8 @@ function repairFaces(faces, P, nv, keepOpen) {
   }
   {
     // Holes: loops of half-edges no face uses the other way, away from real open borders. A loop runs against the
-    // faces' direction, so it is walked from each unmatched half-edge a -> b back from b to a.
+    // faces' direction, so it is walked from each unmatched half-edge a -> b back from b to a. A loop that passes one
+    // vertex twice is filled as its simple loops.
     const half = new Map();
     for (const p of list) for (let k = 0; k < p.length; k++) half.set(p[k] * nv + p[(k + 1) % p.length], 1);
     const next = new Map();
@@ -2427,7 +2480,7 @@ function repairFaces(faces, P, nv, keepOpen) {
         const loop = [start];
         const steps = [start * nv + first];
         let v = first, prev = start, closed = false;
-        while (loop.length < 32) {
+        while (loop.length < 64) {
           if (v === start) { closed = true; break; }
           loop.push(v);
           const options = (next.get(v) || []).filter(x => !usedHalf.has(v * nv + x) && !steps.includes(v * nv + x));
@@ -2438,12 +2491,15 @@ function repairFaces(faces, P, nv, keepOpen) {
           prev = v;
           v = w;
         }
-        if (!closed || loop.length < 3 || loop.every(x => keepOpen(x))) continue;
+        // Loops of 32 steps or more are closed only away from real open borders, which they would otherwise cap.
+        if (!closed || loop.length < 3 || loop.every(x => keepOpen(x)) || (loop.length >= 32 && loop.some(x => keepOpen(x)))) continue;
         for (const st of steps) usedHalf.add(st);
-        if (loop.length & 1) {
-          const q = loop.length > 3 ? evenToQuads(P, loop.slice(0, loop.length - 1), taken).quads : [];
-          list.push(...q, loop.length > 3 ? [loop[loop.length - 2], loop[loop.length - 1], loop[0]] : loop);
-        } else list.push(...evenToQuads(P, loop, taken).quads);
+        for (const l of simpleLoops(loop)) {
+          if (l.length & 1) {
+            const q = l.length > 3 ? evenToQuads(P, l.slice(0, l.length - 1), taken).quads : [];
+            list.push(...q, l.length > 3 ? [l[l.length - 2], l[l.length - 1], l[0]] : l);
+          } else list.push(...evenToQuads(P, l, taken).quads);
+        }
         filled++;
       }
     }
@@ -3750,9 +3806,41 @@ function remeshQuads(mesh, opt) {
   // vertices go onto it however far they sagged, or the mirrored half would leave a gap there.
   const onCut = cutVertices(faces, P, nv, plane, 0.75 * sizeRef());
   const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
+  // No move may bring a vertex within 8% of its spacing (its mean distance to its faces' other corners) of a vertex up to
+  // two faces away, unless it was already that close and moves apart: projections and snaps onto creases, their corners
+  // and the plane could otherwise land two vertices on one point (two snapped onto one crease end, for one).
+  const faceNbr = Array.from({ length: nv }, () => []);
+  for (const p of faces) for (const a of p) for (const b of p) if (a !== b && !has(faceNbr[a], b)) faceNbr[a].push(b);
+  const guardR = new Float64Array(nv), ring = new Array(nv), stamp = new Int32Array(nv).fill(-1);
+  for (let v = 0; v < nv; v++) {
+    let sum = 0;
+    for (const u of faceNbr[v]) sum += Math.hypot(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]);
+    guardR[v] = faceNbr[v].length ? (0.08 * sum) / faceNbr[v].length : 0;
+    const list = [];
+    stamp[v] = v;
+    for (const u of faceNbr[v]) for (const w of [u, ...faceNbr[u]]) if (stamp[w] !== v) { stamp[w] = v; list.push(w); }
+    ring[v] = list;
+  }
+  const crowded = (v, x, y, z, src = P, ox = P[v * 3], oy = P[v * 3 + 1], oz = P[v * 3 + 2]) => {
+    const lim = guardR[v] * guardR[v];
+    for (const u of ring[v]) {
+      const d2 = (src[u * 3] - x) ** 2 + (src[u * 3 + 1] - y) ** 2 + (src[u * 3 + 2] - z) ** 2;
+      if (d2 < lim && d2 < (P[u * 3] - ox) ** 2 + (P[u * 3 + 1] - oy) ** 2 + (P[u * 3 + 2] - oz) ** 2) return true;
+    }
+    return false;
+  };
+  // A move that crowds is taken back, with the surface point it found (a cut vertex still goes onto the plane).
+  const guarded = (v, move) => {
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2], t = hitT[v], b0 = bary[v * 3], b1 = bary[v * 3 + 1], b2 = bary[v * 3 + 2];
+    move(v);
+    if (!crowded(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2], P, x, y, z)) return;
+    P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z;
+    hitT[v] = t; bary[v * 3] = b0; bary[v * 3 + 1] = b1; bary[v * 3 + 2] = b2;
+    snapPlane(v);
+  };
   // Vertices no face uses (grid corners extraction dropped, still at the origin) are left alone: projecting them made the
   // surface search scan every input triangle once the origin lay outside the model, most of the time on some models.
-  for (let v = 0; v < nv; v++) { if (!nbr[v].length) continue; project(v); snapPlane(v); }
+  for (let v = 0; v < nv; v++) { if (!nbr[v].length) continue; guarded(v, u => { project(u); snapPlane(u); }); }
   // Sharp edges: corners take the nearest vertex and hold it; vertices close to an edge move onto it and afterwards only
   // slide along it. Distances count in the local face size (the mean length of a vertex's edges), which varies where
   // density follows the shape or paint.
@@ -3768,7 +3856,7 @@ function remeshQuads(mesh, opt) {
     segGrid = new SegmentGrid(srcP, crease.segs, sizeRef());
     const snapSeg = v => {
       const q = segGrid.nearest(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], 0.4 * local[v]);
-      if (!q) return false;
+      if (!q || crowded(v, q.x, q.y, q.z)) return false;
       P[v * 3] = q.x; P[v * 3 + 1] = q.y; P[v * 3 + 2] = q.z;
       return true;
     };
@@ -3780,7 +3868,7 @@ function remeshQuads(mesh, opt) {
         const d2 = (P[v * 3] - srcP[c * 3]) ** 2 + (P[v * 3 + 1] - srcP[c * 3 + 1]) ** 2 + (P[v * 3 + 2] - srcP[c * 3 + 2]) ** 2;
         if (d2 < bd) { bd = d2; best = v; }
       }
-      if (best < 0) continue;
+      if (best < 0 || crowded(best, srcP[c * 3], srcP[c * 3 + 1], srcP[c * 3 + 2])) continue;
       for (let k = 0; k < 3; k++) P[best * 3 + k] = srcP[c * 3 + k];
       sharpV[best] = 2;
       project(best);
@@ -3792,12 +3880,12 @@ function remeshQuads(mesh, opt) {
       let cx = 0, cy = 0, cz = 0;
       for (const u of sharpNbr) { cx += P[u * 3]; cy += P[u * 3 + 1]; cz += P[u * 3 + 2]; }
       const q = segGrid.nearest((P[v * 3] + cx / sharpNbr.length) / 2, (P[v * 3 + 1] + cy / sharpNbr.length) / 2, (P[v * 3 + 2] + cz / sharpNbr.length) / 2, 0.6 * local[v]);
-      if (q) { tmp[v * 3] = q.x; tmp[v * 3 + 1] = q.y; tmp[v * 3 + 2] = q.z; }
+      if (q && !crowded(v, q.x, q.y, q.z)) { tmp[v * 3] = q.x; tmp[v * 3 + 1] = q.y; tmp[v * 3 + 2] = q.z; }
     };
     relaxSharp = slide;
   }
   const iterations = opt.relax ?? 6;
-  const tmp = new Float64Array(nv * 3);
+  const tmp = new Float64Array(nv * 3), prev = new Float64Array(nv * 3);
   for (let it = 0; it < iterations; it++) {
     for (let v = 0; v < nv; v++) {
       const list = nbr[v];
@@ -3817,13 +3905,24 @@ function remeshQuads(mesh, opt) {
       const d = cx * nx + cy * ny + cz * nz;
       tmp[v * 3] += (cx - nx * d) * 0.8; tmp[v * 3 + 1] += (cy - ny * d) * 0.8; tmp[v * 3 + 2] += (cz - nz * d) * 0.8;
     }
+    // Two corners of a face moving onto one spot in the same pass: the move that would crowd is not made.
+    for (let v = 0; v < nv; v++) {
+      if (tmp[v * 3] === P[v * 3] && tmp[v * 3 + 1] === P[v * 3 + 1] && tmp[v * 3 + 2] === P[v * 3 + 2]) continue;
+      if (crowded(v, tmp[v * 3], tmp[v * 3 + 1], tmp[v * 3 + 2], tmp)) { tmp[v * 3] = P[v * 3]; tmp[v * 3 + 1] = P[v * 3 + 1]; tmp[v * 3 + 2] = P[v * 3 + 2]; }
+    }
+    prev.set(P);
     P.set(tmp);
     for (let v = 0; v < nv; v++) if (!border[v] && nbr[v].length) {
-      if (sharpV[v]) { const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2]; project(v); P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z; }
-      else project(v);
+      if (sharpV[v]) { const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2]; project(v); P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z; continue; }
+      // A projection that crowds takes the vertex back to where this pass found it, on the surface.
+      const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2], t = hitT[v], b0 = bary[v * 3], b1 = bary[v * 3 + 1], b2 = bary[v * 3 + 2];
+      project(v);
+      if (!crowded(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2], P, x, y, z)) continue;
+      P[v * 3] = prev[v * 3]; P[v * 3 + 1] = prev[v * 3 + 1]; P[v * 3 + 2] = prev[v * 3 + 2];
+      hitT[v] = t; bary[v * 3] = b0; bary[v * 3 + 1] = b1; bary[v * 3 + 2] = b2;
     }
   }
-  for (let v = 0; v < nv; v++) if (border[v]) { project(v); snapPlane(v); }
+  for (let v = 0; v < nv; v++) if (border[v]) guarded(v, u => { project(u); snapPlane(u); });
   mark('relax');
   if (progress) progress('relax', 1);
 
@@ -6494,11 +6593,20 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     const n = faces[f * 4 + 3] === QUAD_NONE ? 3 : 4;
     for (let k = 0; k < n; k++) edges.add(ek(faces[f * 4 + k], faces[f * 4 + (k + 1) % n]));
   }
-  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane. A diagonal
-  // that is already an edge of other faces is never taken: that edge would join three or four triangles.
+  // A triangle without area (three corners on one line, as along a straight crease).
+  const flat = (a, b, c) => {
+    const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2], vx = P[c * 3] - P[a * 3], vy = P[c * 3 + 1] - P[a * 3 + 1], vz = P[c * 3 + 2] - P[a * 3 + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.max(ux * ux + uy * uy + uz * uz, vx * vx + vy * vy + vz * vz, (ux - vx) ** 2 + (uy - vy) ** 2 + (uz - vz) ** 2);
+    return !(nx * nx + ny * ny + nz * nz > 1e-14 * l * l);
+  };
+  // Which diagonal a quad splits along: never one that is already an edge of other faces (that edge would join three or
+  // four triangles), then not one that leaves a triangle without area or lying wholly on the mirror plane, otherwise
+  // the shorter.
   const alongAC = (a, b, c, d) => {
     const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
     if (acTaken !== bdTaken) return bdTaken;
+    const acZero = flat(a, b, c) || flat(a, c, d), bdZero = flat(b, c, d) || flat(b, d, a);
+    if (acZero !== bdZero) return bdZero;
     const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
     const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
     if (acFlat !== bdFlat) return bdFlat;
@@ -7439,6 +7547,30 @@ function extractGraph(L) {
 }
 
 const has = (list, x) => list.indexOf(x) >= 0;
+// A loop that passes one vertex twice, as the simple loops it is made of (three corners or more each).
+function simpleLoops(loop) {
+  const out = [], stack = [loop];
+  while (stack.length) {
+    const l = stack.pop(), seen = new Map();
+    let cut = null;
+    for (let i = 0; i < l.length && !cut; i++) { const j = seen.get(l[i]); if (j !== undefined) cut = [j, i]; else seen.set(l[i], i); }
+    if (!cut) { if (l.length >= 3) out.push(l); continue; }
+    stack.push(l.slice(cut[0], cut[1]), [...l.slice(cut[1]), ...l.slice(0, cut[0])]);
+  }
+  return out;
+}
+// Faces that repeat a corner: repeats side by side fold away ([v, v, a, b] is the triangle [v, a, b]); a face still
+// repeating one, or left with fewer than three, is dropped. Returns the faces and how many were dropped.
+function cleanCorners(faces) {
+  const out = [];
+  let dropped = 0;
+  for (const p of faces) {
+    const q = p.filter((v, k) => v !== p[(k + 1) % p.length]);
+    if (q.length < 3 || new Set(q).size !== q.length) dropped++;
+    else out.push(q);
+  }
+  return { faces: out, dropped };
+}
 const drop = (list, x) => { const k = list.indexOf(x); if (k >= 0) list.splice(k, 1); };
 
 // Snaps vertices that sit on an edge into it and removes quad diagonals (Instant Meshes' step 5).
@@ -7545,15 +7677,21 @@ function quadScore(P, q) {
   for (let k = 0; k < 4; k++) s += Math.abs(cornerAngle(P, q, k) - 90);
   return s;
 }
+// A quad with a corner under 5°: a corner lies on (or right by) the line through two others, so it folds over itself.
+// Graph cleaning puts a vertex exactly halfway along an edge it drops; a cut along that edge gives such a quad.
+function foldedQuad(P, q) {
+  for (let k = 0; k < 4; k++) if (cornerAngle(P, q, k) < 5) return true;
+  return false;
+}
 // Splits a polygon with an even number of sides into quads without new vertices, choosing the split whose quads come
 // closest to right angles overall (every split for up to ten sides; larger ones cut the best quad off first).
 // taken(a, b): an edge that already exists elsewhere; a cut along it would give that edge a third face, so it costs
-// more than any shape.
+// more than any shape, as does a folded quad.
 function evenToQuads(P, poly, taken = null) {
-  if (poly.length <= 4) return { score: poly.length === 4 ? quadScore(P, poly) : 0, quads: [poly] };
+  if (poly.length <= 4) return { score: poly.length === 4 ? quadScore(P, poly) + (foldedQuad(P, poly) ? 1000 : 0) : 0, quads: [poly] };
   const cut = i => {
     const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
-    return { q, score: quadScore(P, q) + (taken && taken(q[0], q[3]) ? 1000 : 0), rest: poly.filter((_, k) => k !== (i + 1) % poly.length && k !== (i + 2) % poly.length) };
+    return { q, score: quadScore(P, q) + (taken && taken(q[0], q[3]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0), rest: poly.filter((_, k) => k !== (i + 1) % poly.length && k !== (i + 2) % poly.length) };
   };
   if (poly.length > 10) {
     let best = null;
@@ -7572,7 +7710,8 @@ function evenToQuads(P, poly, taken = null) {
 function pentagonSplit(P, poly, taken = null) {
   let best = Infinity, bi = 0;
   for (let i = 0; i < 5; i++) {
-    const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % 5])) + (taken && taken(poly[i], poly[(i + 3) % 5]) ? 1000 : 0);
+    const q = [0, 1, 2, 3].map(k => poly[(i + k) % 5]);
+    const s = quadScore(P, q) + (taken && taken(poly[i], poly[(i + 3) % 5]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0);
     if (s < best) { best = s; bi = i; }
   }
   return [[0, 1, 2, 3].map(k => poly[(bi + k) % 5]), [poly[(bi + 3) % 5], poly[(bi + 4) % 5], poly[bi]]];
@@ -7594,7 +7733,7 @@ function extractFaces(G) {
     adj[i].sort((a, b) => ang.get(b) - ang.get(a));
   }
   let used = adj.map(a => new Uint8Array(a.length));
-  let links = adj, maxHole = 16;
+  let links = adj, maxHole = 16, faceKeys = null;
   const faces = [];
   // Walks a face from the link start → links[start][startIdx]; target: its number of sides (0: any, up to 16).
   const walk = (start, startIdx, target) => {
@@ -7619,11 +7758,14 @@ function extractFaces(G) {
   };
   const taken = (a, b) => adj[a].includes(b);
   const fill = poly => {
+    // A loop through one vertex twice would give faces that repeat a corner: its simple loops are filled instead.
+    if (new Set(poly).size !== poly.length) { for (const l of simpleLoops(poly)) if (!faceKeys || !faceKeys.has(l.slice().sort((x, y) => x - y).join(','))) fill(l); return; }
     // Odd faces keep five sides (or three) for the all-quad pass; the rest become quads.
     while (poly.length > 5 && poly.length & 1) {
       let best = Infinity, bi = 0;
       for (let i = 0; i < poly.length; i++) {
-        const s = quadScore(P, [0, 1, 2, 3].map(k => poly[(i + k) % poly.length])) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0);
+        const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
+        const s = quadScore(P, q) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0);
         if (s < best) { best = s; bi = i; }
       }
       faces.push([0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]));
@@ -7674,7 +7816,7 @@ function extractFaces(G) {
     }
     if (!dropped) break;
   }
-  const faceKeys = new Set(faces.map(p => p.slice().sort((x, y) => x - y).join(',')));
+  faceKeys = new Set(faces.map(p => p.slice().sort((x, y) => x - y).join(',')));
   // Holes: keep only the edges that a face uses on one side, and walk the loops they form; small ones are filled.
   const rimAdj = [], rimUsed = [];
   for (let i = 0; i < nv; i++) {
@@ -7801,7 +7943,7 @@ function mergeOddPairs(faces, P, nv, cut = null) {
     const onLoop = new Set(o.loop.map((v, k) => key(v, o.loop[(k + 1) % o.loop.length])));
     let best = null;
     for (const quads of cuts(o.loop)) {
-      if (!quads.every(q => [0, 1, 2, 3].every(k => cornerAngle(P, q, k) <= 160))) continue;
+      if (!quads.every(q => [0, 1, 2, 3].every(k => cornerAngle(P, q, k) <= 160) && !foldedQuad(P, q))) continue;
       const change = new Map(), add = (v, d) => change.set(v, (change.get(v) || 0) + d);
       for (const [a, b] of o.inner) { add(a, -1); add(b, -1); }
       let clash = false;
@@ -7878,6 +8020,7 @@ function collapseCutTriangles(faces, P, nv, cut) {
 function evenFaces(faces, P, nv, cut = null) {
   faces = mergeOddPairs(faces, P, nv, cut);
   if (cut) faces = collapseCutTriangles(faces, P, nv, cut);
+  faces = cleanCorners(faces).faces;
   const F = faces.length;
   const half = new Map(); // directed edge a*nv+b -> face
   for (let f = 0; f < F; f++) {
@@ -7991,8 +8134,9 @@ function evenFaces(faces, P, nv, cut = null) {
   return { faces: clean.faces, positions: P2x, nv: n, unpaired: odd.length, doublets: clean.removed, cut: cut2, borderMid };
 }
 
-// Removes doublets: an inner vertex with only two edges, between two quads that share both, is dropped and the two
-// quads become one.
+// Removes doublets: two quads that share both edges of a vertex become one without it. Usually the vertex has only
+// those two faces; where it has more (a pinch, two fans meeting at one vertex) it stays in the others, and the pair's
+// shared edge would otherwise come back as a diagonal of the faces there.
 function removeDoublets(faces, nv) {
   let removed = 0;
   for (let round = 0; round < 8; round++) {
@@ -8001,19 +8145,24 @@ function removeDoublets(faces, nv) {
     let changed = false;
     for (let v = 0; v < nv; v++) {
       const list = at[v];
-      if (list.length !== 2) continue;
-      const f1 = faces[list[0]], f2 = faces[list[1]];
-      if (!f1 || !f2 || f1.length !== 4 || f2.length !== 4) continue;
-      const r1 = f1.indexOf(v), r2 = f2.indexOf(v);
-      const a = f1[(r1 + 1) % 4], x = f1[(r1 + 2) % 4], b = f1[(r1 + 3) % 4];
-      const c = f2[(r2 + 1) % 4], y = f2[(r2 + 2) % 4], d = f2[(r2 + 3) % 4];
-      if (c !== b || d !== a || x === y) continue;
-      // Both faces must still be current (an earlier merge this round may have used one).
-      faces[list[0]] = [a, x, b, y];
-      faces[list[1]] = null;
-      for (const u of [a, x, b, y]) { const l = at[u]; if (!l.includes(list[0])) l.push(list[0]); }
-      for (const u of [c, y, d]) { const l = at[u], k = l.indexOf(list[1]); if (k >= 0) l.splice(k, 1); }
-      at[v] = [];
+      let pair = null;
+      for (let i = 0; i < list.length && !pair; i++) {
+        for (let j = i + 1; j < list.length && !pair; j++) {
+          const f1 = faces[list[i]], f2 = faces[list[j]];
+          if (!f1 || !f2 || f1.length !== 4 || f2.length !== 4) continue;
+          const r1 = f1.indexOf(v), r2 = f2.indexOf(v);
+          const a = f1[(r1 + 1) % 4], x = f1[(r1 + 2) % 4], b = f1[(r1 + 3) % 4];
+          const c = f2[(r2 + 1) % 4], y = f2[(r2 + 2) % 4], d = f2[(r2 + 3) % 4];
+          if (c === b && d === a && x !== y) pair = [list[i], list[j], a, x, b, y];
+        }
+      }
+      if (!pair) continue;
+      const [g1, g2, a, x, b, y] = pair;
+      faces[g1] = [a, x, b, y];
+      faces[g2] = null;
+      for (const u of [a, x, b, y]) { const l = at[u]; if (!l.includes(g1)) l.push(g1); }
+      for (const u of [a, y, b]) { const l = at[u], k = l.indexOf(g2); if (k >= 0) l.splice(k, 1); }
+      at[v] = list.filter(g => g !== g1 && g !== g2);
       removed++;
       changed = true;
     }
@@ -8124,7 +8273,9 @@ function optimizeValence(faces, P, cut = null) {
         if (i >= 0) {
           const pv = q[i], a = q[(i + 3) % 4], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
           const around = at[c].filter(g => g !== f && faces[g]);
+          // As for the collapse below: c's faces don't hold pv yet, and pv and c share no neighbour besides a and b.
           if (!border[c] && deg(c) === 3 && seam(a) && seam(b) && !around.some(g => done[g]) &&
+            !around.some(g => faces[g].includes(pv)) && ![...nbr[pv]].some(x => x !== a && x !== b && nbr[c].has(x)) &&
             E(pv, 2) - E(pv, 3) + E(c, 3) + E(a, deg(a)) - E(a, deg(a) - 1) + E(b, deg(b)) - E(b, deg(b) - 1) > 0) {
             for (const g of around) { faces[g] = faces[g].map(x => (x === c ? pv : x)); done[g] = 1; }
             for (const g of [...at[a], ...at[b]]) done[g] = 1;
@@ -8141,7 +8292,15 @@ function optimizeValence(faces, P, cut = null) {
         if (deg(a) !== 3 || deg(c) !== 3 || deg(b) < 5 || deg(d) < 5) continue;
         const around = at[c].filter(g => g !== f && faces[g]);
         if (around.some(g => done[g]) || at[a].some(g => done[g])) continue;
-        for (let k = 0; k < 3; k++) P[a * 3 + k] = (P[a * 3 + k] + P[c * 3 + k]) / 2;
+        // Merging c into a must not join corners already joined: no face around c holds a, and a and c share no
+        // neighbour besides b and d (on a fold, either gives faces that repeat a corner).
+        if (around.some(g => faces[g].includes(a)) || [...nbr[a]].some(x => x !== b && x !== d && nbr[c].has(x))) continue;
+        // Nor land on b or d: where one lies on the diagonal (graph cleaning leaves a vertex halfway along an edge it
+        // drops), the merged corner would sit on it.
+        const mid = [0, 1, 2].map(k => (P[a * 3 + k] + P[c * 3 + k]) / 2), gap = u => Math.hypot(mid[0] - P[u * 3], mid[1] - P[u * 3 + 1], mid[2] - P[u * 3 + 2]);
+        const side = (Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]) + Math.hypot(P[c * 3] - P[d * 3], P[c * 3 + 1] - P[d * 3 + 1], P[c * 3 + 2] - P[d * 3 + 2])) / 2;
+        if (Math.min(gap(b), gap(d)) < 0.25 * side) continue;
+        for (let k = 0; k < 3; k++) P[a * 3 + k] = mid[k];
         for (const g of around) { faces[g] = faces[g].map(x => (x === c ? a : x)); done[g] = 1; }
         for (const g of at[a]) done[g] = 1;
         faces[f] = null;
@@ -8159,7 +8318,8 @@ function optimizeValence(faces, P, cut = null) {
 // Last repairs: a face that repeats another's corners, a third face on an edge and a face hanging by one edge are
 // dropped, and the small holes that leaves are closed (with quads, and a triangle for an odd hole).
 function repairFaces(faces, P, nv, keepOpen) {
-  let list = faces.slice(), dropped = 0, filled = 0;
+  const clean = cleanCorners(faces);
+  let list = clean.faces, dropped = clean.dropped, filled = 0;
   const seen = new Set();
   list = list.filter(p => {
     const k = p.slice().sort((a, b) => a - b).join(',');
@@ -8184,7 +8344,8 @@ function repairFaces(faces, P, nv, keepOpen) {
   }
   {
     // Holes: loops of half-edges no face uses the other way, away from real open borders. A loop runs against the
-    // faces' direction, so it is walked from each unmatched half-edge a -> b back from b to a.
+    // faces' direction, so it is walked from each unmatched half-edge a -> b back from b to a. A loop that passes one
+    // vertex twice is filled as its simple loops.
     const half = new Map();
     for (const p of list) for (let k = 0; k < p.length; k++) half.set(p[k] * nv + p[(k + 1) % p.length], 1);
     const next = new Map();
@@ -8204,7 +8365,7 @@ function repairFaces(faces, P, nv, keepOpen) {
         const loop = [start];
         const steps = [start * nv + first];
         let v = first, prev = start, closed = false;
-        while (loop.length < 32) {
+        while (loop.length < 64) {
           if (v === start) { closed = true; break; }
           loop.push(v);
           const options = (next.get(v) || []).filter(x => !usedHalf.has(v * nv + x) && !steps.includes(v * nv + x));
@@ -8215,12 +8376,15 @@ function repairFaces(faces, P, nv, keepOpen) {
           prev = v;
           v = w;
         }
-        if (!closed || loop.length < 3 || loop.every(x => keepOpen(x))) continue;
+        // Loops of 32 steps or more are closed only away from real open borders, which they would otherwise cap.
+        if (!closed || loop.length < 3 || loop.every(x => keepOpen(x)) || (loop.length >= 32 && loop.some(x => keepOpen(x)))) continue;
         for (const st of steps) usedHalf.add(st);
-        if (loop.length & 1) {
-          const q = loop.length > 3 ? evenToQuads(P, loop.slice(0, loop.length - 1), taken).quads : [];
-          list.push(...q, loop.length > 3 ? [loop[loop.length - 2], loop[loop.length - 1], loop[0]] : loop);
-        } else list.push(...evenToQuads(P, loop, taken).quads);
+        for (const l of simpleLoops(loop)) {
+          if (l.length & 1) {
+            const q = l.length > 3 ? evenToQuads(P, l.slice(0, l.length - 1), taken).quads : [];
+            list.push(...q, l.length > 3 ? [l[l.length - 2], l[l.length - 1], l[0]] : l);
+          } else list.push(...evenToQuads(P, l, taken).quads);
+        }
         filled++;
       }
     }
@@ -9527,9 +9691,41 @@ function remeshQuads(mesh, opt) {
   // vertices go onto it however far they sagged, or the mirrored half would leave a gap there.
   const onCut = cutVertices(faces, P, nv, plane, 0.75 * sizeRef());
   const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
+  // No move may bring a vertex within 8% of its spacing (its mean distance to its faces' other corners) of a vertex up to
+  // two faces away, unless it was already that close and moves apart: projections and snaps onto creases, their corners
+  // and the plane could otherwise land two vertices on one point (two snapped onto one crease end, for one).
+  const faceNbr = Array.from({ length: nv }, () => []);
+  for (const p of faces) for (const a of p) for (const b of p) if (a !== b && !has(faceNbr[a], b)) faceNbr[a].push(b);
+  const guardR = new Float64Array(nv), ring = new Array(nv), stamp = new Int32Array(nv).fill(-1);
+  for (let v = 0; v < nv; v++) {
+    let sum = 0;
+    for (const u of faceNbr[v]) sum += Math.hypot(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]);
+    guardR[v] = faceNbr[v].length ? (0.08 * sum) / faceNbr[v].length : 0;
+    const list = [];
+    stamp[v] = v;
+    for (const u of faceNbr[v]) for (const w of [u, ...faceNbr[u]]) if (stamp[w] !== v) { stamp[w] = v; list.push(w); }
+    ring[v] = list;
+  }
+  const crowded = (v, x, y, z, src = P, ox = P[v * 3], oy = P[v * 3 + 1], oz = P[v * 3 + 2]) => {
+    const lim = guardR[v] * guardR[v];
+    for (const u of ring[v]) {
+      const d2 = (src[u * 3] - x) ** 2 + (src[u * 3 + 1] - y) ** 2 + (src[u * 3 + 2] - z) ** 2;
+      if (d2 < lim && d2 < (P[u * 3] - ox) ** 2 + (P[u * 3 + 1] - oy) ** 2 + (P[u * 3 + 2] - oz) ** 2) return true;
+    }
+    return false;
+  };
+  // A move that crowds is taken back, with the surface point it found (a cut vertex still goes onto the plane).
+  const guarded = (v, move) => {
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2], t = hitT[v], b0 = bary[v * 3], b1 = bary[v * 3 + 1], b2 = bary[v * 3 + 2];
+    move(v);
+    if (!crowded(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2], P, x, y, z)) return;
+    P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z;
+    hitT[v] = t; bary[v * 3] = b0; bary[v * 3 + 1] = b1; bary[v * 3 + 2] = b2;
+    snapPlane(v);
+  };
   // Vertices no face uses (grid corners extraction dropped, still at the origin) are left alone: projecting them made the
   // surface search scan every input triangle once the origin lay outside the model, most of the time on some models.
-  for (let v = 0; v < nv; v++) { if (!nbr[v].length) continue; project(v); snapPlane(v); }
+  for (let v = 0; v < nv; v++) { if (!nbr[v].length) continue; guarded(v, u => { project(u); snapPlane(u); }); }
   // Sharp edges: corners take the nearest vertex and hold it; vertices close to an edge move onto it and afterwards only
   // slide along it. Distances count in the local face size (the mean length of a vertex's edges), which varies where
   // density follows the shape or paint.
@@ -9545,7 +9741,7 @@ function remeshQuads(mesh, opt) {
     segGrid = new SegmentGrid(srcP, crease.segs, sizeRef());
     const snapSeg = v => {
       const q = segGrid.nearest(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], 0.4 * local[v]);
-      if (!q) return false;
+      if (!q || crowded(v, q.x, q.y, q.z)) return false;
       P[v * 3] = q.x; P[v * 3 + 1] = q.y; P[v * 3 + 2] = q.z;
       return true;
     };
@@ -9557,7 +9753,7 @@ function remeshQuads(mesh, opt) {
         const d2 = (P[v * 3] - srcP[c * 3]) ** 2 + (P[v * 3 + 1] - srcP[c * 3 + 1]) ** 2 + (P[v * 3 + 2] - srcP[c * 3 + 2]) ** 2;
         if (d2 < bd) { bd = d2; best = v; }
       }
-      if (best < 0) continue;
+      if (best < 0 || crowded(best, srcP[c * 3], srcP[c * 3 + 1], srcP[c * 3 + 2])) continue;
       for (let k = 0; k < 3; k++) P[best * 3 + k] = srcP[c * 3 + k];
       sharpV[best] = 2;
       project(best);
@@ -9569,12 +9765,12 @@ function remeshQuads(mesh, opt) {
       let cx = 0, cy = 0, cz = 0;
       for (const u of sharpNbr) { cx += P[u * 3]; cy += P[u * 3 + 1]; cz += P[u * 3 + 2]; }
       const q = segGrid.nearest((P[v * 3] + cx / sharpNbr.length) / 2, (P[v * 3 + 1] + cy / sharpNbr.length) / 2, (P[v * 3 + 2] + cz / sharpNbr.length) / 2, 0.6 * local[v]);
-      if (q) { tmp[v * 3] = q.x; tmp[v * 3 + 1] = q.y; tmp[v * 3 + 2] = q.z; }
+      if (q && !crowded(v, q.x, q.y, q.z)) { tmp[v * 3] = q.x; tmp[v * 3 + 1] = q.y; tmp[v * 3 + 2] = q.z; }
     };
     relaxSharp = slide;
   }
   const iterations = opt.relax ?? 6;
-  const tmp = new Float64Array(nv * 3);
+  const tmp = new Float64Array(nv * 3), prev = new Float64Array(nv * 3);
   for (let it = 0; it < iterations; it++) {
     for (let v = 0; v < nv; v++) {
       const list = nbr[v];
@@ -9594,13 +9790,24 @@ function remeshQuads(mesh, opt) {
       const d = cx * nx + cy * ny + cz * nz;
       tmp[v * 3] += (cx - nx * d) * 0.8; tmp[v * 3 + 1] += (cy - ny * d) * 0.8; tmp[v * 3 + 2] += (cz - nz * d) * 0.8;
     }
+    // Two corners of a face moving onto one spot in the same pass: the move that would crowd is not made.
+    for (let v = 0; v < nv; v++) {
+      if (tmp[v * 3] === P[v * 3] && tmp[v * 3 + 1] === P[v * 3 + 1] && tmp[v * 3 + 2] === P[v * 3 + 2]) continue;
+      if (crowded(v, tmp[v * 3], tmp[v * 3 + 1], tmp[v * 3 + 2], tmp)) { tmp[v * 3] = P[v * 3]; tmp[v * 3 + 1] = P[v * 3 + 1]; tmp[v * 3 + 2] = P[v * 3 + 2]; }
+    }
+    prev.set(P);
     P.set(tmp);
     for (let v = 0; v < nv; v++) if (!border[v] && nbr[v].length) {
-      if (sharpV[v]) { const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2]; project(v); P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z; }
-      else project(v);
+      if (sharpV[v]) { const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2]; project(v); P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z; continue; }
+      // A projection that crowds takes the vertex back to where this pass found it, on the surface.
+      const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2], t = hitT[v], b0 = bary[v * 3], b1 = bary[v * 3 + 1], b2 = bary[v * 3 + 2];
+      project(v);
+      if (!crowded(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2], P, x, y, z)) continue;
+      P[v * 3] = prev[v * 3]; P[v * 3 + 1] = prev[v * 3 + 1]; P[v * 3 + 2] = prev[v * 3 + 2];
+      hitT[v] = t; bary[v * 3] = b0; bary[v * 3 + 1] = b1; bary[v * 3 + 2] = b2;
     }
   }
-  for (let v = 0; v < nv; v++) if (border[v]) { project(v); snapPlane(v); }
+  for (let v = 0; v < nv; v++) if (border[v]) guarded(v, u => { project(u); snapPlane(u); });
   mark('relax');
   if (progress) progress('relax', 1);
 
@@ -12271,11 +12478,20 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     const n = faces[f * 4 + 3] === QUAD_NONE ? 3 : 4;
     for (let k = 0; k < n; k++) edges.add(ek(faces[f * 4 + k], faces[f * 4 + (k + 1) % n]));
   }
-  // Split along a–c unless b–d is shorter, or a–c would leave a triangle lying wholly on the mirror plane. A diagonal
-  // that is already an edge of other faces is never taken: that edge would join three or four triangles.
+  // A triangle without area (three corners on one line, as along a straight crease).
+  const flat = (a, b, c) => {
+    const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2], vx = P[c * 3] - P[a * 3], vy = P[c * 3 + 1] - P[a * 3 + 1], vz = P[c * 3 + 2] - P[a * 3 + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.max(ux * ux + uy * uy + uz * uz, vx * vx + vy * vy + vz * vz, (ux - vx) ** 2 + (uy - vy) ** 2 + (uz - vz) ** 2);
+    return !(nx * nx + ny * ny + nz * nz > 1e-14 * l * l);
+  };
+  // Which diagonal a quad splits along: never one that is already an edge of other faces (that edge would join three or
+  // four triangles), then not one that leaves a triangle without area or lying wholly on the mirror plane, otherwise
+  // the shorter.
   const alongAC = (a, b, c, d) => {
     const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
     if (acTaken !== bdTaken) return bdTaken;
+    const acZero = flat(a, b, c) || flat(a, c, d), bdZero = flat(b, c, d) || flat(b, d, a);
+    if (acZero !== bdZero) return bdZero;
     const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
     const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
     if (acFlat !== bdFlat) return bdFlat;
