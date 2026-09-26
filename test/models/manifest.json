@@ -1,0 +1,798 @@
+{
+  "about": "Free high-resolution models (500k+ vertices) for testing Poly Budget. The files are not in the repo: node test/models/fetch.mjs downloads them into testdata/models/. Keep each model's credit when showing results. Tiers: core (fetch first), extended, stress.",
+  "models": [
+    {
+      "id": "stanford-happy-buddha",
+      "name": "Happy Buddha",
+      "tier": "core",
+      "kind": "scan",
+      "license": "Stanford 3D Scanning Repository: free for research use with credit to the Stanford Computer Graphics Laboratory; no commercial use or products without permission; the page asks for respectful use (no morphing, Booleans or destruction effects)",
+      "licenseUrl": "https://graphics.stanford.edu/data/3Dscanrep/#acknowledge",
+      "source": "https://graphics.stanford.edu/data/3Dscanrep/",
+      "credit": "Stanford Computer Graphics Laboratory",
+      "files": [
+        {
+          "url": "https://graphics.stanford.edu/pub/3Dscanrep/happy/happy_recon.tar.gz",
+          "name": "happy_recon.tar.gz",
+          "bytes": 14456495,
+          "sha256": "409cd294efbfd8244e15a382b95a9423f153b7776e736c9b09f19ec9d3c10ed0"
+        }
+      ],
+      "open": "happy_recon/happy_vrip.ply",
+      "vertices": 543256,
+      "triangles": 1086940,
+      "counts": "measured",
+      "tags": [
+        "closed",
+        "high genus",
+        "fine folds"
+      ],
+      "tests": "A closed statuette full of tiny tunnels: whether reduction and remeshing keep or pop small handles."
+    },
+    {
+      "id": "stanford-asian-dragon",
+      "name": "Asian Dragon (XYZ RGB)",
+      "tier": "core",
+      "kind": "scan",
+      "license": "Stanford 3D Scanning Repository: free for research use with credit to the Stanford Computer Graphics Laboratory; no commercial use or products without permission; the page asks for respectful use (no morphing, Booleans or destruction effects)",
+      "licenseUrl": "https://graphics.stanford.edu/data/3Dscanrep/#acknowledge",
+      "source": "https://graphics.stanford.edu/data/3Dscanrep/",
+      "credit": "Stanford Computer Graphics Laboratory, model courtesy of XYZ RGB Inc.",
+      "files": [
+        {
+          "url": "https://graphics.stanford.edu/data/3Dscanrep/xyzrgb/xyzrgb_dragon.ply.gz",
+          "name": "xyzrgb_dragon.ply.gz",
+          "bytes": 70527166,
+          "sha256": "8aa449f1966cbb50e5896ecc32cf57ab5f0cdfd3c3e37d3e6f60b948997da5c1"
+        }
+      ],
+      "open": "xyzrgb_dragon.ply",
+      "vertices": 3609600,
+      "triangles": 7219045,
+      "counts": "measured",
+      "tags": [
+        "closed",
+        "fine detail",
+        "thin parts"
+      ],
+      "tests": "A clean closed surface covered in 0.1 mm scales: how much fine detail each budget keeps, and quads on smooth organic flow."
+    },
+    {
+      "id": "bangor-welsh-dragon",
+      "name": "Welsh Dragon",
+      "tier": "core",
+      "kind": "scan",
+      "source": "http://eg2011.bangor.ac.uk/dragon/Welsh-Dragon.html",
+      "license": "Released by Bangor University for research use (Eurographics 2011); listed as CC BY on Bangor's research portal",
+      "licenseUrl": "http://eg2011.bangor.ac.uk/dragon/Welsh-Dragon.html",
+      "credit": "The Welsh Dragon mesh model was released by Bangor University, UK, for Eurographics 2011",
+      "files": [
+        {
+          "url": "http://eg2011.bangor.ac.uk/dragon/welsh-dragon.ply",
+          "name": "welsh-dragon.ply",
+          "bytes": 42003179,
+          "sha256": "9ca0d666e8d6d14774ea87e42f60840a0d8c491708538cceb712a9d7d864da4c"
+        }
+      ],
+      "open": "welsh-dragon.ply",
+      "vertices": 1105334,
+      "triangles": 2210644,
+      "counts": "measured",
+      "tags": [
+        "open borders",
+        "thin parts"
+      ],
+      "tests": "A laser scan with open borders: boundary loops through heavy reduction. Served over plain HTTP only, so the checksum matters."
+    },
+    {
+      "id": "stanford-manuscript",
+      "name": "Vellum manuscript page (XYZ RGB)",
+      "tier": "core",
+      "kind": "scan",
+      "license": "Stanford 3D Scanning Repository: free for research use with credit to the Stanford Computer Graphics Laboratory; no commercial use or products without permission; the page asks for respectful use (no morphing, Booleans or destruction effects)",
+      "licenseUrl": "https://graphics.stanford.edu/data/3Dscanrep/#acknowledge",
+      "source": "https://graphics.stanford.edu/data/3Dscanrep/",
+      "credit": "Stanford Computer Graphics Laboratory, model courtesy of XYZ RGB Inc.",
+      "files": [
+        {
+          "url": "https://graphics.stanford.edu/data/3Dscanrep/xyzrgb/xyzrgb_manuscript.ply.gz",
+          "name": "xyzrgb_manuscript.ply.gz",
+          "bytes": 43020968,
+          "sha256": "0c10b4a80e562fcd9c5dcd05eb6e943f2c79017132911cdc6a8d03fd532d6861"
+        }
+      ],
+      "open": "xyzrgb_manuscript.ply",
+      "vertices": 2155617,
+      "triangles": 4305818,
+      "counts": "measured",
+      "tags": [
+        "thin sheet",
+        "open borders",
+        "fine relief"
+      ],
+      "tests": "A nearly flat page with fine relief and one long border: flat-area quads, and baking relief into a normal map."
+    },
+    {
+      "id": "artec-bearded-guy",
+      "name": "Bearded guy HD (head scan)",
+      "tier": "core",
+      "kind": "character",
+      "source": "https://www.artec3d.com/3d-models/bearded-guy-hd",
+      "license": "CC BY 3.0 (license.txt in the download; the web page says CC BY 4.0)",
+      "licenseUrl": "https://www.artec3d.com/3d-models/bearded-guy-hd",
+      "credit": "Artec 3D",
+      "files": [
+        {
+          "url": "https://cdn.artec3d.com/content-hub-3dmodels/bearded-guy-obj.zip",
+          "name": "bearded-guy-obj.zip",
+          "bytes": 28160293,
+          "sha256": "c781ecea4537e9aff8c67c5c5230288af0194d5747e60120b1978b0da63795cf"
+        }
+      ],
+      "open": "Bearded guy.obj",
+      "vertices": 1024355,
+      "triangles": 2048860,
+      "counts": "measured",
+      "tags": [
+        "face",
+        "beard",
+        "clothing folds",
+        "untextured"
+      ],
+      "tests": "A real head at about 1M vertices: whether eyes, lips, ears and the beard outline survive at 10k-30k faces."
+    },
+    {
+      "id": "smk-artemision",
+      "name": "Poseidon or Zeus from Cape Artemision (SMK plaster cast KAS2100)",
+      "tier": "core",
+      "kind": "character",
+      "source": "https://commons.wikimedia.org/wiki/File:Poseidon_eller_Zeus_fra_Artemision_-_KAS2100.stl",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://commons.wikimedia.org/wiki/File:Poseidon_eller_Zeus_fra_Artemision_-_KAS2100.stl",
+      "credit": "Statens Museum for Kunst (SMK), National Gallery of Denmark",
+      "files": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/c/cc/Poseidon_eller_Zeus_fra_Artemision_-_KAS2100.stl",
+          "name": "poseidon-kas2100.stl",
+          "bytes": 104745384,
+          "sha256": "99562c27b8bc447d2ab5069d6d5e7690510d661205e1635ff2780c30203160b9"
+        }
+      ],
+      "open": "poseidon-kas2100.stl",
+      "vertices": 1047438,
+      "triangles": 2094896,
+      "counts": "measured",
+      "tags": [
+        "near symmetric",
+        "fingers",
+        "beard",
+        "STL"
+      ],
+      "tests": "A near-T-pose scan with an open hand and a curly beard: mirror mode on a wide pose, thin fingers, and STL welding.",
+      "mirror": {
+        "axis": 0,
+        "offset": 75.1208
+      }
+    },
+    {
+      "id": "artec-lion",
+      "name": "Lion statue",
+      "tier": "core",
+      "kind": "character",
+      "source": "https://www.artec3d.com/3d-models/lion-statue",
+      "license": "CC BY 3.0 (license.txt in the download; the web page says CC BY 4.0)",
+      "licenseUrl": "https://www.artec3d.com/3d-models/lion-statue",
+      "credit": "Artec 3D",
+      "files": [
+        {
+          "url": "https://cdn.artec3d.com/content-hub-3dmodels/lion-statue_obj.zip",
+          "name": "lion-statue_obj.zip",
+          "bytes": 60609890,
+          "sha256": "728ad1cdcd66b43749a1be211921bb3feb57f1930601984bac1a86c753b4071f"
+        }
+      ],
+      "open": "Lion.obj",
+      "vertices": 2499994,
+      "triangles": 5000000,
+      "counts": "measured",
+      "tags": [
+        "animal",
+        "thin parts",
+        "untextured"
+      ],
+      "tests": "A quadruped with a deep mane, open mouth and thin tail: how far 5M triangles can drop before the face and paws go."
+    },
+    {
+      "id": "rwtt-wooden-dragon",
+      "name": "Wooden dragon (RWTT 180)",
+      "tier": "core",
+      "kind": "textured scan",
+      "source": "http://texturedmesh.isti.cnr.it/",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://sketchfab.com/3d-models/wooden-dragon-5b4a38aa90bd4dd08832c2b6df16b9e3",
+      "credit": "jschmidtcreaform (Creaform); via Real World Textured Things (Maggiordomo et al., ISTI-CNR, 2020)",
+      "files": [
+        {
+          "url": "https://www.dropbox.com/scl/fi/ampso4fzvogcohgtxf688/RealWorldTexturedThings_chunk1.zip?rlkey=br22x07vs1um9jg1jf05mbd7q&st=ni3kb010&dl=1",
+          "name": "RealWorldTexturedThings_chunk1.zip",
+          "bytes": 5494859900,
+          "extract": [
+            "RWT180/"
+          ],
+          "extractBytes": 135209810
+        }
+      ],
+      "open": "RWT180/WoodenDragonSculpture.obj",
+      "vertices": 1551710,
+      "triangles": 3103490,
+      "counts": "measured",
+      "tags": [
+        "textured",
+        "many UV charts",
+        "thin parts",
+        "high genus"
+      ],
+      "tests": "98,620 UV charts in one 4K atlas, like a generated character's: keeping or rebuilding UVs and baking at low budgets."
+    },
+    {
+      "id": "rwtt-amarna-princess",
+      "name": "Princess from Akhenaton's family (RWTT 184)",
+      "tier": "core",
+      "kind": "textured scan",
+      "source": "http://texturedmesh.isti.cnr.it/",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://sketchfab.com/3d-models/princess-from-akhenatons-family-5dadcff13f87484a850e6ed027b90452",
+      "credit": "Benoit Rogez (shadows44); via Real World Textured Things (Maggiordomo et al., ISTI-CNR, 2020)",
+      "files": [
+        {
+          "url": "https://www.dropbox.com/scl/fi/ampso4fzvogcohgtxf688/RealWorldTexturedThings_chunk1.zip?rlkey=br22x07vs1um9jg1jf05mbd7q&st=ni3kb010&dl=1",
+          "name": "RealWorldTexturedThings_chunk1.zip",
+          "bytes": 5494859900,
+          "extract": [
+            "RWT184/"
+          ],
+          "extractBytes": 110624787
+        }
+      ],
+      "open": "RWT184/tete-egypte.obj",
+      "vertices": 992030,
+      "triangles": 1984088,
+      "counts": "measured",
+      "tags": [
+        "textured",
+        "near symmetric",
+        "face",
+        "closed"
+      ],
+      "tests": "A closed head with a nearly symmetric face and one 8K atlas with folded UVs: mirror mode and baking.",
+      "mirror": {
+        "axis": 0,
+        "offset": 0.0158463
+      }
+    },
+    {
+      "id": "rwtt-car",
+      "name": "Car #RealityCapture (RWTT 138)",
+      "tier": "core",
+      "kind": "textured scan",
+      "source": "http://texturedmesh.isti.cnr.it/",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://sketchfab.com/3d-models/car-realitycapture-images-source-from-3dflow-49418e381f22485487a91d7e0e402832",
+      "credit": "Vlad (ssh4), images by 3DFlow; via Real World Textured Things (Maggiordomo et al., ISTI-CNR, 2020)",
+      "files": [
+        {
+          "url": "https://www.dropbox.com/scl/fi/ampso4fzvogcohgtxf688/RealWorldTexturedThings_chunk1.zip?rlkey=br22x07vs1um9jg1jf05mbd7q&st=ni3kb010&dl=1",
+          "name": "RealWorldTexturedThings_chunk1.zip",
+          "bytes": 5494859900,
+          "extract": [
+            "RWT138/"
+          ],
+          "extractBytes": 68229613
+        }
+      ],
+      "open": "RWT138/CarAP_RC.obj",
+      "vertices": 750007,
+      "triangles": 1499999,
+      "counts": "measured",
+      "tags": [
+        "textured",
+        "hard edges",
+        "open borders",
+        "near symmetric",
+        "many UV charts"
+      ],
+      "tests": "Hard-surface photogrammetry with open borders, 11 parts and 18,789 UV charts: borders, hard edges and mirror mode on a vehicle.",
+      "mirror": {
+        "axis": 0,
+        "offset": 1.40178
+      }
+    },
+    {
+      "id": "polyhaven-coastal-cliff",
+      "name": "Coastal Cliff 04",
+      "tier": "core",
+      "kind": "textured scan",
+      "source": "https://polyhaven.com/a/coastal_cliff_04",
+      "license": "CC0",
+      "licenseUrl": "https://polyhaven.com/license",
+      "credit": "Rob Tuytel and Rico Cilliers, Poly Haven",
+      "files": [
+        {
+          "url": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/coastal_cliff_04/coastal_cliff_04_4k.gltf",
+          "name": "coastal_cliff_04_4k.gltf",
+          "bytes": 2828,
+          "sha256": "3efdb7aea58441981d99351cda2af27b12b1d727595b3374babdf1e9c94ab978"
+        },
+        {
+          "url": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/coastal_cliff_04/coastal_cliff_04.bin",
+          "name": "coastal_cliff_04.bin",
+          "bytes": 43704136,
+          "sha256": "f7c3a18acc848552b91b0de931ba8439d5f2a8849bd0d4ac718878aa4a90abcf"
+        },
+        {
+          "url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/4k/coastal_cliff_04/coastal_cliff_04_diff_4k.jpg",
+          "name": "textures/coastal_cliff_04_diff_4k.jpg",
+          "bytes": 9091983,
+          "sha256": "d28647527aba03f67726bef5c1f317fdc7a1ba48a08382612d7bc7315f37fa47"
+        },
+        {
+          "url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/4k/coastal_cliff_04/coastal_cliff_04_nor_gl_4k.jpg",
+          "name": "textures/coastal_cliff_04_nor_gl_4k.jpg",
+          "bytes": 17132472,
+          "sha256": "3411428345224fda1c3ef7e37df357eb5f6e0aa3d53c3e3e14a435bc1b77b9f3"
+        },
+        {
+          "url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/4k/coastal_cliff_04/coastal_cliff_04_arm_4k.jpg",
+          "name": "textures/coastal_cliff_04_arm_4k.jpg",
+          "bytes": 9415170,
+          "sha256": "5710e5cfe931992b2b7aa0c947b8089e7afe84508ea217cfb2112addef6ce525"
+        }
+      ],
+      "open": "coastal_cliff_04_4k.gltf",
+      "vertices": 771255,
+      "triangles": 1537926,
+      "counts": "measured",
+      "tags": [
+        "textured",
+        "normal map",
+        "PBR",
+        "open borders"
+      ],
+      "tests": "A full PBR set (base colour, OpenGL normal, AO/roughness/metal): baking a normal map and several maps onto a remesh."
+    },
+    {
+      "id": "road-bike",
+      "name": "Road bike",
+      "tier": "core",
+      "kind": "hard surface",
+      "source": "https://casual-effects.com/data/",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://github.com/MirageYM/3DModels",
+      "credit": "Yasutoshi Mori, via Morgan McGuire's Computer Graphics Archive",
+      "files": [
+        {
+          "url": "https://casual-effects.com/g3d/data10/research/model/roadBike/roadBike.zip",
+          "name": "roadBike.zip",
+          "bytes": 29623836,
+          "sha256": "7cfa644820b225e9234563b9832d01b5790d3a3195a207247b64433cd836ce96"
+        }
+      ],
+      "open": "roadBike.obj",
+      "vertices": 848699,
+      "triangles": 1677328,
+      "counts": "measured",
+      "tags": [
+        "hard edges",
+        "thin parts",
+        "many parts"
+      ],
+      "tests": "Many small mechanical parts with thin spokes, cables and toothed chainrings: thin parts and crisp teeth at a budget."
+    },
+    {
+      "id": "hairball",
+      "name": "Hairball",
+      "tier": "core",
+      "kind": "torture test",
+      "source": "https://casual-effects.com/data/",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://casual-effects.com/g3d/data10/research/model/hairball/info.js",
+      "credit": "NVIDIA Research, via Morgan McGuire's Computer Graphics Archive",
+      "files": [
+        {
+          "url": "https://casual-effects.com/g3d/data10/research/model/hairball/hairball.zip",
+          "name": "hairball.zip",
+          "bytes": 52634140,
+          "sha256": "b1d36143d932269d4c2b585d0f8c5fe505938f8b558a5ed39d27e3b7fbedca2e"
+        }
+      ],
+      "open": "hairball.obj",
+      "vertices": 1440001,
+      "triangles": 2880000,
+      "counts": "measured",
+      "tags": [
+        "thin parts",
+        "hidden inside"
+      ],
+      "tests": "Dense overlapping strands, most of them out of sight: the worst case for thin parts and for Hidden areas."
+    },
+    {
+      "id": "bistro-interior",
+      "name": "Amazon Lumberyard Bistro, interior",
+      "tier": "core",
+      "kind": "scene",
+      "source": "https://casual-effects.com/data/",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://developer.nvidia.com/orca/amazon-lumberyard-bistro",
+      "credit": "Amazon Lumberyard, via Morgan McGuire's Computer Graphics Archive",
+      "files": [
+        {
+          "url": "https://casual-effects.com/g3d/data10/research/model/bistro/Interior.zip",
+          "name": "Interior.zip",
+          "bytes": 21293389,
+          "sha256": "3faa41f8d6860d1267268348d44d2b74c64a8bfb55dd4b03c562a70ab83b1062"
+        }
+      ],
+      "open": "interior.obj",
+      "vertices": 569610,
+      "triangles": 1020905,
+      "counts": "measured",
+      "tags": [
+        "many materials",
+        "many parts",
+        "hard edges",
+        "open borders"
+      ],
+      "tests": "A game interior with many objects and materials (textures not included): per-material borders, missing textures, many small parts."
+    },
+    {
+      "id": "blender-body-female",
+      "name": "Human Base Meshes: realistic female body",
+      "tier": "extended",
+      "kind": "character",
+      "source": "https://commons.wikimedia.org/wiki/File:Body_female_realistic_by_Dan_Ulrich_(CC0).stl",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://commons.wikimedia.org/wiki/File:Body_female_realistic_by_Dan_Ulrich_(CC0).stl",
+      "credit": "Dan Ulrich, Blender Studio (Human Base Meshes)",
+      "files": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/6/64/Body_female_realistic_by_Dan_Ulrich_%28CC0%29.stl",
+          "name": "body-female.stl",
+          "bytes": 270976084
+        }
+      ],
+      "open": "body-female.stl",
+      "vertices": null,
+      "triangles": 5419520,
+      "counts": "triangles from the file size",
+      "tags": [
+        "symmetric",
+        "fingers",
+        "STL"
+      ],
+      "tests": "A clean A-pose body with spread fingers and toes: the cleanest mirror-mode test, and fingers that must not fuse."
+    },
+    {
+      "id": "smk-kore",
+      "name": "Kore (Acropolis 671), SMK plaster cast KAS1800",
+      "tier": "extended",
+      "kind": "character",
+      "source": "https://commons.wikimedia.org/wiki/File:Kore_ACR_671_if%C3%B8rt_chiton_og_kappe_(epiblema)_-_KAS1800.stl",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://commons.wikimedia.org/wiki/File:Kore_ACR_671_if%C3%B8rt_chiton_og_kappe_(epiblema)_-_KAS1800.stl",
+      "credit": "Statens Museum for Kunst (SMK), National Gallery of Denmark",
+      "files": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/f/fe/Kore_ACR_671_if%C3%B8rt_chiton_og_kappe_%28epiblema%29_-_KAS1800.stl",
+          "name": "kore-kas1800.stl",
+          "bytes": 144384784
+        }
+      ],
+      "open": "kore-kas1800.stl",
+      "vertices": null,
+      "triangles": 2887694,
+      "counts": "triangles from the file size",
+      "tags": [
+        "near symmetric",
+        "clothing folds",
+        "STL"
+      ],
+      "tests": "A near-symmetric standing figure with dense drapery and carved hair: fold ridges and mirror mode on a scan."
+    },
+    {
+      "id": "artec-squid-game",
+      "name": "Squid Game figures",
+      "tier": "extended",
+      "kind": "character",
+      "source": "https://www.artec3d.com/3d-models/squid-game",
+      "license": "CC BY 4.0 (web page)",
+      "licenseUrl": "https://www.artec3d.com/3d-models/squid-game",
+      "credit": "Artec 3D",
+      "files": [
+        {
+          "url": "https://cdn.artec3d.com/content-hub-3dmodels/squid_game.zip",
+          "name": "squid_game.zip",
+          "bytes": 245424840
+        }
+      ],
+      "open": "squid_game.obj",
+      "vertices": 1246161,
+      "triangles": 2492621,
+      "counts": "stated",
+      "tags": [
+        "textured",
+        "clothing folds",
+        "props",
+        "several materials"
+      ],
+      "tests": "Three textured people in loose clothing holding props: folds, props and three atlases at a game budget."
+    },
+    {
+      "id": "artec-demogorgon",
+      "name": "Demogorgon miniature",
+      "tier": "extended",
+      "kind": "character",
+      "source": "https://www.artec3d.com/3d-models/demogorgon",
+      "license": "CC BY 4.0 (web page)",
+      "licenseUrl": "https://www.artec3d.com/3d-models/demogorgon",
+      "credit": "Artec 3D",
+      "files": [
+        {
+          "url": "https://cdn.artec3d.com/content-hub-3dmodels/demogorgon.zip",
+          "name": "demogorgon.zip",
+          "bytes": 180676108
+        }
+      ],
+      "open": "demogorgon.obj",
+      "vertices": 1254264,
+      "triangles": 2508616,
+      "counts": "stated",
+      "tags": [
+        "textured",
+        "creature",
+        "thin parts"
+      ],
+      "tests": "A creature with long thin tendrils, claws and teeth plus a photo texture: whether thin limbs keep their volume."
+    },
+    {
+      "id": "si-life-cast-hand",
+      "name": "Life cast of left forearm and hand (Hiram Powers studio)",
+      "tier": "extended",
+      "kind": "character",
+      "source": "https://3d-api.si.edu/voyager/3d_package:7f2659ba-2953-47a5-9358-921da9b0ce16",
+      "license": "CC0 (Smithsonian Open Access)",
+      "licenseUrl": "https://www.si.edu/openaccess",
+      "credit": "Smithsonian American Art Museum",
+      "files": [
+        {
+          "url": "https://3d-api.si.edu/content/document/3d_package:7f2659ba-2953-47a5-9358-921da9b0ce16/resources/life-cast-of-left-forearm-and-hand-full_resolution-obj.zip",
+          "name": "life-cast-of-left-forearm-and-hand-full_resolution-obj.zip",
+          "bytes": 119261341
+        }
+      ],
+      "open": "life-cast-of-left-forearm-and-hand.obj",
+      "vertices": null,
+      "triangles": null,
+      "counts": "unknown until fetched",
+      "tags": [
+        "textured",
+        "fingers"
+      ],
+      "tests": "Fingers that nearly touch, with skin detail: fingers must stay apart and the texture must bake cleanly."
+    },
+    {
+      "id": "si-uhura-uniform",
+      "name": "Lt. Uhura's red Starfleet uniform",
+      "tier": "extended",
+      "kind": "textured scan",
+      "source": "https://3d-api.si.edu/voyager/3d_package:07a4621e-4c5c-4e3d-b376-12eb2c3c3c58",
+      "license": "CC0 (Smithsonian Open Access)",
+      "licenseUrl": "https://www.si.edu/openaccess",
+      "credit": "National Museum of African American History and Culture",
+      "files": [
+        {
+          "url": "https://3d-api.si.edu/content/document/3d_package:07a4621e-4c5c-4e3d-b376-12eb2c3c3c58/resources/2016_126_001-RedStarFleetUniformLtUhura-RENDER_scaled-full_resolution-obj_std.zip",
+          "name": "uhura-uniform-full_resolution-obj_std.zip",
+          "bytes": 141442230
+        }
+      ],
+      "open": "uhura-uniform.obj",
+      "vertices": null,
+      "triangles": null,
+      "counts": "unknown until fetched",
+      "tags": [
+        "textured",
+        "open borders",
+        "hidden inside",
+        "near symmetric"
+      ],
+      "tests": "A garment whose inner surfaces show through its openings: open borders and Hidden areas on clothing."
+    },
+    {
+      "id": "si-blue-crab",
+      "name": "Blue crab (female)",
+      "tier": "extended",
+      "kind": "textured scan",
+      "source": "https://3d-api.si.edu/voyager/3d_package:b0bf6d44-af22-40dc-bd85-7d66255be4a7",
+      "license": "CC0 (Smithsonian Open Access)",
+      "licenseUrl": "https://www.si.edu/openaccess",
+      "credit": "Smithsonian Environmental Research Center and Digitization Program Office",
+      "files": [
+        {
+          "url": "https://3d-api.si.edu/content/document/3d_package:b0bf6d44-af22-40dc-bd85-7d66255be4a7/resources/blue-crab-full_resolution-obj.zip",
+          "name": "blue-crab-full_resolution-obj.zip",
+          "bytes": 187608303
+        }
+      ],
+      "open": "blue-crab.obj",
+      "vertices": null,
+      "triangles": null,
+      "counts": "unknown until fetched",
+      "tags": [
+        "textured",
+        "near symmetric",
+        "thin parts",
+        "animal"
+      ],
+      "tests": "A nearly symmetric animal with thin legs and spines: mirror mode on an imperfect scan, thin parts at low budgets."
+    },
+    {
+      "id": "si-orchid",
+      "name": "Lycaste virginalis orchid",
+      "tier": "extended",
+      "kind": "textured scan",
+      "source": "https://3d-api.si.edu/voyager/3d_package:42e8e95f-1b67-4135-8728-cdc7aa277997",
+      "license": "CC0 (Smithsonian Open Access)",
+      "licenseUrl": "https://www.si.edu/openaccess",
+      "credit": "Smithsonian Gardens",
+      "files": [
+        {
+          "url": "https://3d-api.si.edu/content/document/3d_package:42e8e95f-1b67-4135-8728-cdc7aa277997/resources/Lycaste_virginalis-full_resolution-obj_std.zip",
+          "name": "Lycaste_virginalis-full_resolution-obj_std.zip",
+          "bytes": 51643034
+        }
+      ],
+      "open": "Lycaste_virginalis.obj",
+      "vertices": null,
+      "triangles": null,
+      "counts": "unknown until fetched",
+      "tags": [
+        "textured",
+        "thin parts",
+        "open borders"
+      ],
+      "tests": "Thin, sheet-like petals and leaves: whether thin surfaces collapse or merge, and baking both sides of a sheet."
+    },
+    {
+      "id": "nasa-iss",
+      "name": "International Space Station (IGOAL)",
+      "tier": "extended",
+      "kind": "hard surface",
+      "source": "https://science.nasa.gov/3d-resources/international-space-station-iss-d-igoal/",
+      "license": "Public domain in the US (NASA media guidelines; insignia and logos excluded)",
+      "licenseUrl": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "credit": "NASA/JSC",
+      "files": [
+        {
+          "url": "https://raw.githubusercontent.com/nasa/NASA-3D-Resources/master/3D%20Models/International%20Space%20Station%20(ISS)%20(D)%20(IGOAL)/International%20Space%20Station%20(ISS).glb",
+          "name": "iss.glb",
+          "bytes": 95875648
+        }
+      ],
+      "open": "iss.glb",
+      "vertices": null,
+      "triangles": null,
+      "counts": "unknown until fetched",
+      "tags": [
+        "hard edges",
+        "many parts",
+        "thin parts"
+      ],
+      "tests": "A large CAD-derived spacecraft of many parts with paper-thin arrays: per-part budgets and thin sheets."
+    },
+    {
+      "id": "thingi10k-winged-victory",
+      "name": "Winged Victory of Samothrace (Cosmo Wenman scan)",
+      "tier": "extended",
+      "kind": "character",
+      "source": "https://huggingface.co/datasets/Thingi10K/Thingi10K",
+      "license": "CC BY (Cosmo Wenman)",
+      "licenseUrl": "https://huggingface.co/datasets/Thingi10K/Thingi10K/blob/main/metadata/input_summary.csv",
+      "credit": "Cosmo Wenman; Thingi10K (Zhou and Jacobson, 2016)",
+      "files": [
+        {
+          "url": "https://huggingface.co/datasets/Thingi10K/Thingi10K/resolve/main/raw_meshes/376253.obj",
+          "name": "winged-victory.obj",
+          "bytes": 244651508
+        }
+      ],
+      "open": "winged-victory.obj",
+      "vertices": 2836106,
+      "triangles": 5672212,
+      "counts": "stated",
+      "tags": [
+        "thin parts",
+        "self-intersections",
+        "closed"
+      ],
+      "tests": "Thin wings and drapery on a closed scan with existing self-intersections: thin sheets and new intersections."
+    },
+    {
+      "id": "stanford-thai-statue",
+      "name": "Thai statue (XYZ RGB)",
+      "tier": "stress",
+      "kind": "scan",
+      "license": "Stanford 3D Scanning Repository: free for research use with credit to the Stanford Computer Graphics Laboratory; no commercial use or products without permission; the page asks for respectful use (no morphing, Booleans or destruction effects)",
+      "licenseUrl": "https://graphics.stanford.edu/data/3Dscanrep/#acknowledge",
+      "source": "https://graphics.stanford.edu/data/3Dscanrep/",
+      "credit": "Stanford Computer Graphics Laboratory, model courtesy of XYZ RGB Inc.",
+      "files": [
+        {
+          "url": "https://graphics.stanford.edu/data/3Dscanrep/xyzrgb/xyzrgb_statuette.ply.gz",
+          "name": "xyzrgb_statuette.ply.gz",
+          "bytes": 106051627
+        }
+      ],
+      "open": "xyzrgb_statuette.ply",
+      "vertices": 5000000,
+      "triangles": 10000000,
+      "counts": "stated",
+      "tags": [
+        "fine detail",
+        "thin parts"
+      ],
+      "tests": "Figures whose faces and fingers are millimetres tall, at 5M vertices."
+    },
+    {
+      "id": "stanford-lucy",
+      "name": "Lucy",
+      "tier": "stress",
+      "kind": "scan",
+      "license": "Stanford 3D Scanning Repository: free for research use with credit to the Stanford Computer Graphics Laboratory; no commercial use or products without permission; the page asks for respectful use (no morphing, Booleans or destruction effects)",
+      "licenseUrl": "https://graphics.stanford.edu/data/3Dscanrep/#acknowledge",
+      "source": "https://graphics.stanford.edu/data/3Dscanrep/",
+      "credit": "Stanford Computer Graphics Laboratory",
+      "files": [
+        {
+          "url": "https://graphics.stanford.edu/data/3Dscanrep/lucy.tar.gz",
+          "name": "lucy.tar.gz",
+          "bytes": 321969388
+        }
+      ],
+      "open": "lucy.ply",
+      "vertices": 14027872,
+      "triangles": 28055742,
+      "counts": "stated",
+      "tags": [
+        "near symmetric",
+        "thin parts"
+      ],
+      "tests": "14M vertices: memory and time limits of loading, reducing and remeshing."
+    },
+    {
+      "id": "rungholt",
+      "name": "Rungholt",
+      "tier": "stress",
+      "kind": "scene",
+      "source": "https://casual-effects.com/data/",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://casual-effects.com/g3d/data10/research/model/rungholt/info.js",
+      "credit": "kescha, via Morgan McGuire's Computer Graphics Archive",
+      "files": [
+        {
+          "url": "https://casual-effects.com/g3d/data10/research/model/rungholt/rungholt.zip",
+          "name": "rungholt.zip",
+          "bytes": 49767647
+        }
+      ],
+      "open": "rungholt.obj",
+      "vertices": 12308528,
+      "triangles": 6704264,
+      "counts": "stated",
+      "tags": [
+        "hard edges",
+        "unshared vertices"
+      ],
+      "tests": "A voxel city with unshared vertices: welding, flat-area collapse and crease loops at scale."
+    }
+  ]
+}
