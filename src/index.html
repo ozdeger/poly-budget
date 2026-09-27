@@ -275,6 +275,18 @@ details.sub[open] > summary { margin-bottom: 10px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row.nowrap { flex-wrap: nowrap; }
 .row.nowrap input[type="range"] { flex: 1; min-width: 0; }
+/* Budget zones under the Quads slider: red too few quads to keep the shape, green enough, gray more than shows. The
+   strip is inset by half a thumb so its edges line up with where the thumb travels. */
+.budget-track { position: relative; }
+.zones { position: absolute; left: 8px; right: 8px; bottom: -2px; height: 3px; display: flex; border-radius: 2px; overflow: hidden; pointer-events: none; }
+.zones i { flex: none; height: 100%; }
+.zones .z-red { background: var(--crit); }
+.zones .z-green { background: var(--ok); }
+.zones .z-gray { background: var(--line-strong); }
+.zone-note { margin: 4px 0 0; font: 12px/1.4 var(--font-ui); color: var(--muted); }
+.zone-note b { font-weight: 500; }
+.zone-note .r { color: var(--crit); }
+.zone-note .g { color: var(--ok); }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { color: var(--muted); font-size: 12px; display: flex; gap: 8px; }
 .field output { margin-left: auto; color: var(--text); font: 12px/1.3 var(--font-num); font-variant-numeric: tabular-nums; }
@@ -785,7 +797,8 @@ details.more[open] > summary { margin-bottom: 8px; }
         </div>
       </div>
       <div class="readout"><input class="big" id="targetNum" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Triangle budget" title="Type a triangle count, a percentage (5%) or a short count (20k)"><span class="unit" id="targetUnit">tris</span><span class="of" id="targetOf"></span></div>
-      <input type="range" id="targetSlider" min="0" max="1000" step="1" aria-label="Triangle budget slider">
+      <div class="budget-track"><input type="range" id="targetSlider" min="0" max="1000" step="1" aria-label="Triangle budget slider"><div class="zones" id="budgetZones" hidden aria-hidden="true"><i class="z-red" id="zRed"></i><i class="z-green" id="zGreen"></i><i class="z-gray" id="zGray"></i></div></div>
+      <p class="zone-note" id="zoneNote" hidden></p>
       <div class="seg fill" role="group" aria-label="Quick budget" id="quickSeg">
         <button type="button" data-pct="50">50%</button><button type="button" data-pct="25">25%</button><button type="button" data-pct="10">10%</button><button type="button" data-pct="5">5%</button><button type="button" data-pct="1">1%</button>
       </div>

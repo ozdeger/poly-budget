@@ -1,4 +1,4 @@
-import { remeshQuads, QUAD_NONE } from './quad.js';
+import { remeshQuads, remeshZones, QUAD_NONE } from './quad.js';
 import { unwrapPaintable } from './paint.js';
 
 // PLAIN is painted normal detail: it only blocks the automatic hidden-area levels and reaches the reducer as NONE.
@@ -2447,6 +2447,10 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     cache: holder.quadCache, cacheKey: `${st.prune ? 1 : 0}|${index.length}|${density ? hashFloats(density) : 'even'}|${st.quadAdapt || 0}`,
     sharp: st.quadSharp ?? QUAD_SHARP, adapt: st.quadAdapt || 0, thin: st.quadThin !== false,
   });
+  // Where the budget starts to hold the shape and where more stops showing (for the slider), in the result's quads,
+  // against the whole model's size: a mirrored remesh works on one half.
+  const z = remeshZones({ positions: base.positions, index, normals: smooth }, { cache: holder.quadCache, density, sharp: st.quadSharp ?? QUAD_SHARP, adapt: st.quadAdapt || 0, thin: st.quadThin !== false, extent: geo.mesh.positions });
+  const zones = { red: z.red * (sym ? 2 : 1), gray: z.gray * (sym ? 2 : 1), redBy: z.redBy };
   // Triangles the prune dropped don't exist for the lookups either.
   // Culled surface is remeshed like the lowest Less level and its finished faces dropped: cutting it out first leaves
   // jagged holes whose outlines cost quads.
@@ -2463,7 +2467,7 @@ function remeshVariant(S, ctx, labels, st, fopt, progress) {
     result,
     info: {
       error: 0, ms: Date.now() - t0, target: st.targetTris, tris: result.triCount, verts: result.vertexCount, quads: countQuads(result),
-      keepCount: 0, cat, symmetry, atlas: null, remesh: rq.stats, poles: quadPoles(result),
+      keepCount: 0, cat, symmetry, atlas: null, remesh: rq.stats, poles: quadPoles(result), zones,
     },
   };
 }

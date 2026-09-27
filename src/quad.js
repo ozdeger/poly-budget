@@ -2391,11 +2391,14 @@ function intersect2(a1, b1, d1, a2, b2, d2, out) {
 // closed loops needs, and sizes change slowly enough for the grid to follow. Across a sharp edge only the step along
 // the edge is graded, since the faces on its two sides share that edge loop's vertices: the small steps around a
 // cylinder carry onto its flat cap instead of meeting its big quads at the rim. The result is scaled back to the target.
-export function formSizes(an, target, strength, opt = {}) {
-  const { cl, nstart, nid, kb, ks, dir, area, V } = an, C = cl.count, CN = cl.normals, CP = cl.positions;
-  const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 2, grade = opt.grade ?? 0.3;
+// The sizes formSizes starts from, per cluster before gradation: the edge along the direction that bends most (h1)
+// and along the one that bends least (h2), from the even size h0 = √(area / target), with thin parts held (held = 1)
+// as formSizes describes.
+function clusterSizes(an, target, strength, opt = {}) {
+  const { cl, nstart, nid, kb, ks, area } = an, C = cl.count;
+  const hMin = opt.hMin ?? 0.15, hMax = opt.hMax ?? 2.5, alpha = opt.alpha ?? 2;
   const h0 = Math.sqrt(area / target);
-  // held: sizes kept for a thin part (see below).
+  // held: sizes kept for a thin part (see formSizes).
   const h1 = new Float64Array(C), h2 = new Float64Array(C), held = new Uint8Array(C);
   const sizes = c => {
     for (let i = 0; i < C; i++) {
@@ -2416,13 +2419,6 @@ export function formSizes(an, target, strength, opt = {}) {
     if (n > target) lo = mid; else hi = mid;
   }
   sizes(Math.exp(hi));
-  // Thin parts: no edge longer than the part's thickness / THICK_STEPS (nor shorter than half what the shape asks for,
-  // or hMin × the even size), so its cross-section spans that many grid steps (thinner than about one step, parts came
-  // apart: 43-96% of them). Where the sizes above ask for longer edges, the connected thin regions are held to it whole,
-  // cheapest first (lips, eyelids and fingertips before the spokes of a wheel), while the extra faces stay within
-  // THICK_SHARE of the target; then c is found again for the rest. Per cluster, by how little refinement it needs, the
-  // budget went to regions barely thin enough to matter, while the parts that came apart kept coming apart; and a fifth
-  // of the budget taken from the rest coarsened a road bike's tyres until they came apart at 10k.
   if (an.thick && opt.thick !== false) {
     const hT = new Float64Array(C), cost = new Float64Array(C), want = new Uint8Array(C);
     for (let i = 0; i < C; i++) {
@@ -2463,6 +2459,20 @@ export function formSizes(an, target, strength, opt = {}) {
       sizes(Math.exp(hi));
     }
   }
+  return { h1, h2, held, h0 };
+}
+
+export function formSizes(an, target, strength, opt = {}) {
+  const { cl, nstart, nid, dir, V } = an, C = cl.count, CN = cl.normals, CP = cl.positions;
+  const alpha = opt.alpha ?? 2, grade = opt.grade ?? 0.3;
+  // Thin parts: no edge longer than the part's thickness / THICK_STEPS (nor shorter than half what the shape asks for,
+  // or hMin × the even size), so its cross-section spans that many grid steps (thinner than about one step, parts came
+  // apart: 43-96% of them). Where the sizes above ask for longer edges, the connected thin regions are held to it whole,
+  // cheapest first (lips, eyelids and fingertips before the spokes of a wheel), while the extra faces stay within
+  // THICK_SHARE of the target; then c is found again for the rest. Per cluster, by how little refinement it needs, the
+  // budget went to regions barely thin enough to matter, while the parts that came apart kept coming apart; and a fifth
+  // of the budget taken from the rest coarsened a road bike's tyres until they came apart at 10k.
+  const { h1, h2, h0 } = clusterSizes(an, target, strength, opt);
   // Per cluster, the metric in its tangent basis (s, t from tangents()) as a, b, d.
   const M2 = new Float64Array(C * 3), basis = new Float64Array(C * 6);
   for (let i = 0; i < C; i++) {
@@ -2550,6 +2560,125 @@ export function formSizes(an, target, strength, opt = {}) {
     for (let q = 0; q < 6; q++) out[v * 6 + q] = Mc[k * 6 + q];
   }
   return out;
+}
+
+// Budget zones for the Quads slider, calibrated on remeshes of eight test models (two AI-generated characters, a car,
+// three scans, a statue and a bike) at 500 to 32,000 quads. The mean distance from the original came out at about
+// ZONE_ERROR × the predicted chord error below; the models' faces, glasses, hands and paws melted or came apart while
+// that was over ZONE_RED of the diagonal, and looked like the original once it was under ZONE_GRAY. Thin parts came
+// apart where they were under ZONE_THIN_STEP grid steps thick (73-96% of them), which mattered once over ZONE_THIN of
+// the surface.
+const ZONE_ERROR = 1.2, ZONE_RED = 0.0013, ZONE_GRAY = 0.0003, ZONE_THIN = 0.01, ZONE_THIN_STEP = 0.5;
+
+// Share of the surface thinner than ZONE_THIN_STEP grid steps at n faces, from the sizes at N1 faces (h1R, h2R, which
+// scale with √(N1 / n)), after the thin-part holds (the rule in clusterSizes) when holds is set; dens and k2 scale
+// sizes for paint.
+function thinShare(an, h1R, h2R, dens, k2, N1, n, holds) {
+  const { cl, nstart, nid, thick } = an, C = cl.count, f = Math.sqrt(N1 / n), h0 = Math.sqrt(an.area / n), alpha = 2;
+  const hT = new Float64Array(C), held = new Uint8Array(C);
+  if (holds) {
+    const cost = new Float64Array(C), want = new Uint8Array(C);
+    for (let i = 0; i < C; i++) {
+      const a1 = h1R[i] * f, a2 = h2R[i] * f;
+      hT[i] = Math.max(0.15 * h0, a1 / 2, thick[i] / THICK_STEPS);
+      if (!(hT[i] < a1)) continue;
+      want[i] = 1;
+      cost[i] = cl.area[i] / (hT[i] * Math.min(a2, alpha * hT[i])) - cl.area[i] / (a1 * a2);
+    }
+    const regions = [], seen = new Uint8Array(C);
+    for (let i = 0; i < C; i++) {
+      if (!want[i] || seen[i]) continue;
+      const list = [i];
+      let sum = 0;
+      seen[i] = 1;
+      for (let k = 0; k < list.length; k++) {
+        const u = list[k];
+        sum += cost[u];
+        for (let l = nstart[u]; l < nstart[u + 1]; l++) { const v = nid[l]; if (want[v] && !seen[v]) { seen[v] = 1; list.push(v); } }
+      }
+      regions.push([sum, i, list]);
+    }
+    regions.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+    let extra = 0;
+    for (const [sum, , list] of regions) {
+      if (extra + sum > THICK_SHARE * n) break;
+      extra += sum;
+      for (const i of list) held[i] = 1;
+    }
+  }
+  let A = 0, thin = 0;
+  for (let i = 0; i < C; i++) {
+    const h = (held[i] ? hT[i] : h1R[i] * f) * (dens ? Math.sqrt(k2 / dens[i]) : 1);
+    A += cl.area[i];
+    if (thick[i] < ZONE_THIN_STEP * h) thin += cl.area[i];
+  }
+  return A > 0 ? thin / A : 0;
+}
+
+// Where a quad budget starts to hold a surface's shape and where more quads stop showing. A flat face with an edge h
+// along a direction in which the surface bends by κ stands off it by about κh²/8; over both principal directions, with
+// the sizes the remesher would ask for (clusterSizes, before gradation), its area-weighted mean is the shape error a
+// budget buys. Every size there is a multiple of the even size √(area / budget), so the whole size field scales with
+// 1/√budget and the error with 1/budget: one solve gives it at every budget. Thin parts are found by a search over
+// budgets. opt: { strength (Follow the shape), thin (the thin-part holds), density (faces-per-area multiplier per
+// source vertex, from paint: it shifts both limits by the extra faces it asks for), diag (the model's diagonal) }.
+// Returns budgets in faces: { red, gray, redBy: 'shape' | 'thin' }; Infinity where a limit isn't reached.
+export function budgetZones(an, opt = {}) {
+  const { cl, kb, ks } = an, C = cl.count, N1 = 4096;
+  const { h1, h2 } = clusterSizes(an, N1, opt.strength ?? 0, { thick: false });
+  // Paint: faces per area grow by its density, and the rest shrink to keep the budget: sizes × √(k2 / density).
+  let dens = null, k2 = 1;
+  if (opt.density) {
+    dens = new Float64Array(C);
+    const cnt = new Float64Array(C);
+    for (let v = 0; v < cl.of.length; v++) { const c = cl.of[v]; if (c >= 0) { dens[c] += opt.density[v]; cnt[c]++; } }
+    let a = 0, b = 0;
+    for (let i = 0; i < C; i++) { dens[i] = cnt[i] ? dens[i] / cnt[i] : 1; const f = cl.area[i] / (h1[i] * h2[i]); a += f * dens[i]; b += f; }
+    k2 = b > 0 ? a / b : 1;
+  }
+  // Error at n faces, as a share of the diagonal: scale / n. Painted areas count relative to what they asked for.
+  let A = 0, E = 0;
+  for (let i = 0; i < C; i++) { A += cl.area[i]; E += (cl.area[i] * (kb[i] * h1[i] * h1[i] + ks[i] * h2[i] * h2[i])) / 8; }
+  const scale = A > 0 && opt.diag > 0 ? (ZONE_ERROR * (E / A) * N1 * k2) / opt.diag : 0;
+  let thin = 0;
+  if (an.thick) {
+    const share = n => thinShare(an, h1, h2, dens, k2, N1, n, opt.thin !== false);
+    let lo = Math.log(16), hi = Math.log(1 << 24);
+    if (share(Math.exp(hi)) > ZONE_THIN) thin = Infinity;
+    else if (share(Math.exp(lo)) > ZONE_THIN) {
+      for (let it = 0; it < 12; it++) { const mid = (lo + hi) / 2; if (share(Math.exp(mid)) > ZONE_THIN) lo = mid; else hi = mid; }
+      thin = Math.exp(hi);
+    }
+  }
+  const shapeRed = scale / ZONE_RED, shapeGray = scale / ZONE_GRAY;
+  return { red: Math.max(shapeRed, thin), gray: Math.max(shapeGray, thin), redBy: thin > shapeRed ? 'thin' : 'shape' };
+}
+
+// budgetZones for the surface remeshQuads gets (the same arguments), from the curvature analysis in the same cache,
+// worked out here when the remesh didn't need it (Follow the shape off); kept there per settings and paint. The model's
+// size is the diagonal of opt.extent's bounds (the whole model's positions, when mesh is its kept half), else mesh's.
+export function remeshZones(mesh, opt) {
+  const srcP = mesh.positions, srcIdx = mesh.index instanceof Uint32Array ? mesh.index : Uint32Array.from(mesh.index), V0 = srcP.length / 3;
+  const cache = opt.cache || null, dens = opt.density || null, anKey = `${V0}|${srcIdx.length}|${opt.sharp || 0}`;
+  let h = 0x811c9dc5;
+  if (dens) { const u = new Uint32Array(dens.buffer, dens.byteOffset, dens.length); for (let i = 0; i < u.length; i++) h = Math.imul(h ^ u[i], 0x01000193); }
+  const key = `${anKey}|${opt.adapt || 0}|${opt.thin === false ? 0 : 1}|${dens ? h >>> 0 : 'even'}`;
+  if (cache && cache.zones && cache.zones.key === key) return cache.zones.z;
+  let an = cache && cache.analysis && cache.analysis.key === anKey ? cache.analysis.an : null;
+  if (!an) {
+    const na = normalsAndAreas(srcP, srcIdx);
+    an = formAnalysis(srcP, srcIdx, mesh.normals || na.N, na.A, { sharp: opt.sharp });
+    if (cache) cache.analysis = { key: anKey, an };
+  }
+  const ext = opt.extent || srcP;
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (let v = 0; v < ext.length / 3; v++) {
+    const x = ext[v * 3], y = ext[v * 3 + 1], z = ext[v * 3 + 2];
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const z = budgetZones(an, { strength: opt.adapt || 0, thin: opt.thin !== false, density: dens, diag: Math.hypot(x1 - x0, y1 - y0, z1 - z0) });
+  if (cache) cache.zones = { key, z };
+  return z;
 }
 
 // The grid step at each vertex of a level along its direction q (SU) and across it (SV), from the level's metric

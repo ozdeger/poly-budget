@@ -47,6 +47,12 @@ The toggle at the top of the budget picks what comes out; Quads is the default.
 - **Quads** rebuilds the surface as a new mesh of quads, at the budget's triangle count divided by two. The edges run along the shape, around limbs and across faces, so the result can be edited, subdivided and rigged. Unity still counts it as triangles (two per quad), so the budget means the same in both modes.
 - **Triangles** reduces the model's own triangles, as described above. It keeps the most shape for the fewest triangles.
 - In Quads mode the budget is typed and shown in quads (`12500`, `12.5k`); a percentage is still of the original triangles. Remeshing can't hit an exact count: it lands within a few percent, which counts as on budget.
+- **Budget zones** under the slider show where the budget holds the model: red is too few quads to keep its shape, green is the range to aim for, and gray adds quads that change little you can see. The line below names both counts, for example "Holds the shape from about 6.0k quads; past 26k, more quads change little you can see."
+  - They come from the curvature the quad sizes are made from. A quad side of length h along a direction in which the surface bends by κ misses it by about κh²/8. Every size Follow the shape asks for scales with one over the square root of the quad count, so the average miss scales with one over the count, and one pass over the model gives it at every budget. It takes 0.06 to 0.2 seconds, once per model and settings.
+  - The remesher missed by about 1.2 times that prediction on the test models. Red ends where 1.2 times the predicted average miss falls to 0.13% of the model's size (the diagonal of its bounds), and gray starts at 0.03%. Two AI-generated characters, a car, three scans, a statue and a bike were remeshed at 500 to 32,000 quads. Their faces, glasses, hands and paws melted or came apart while the measured average deviation was over 0.13%, and looked like the original once it was under 0.03%.
+  - Parts thinner than half a quad came apart in 73 to 96% of the cases. Where they cover more than 1% of the surface, red extends to the count where they stop coming apart, counting the quads Keep thin parts adds. A road bike's spokes need more quads than the bike has triangles, so its strip is all red.
+  - Painted More and Less areas move both limits by the quads they add or save.
+  - On six of the models both limits came within 1.35 times the counts where the measured average deviation crossed 0.13% and 0.03%. On the statue, gray came within 1.15 times, and red at twice the count it needed. The bike's deviation never got under 0.13%, as its strip says.
 - Every face is a quad. The result card adds the quad count and the poles: vertices where other than four quads meet, which is where edge loops start and end.
 - Painting sets the quad size: More detail gives 2, 4 or 8 times as many quads per area, Less detail ½, ¼ or ⅛, and Keep the smallest quads (8 times). Separate small pieces keep at least 24 quads, and flat lettering enough for its strokes to be two and a half quads across, from up to a fifth of the budget; on a model of hundreds of parts the smallest get just enough to be there. Specks smaller than a fiftieth of a quad are left out, and so are tiny floating parts when Remove tiny floating parts is on.
 - Quads come out evenly sized, while a triangle reduction crowds its triangles onto the detail. At game budgets, paint More detail on faces and hands in Quads mode, or eyes and lips smooth away.
@@ -205,6 +211,7 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 - One UV set per model.
 - Memory is the browser's: a model of 1.5 million triangles with 4K textures works on a desktop, phones may run out.
 - Quads mode doesn't reach the quality of dedicated retopology tools on every model. Expect some poles: about one vertex in nine with even quads, and one in five following the shape on organic models. Parts much thinner than a quad edge come out rough where Keep thin parts can't afford them: at game budgets strands of hair, spokes and cables are too many to save and break up. A few folded quads from the grid can still leave one or two non-manifold edges on some models.
+- The budget zones are estimated from the shape and its thin parts, measured against the size of the whole model. They don't see the texture, and they don't know which parts will be seen close up; paint More detail there.
 
 ## Project layout
 
@@ -215,7 +222,7 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 | `src/index.html` | Markup and styles |
 | `src/app.js` | The UI: loading, tabs, painting, the texture and UV panel, the GPU bake, saving the session, export |
 | `src/core.js` | The mesh work, with no DOM code so it also runs in Node: welding, the reduction passes, the quad pipeline around the remesher, the UV fit check, unwrapping, UV layout edges, the FBX and OBJ writers |
-| `src/quad.js` | The quad remesher: working surface, field hierarchy, extraction, the all-quad pass, pole moves and relaxation |
+| `src/quad.js` | The quad remesher: working surface, field hierarchy, extraction, the all-quad pass, pole moves and relaxation, and the budget zones |
 | `src/visibility.js` | How visible each vertex is from all sides, for hidden areas and the bake |
 | `src/collect.js` | Flattens a three.js scene into one mesh |
 | `src/worker.js` | Reductions, unwraps and the visibility pass, off the main thread |
@@ -227,7 +234,7 @@ Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with
 
 - `npm install` installs the packages the tests use.
 - `npm run serve` previews the built page at http://127.0.0.1:8731.
-- `npm test` runs the checks on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry, new UVs, paintable UVs, UV layout edges, normals, quad remeshing and the bake's reach.
+- `npm test` runs the checks on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry, new UVs, paintable UVs, UV layout edges, normals, quad remeshing, the budget zones and the bake's reach.
 - To add a real model to a check, pass its path: `node test/test_unwrap.js path/to/model.fbx`. The same works for `test_core.js` and `test_symmetry.js`.
 - `test/models/manifest.json` lists free models of 500k vertices and more for real-world testing, each with its source, licence, credit and what it tests: scans, characters and figures, textured photogrammetry with fragmented atlases, a PBR set with a normal map, hard-surface parts, scenes and stress cases. The files aren't in the repo:
   - `node test/models/fetch.mjs --tier=core` downloads the 14 core models (0.86 GB) into `testdata/models/`; `--tier=extended` and `--tier=stress` add 13 more, `--list` shows them all and `--check` asks the servers whether the files are still there. Models inside a large archive are read out of it in pieces, so only their own bytes are downloaded.

@@ -2806,12 +2806,34 @@ function updateTargetUI(preview) {
   $('targetOf').textContent = q ? `${fmt(t)} tris of ${fmt(T)} · ${share}` : `of ${fmt(T)} · ${share}`;
   $('targetSlider').value = String(Math.round((1000 * Math.log(pct / 0.1)) / Math.log(1000)));
   pressSeg('quickSeg', 'pct', pct);
+  updateZones();
   if (display.L && state.left) {
     const L = state.left;
     $('labelLText').textContent = L.mirrored
       ? `${fmt(L.index.length / 3)} tris · ${fmt(L.positions.length / 3)} verts · mirrored`
       : `${fmt(T)} tris · ${fmt(state.welded.vertexCount)} verts`;
   }
+}
+
+// The budget zones under the Quads slider, from the last remesh's curvature analysis (core info.zones, in quads):
+// red below the budget that holds the shape, gray above the one past which more quads change little, green between.
+const shortCount = n => (n >= 1e6 ? `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : `${Math.round(n)}`);
+function updateZones() {
+  const z = quadMode() && state.welded && state.info && state.info.zones, strip = $('budgetZones'), note = $('zoneNote');
+  strip.hidden = note.hidden = !z;
+  if (!z) return;
+  // slider position (0–1) of a quad budget: the slider runs over 0.1–100% of the original triangles, logarithmically
+  const T = state.welded.triCount, at = q => Math.min(1, Math.max(0, Math.log((200 * q) / T / 0.1) / Math.log(1000)));
+  const r = at(z.red), g = Math.max(r, at(z.gray));
+  $('zRed').style.width = `${100 * r}%`;
+  $('zGreen').style.width = `${100 * (g - r)}%`;
+  $('zGray').style.width = `${100 * (1 - g)}%`;
+  const max = T / 2, need = Number.isFinite(z.red) ? `: ${z.redBy === 'thin' ? 'they' : 'it'} need${z.redBy === 'thin' ? '' : 's'} about ${shortCount(z.red)} quads.` : '.';
+  let html;
+  if (z.red >= max) html = z.redBy === 'thin' ? `<b class="r">Thin parts</b> such as spokes, strands or cables stay under half a quad thick at any budget here${need}` : `<b class="r">No budget here</b> holds the shape well${need}`;
+  else html = `<b class="g">Holds the shape</b> from about ${shortCount(z.red)} quads${z.redBy === 'thin' ? ', where thin parts stop coming apart' : ''}; ${z.gray >= max ? 'up to the most there can be here, more quads still show.' : `past ${shortCount(z.gray) === shortCount(z.red) ? 'that' : shortCount(z.gray)}, more quads change little you can see.`}`;
+  note.innerHTML = html;
+  note.title = 'Estimated from the curvature analysis of the last remesh. Red: too few quads to keep the shape (the average distance from the original over 0.13% of its size, or over 1% of the surface in parts thinner than half a quad). Gray: within 0.03% of its size on average. Painted More and Less areas shift both.';
 }
 
 function setPill(tone, text) {
@@ -2836,6 +2858,7 @@ function updateResultUI() {
   const i = state.info;
   $('exportOpen').disabled = !state.result;
   $('result').hidden = !state.welded;
+  updateZones();
   if (!i) {
     for (const id of ['resTris', 'resVerts', 'resErr', 'resTex']) $(id).textContent = '—';
     $('resTex').className = '';

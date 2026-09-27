@@ -4,7 +4,7 @@ const IMPORT = /^import[^;]*;[ \t]*$/gm;
 const strip = src => src.replace(IMPORT, m => (/from '\.\//.test(m) || /from 'three';/.test(m) ? '' : m)).replace(/^export\s+(?=(async\s+)?function|const|let|class)/gm, '');
 const core = strip(read('./src/core.js'));
 // The remesher keeps its helpers to itself; only its exports join the shared scope.
-const quad = `const { remeshQuads, QUAD_NONE, formDensity } = (() => {\n${strip(read('./src/quad.js'))}\nreturn { remeshQuads, QUAD_NONE, formDensity };\n})();`;
+const quad = `const { remeshQuads, remeshZones, QUAD_NONE, formDensity } = (() => {\n${strip(read('./src/quad.js'))}\nreturn { remeshQuads, remeshZones, QUAD_NONE, formDensity };\n})();`;
 // So does the paintable UV layout.
 const paint = `const { unwrapPaintable } = (() => {\n${strip(read('./src/paint.js'))}\nreturn { unwrapPaintable };\n})();`;
 // So does the visibility pass for hidden areas.
