@@ -372,6 +372,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .tile.missing .slot { color: var(--warn); }
 .tile.add .thumb { border: 1px dashed var(--line-strong); background: transparent; color: var(--faint); font: 400 22px/1 var(--font-ui); }
 .tile.add:hover .thumb { color: var(--text); }
+/* A normal map the bake makes for a material without one: the baked map with a label, or a pulse until it's there. */
+.tile .badge { position: absolute; left: 3px; bottom: 3px; padding: 1px 4px; border-radius: 3px; background: color-mix(in srgb, var(--bg) 80%, transparent); color: var(--text); font: 600 9px/1.3 var(--font-label); letter-spacing: 0.05em; text-transform: uppercase; pointer-events: none; }
+.tile.wait .thumb { border-style: dashed; background: transparent; }
+.tile .busy-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 0.9s ease-in-out infinite; }
 .checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .checks li { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 1px 9px; font-size: 12px; line-height: 1.4; }
 .checks li::before { content: ""; grid-row: span 2; width: 8px; height: 8px; margin-top: 5px; border-radius: 2px; background: var(--faint); }
@@ -744,7 +748,7 @@ details.more[open] > summary { margin-bottom: 8px; }
   .open-label { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .pill.busy::before, .status-line.busy::before, .uv-msg.busy::before { animation: none; }
+  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .tile .busy-dot, .pill.busy::before, .status-line.busy::before, .uv-msg.busy::before { animation: none; }
   .hint { transition: none; }
 }
 </style>
@@ -17323,9 +17327,10 @@ async function setMaterialTexture(index, file, slot = 'map') {
 }
 
 const SLOT_SHORT = { map: 'Colour', normalMap: 'Normal', roughnessMap: 'Rough', metalnessMap: 'Metal', aoMap: 'AO', emissiveMap: 'Emissive', specularMap: 'Specular', bumpMap: 'Bump', alphaMap: 'Alpha' };
-// A small preview of a texture image, made once per image; null until the image has loaded.
+// A small preview of a texture image, made once per image; null until the image has loaded. flip turns the rows over,
+// for baked maps, whose data starts at v = 0, so they look like the saved file.
 const thumbs = new WeakMap();
-function thumbnail(image) {
+function thumbnail(image, flip = false) {
   if (!image) return null;
   if (thumbs.has(image)) return thumbs.get(image);
   if (image.complete === false || image.naturalWidth === 0) return null;
@@ -17335,6 +17340,7 @@ function thumbnail(image) {
     const c = document.createElement('canvas');
     c.width = c.height = size;
     const g = c.getContext('2d');
+    if (flip) g.setTransform(1, 0, 0, -1, 0, size);
     if (image.data) {
       if (!(image.data instanceof Uint8Array || image.data instanceof Uint8ClampedArray) || image.data.length < w * h * 4) return null;
       const src = document.createElement('canvas');
@@ -17356,12 +17362,34 @@ function tile(i, slot, className, title, content) {
   b.dataset.slot = slot;
   return b;
 }
+// A material without a normal map of its own (or whose file is missing) gets one from the bake when Normal map from
+// the original is on: false where it doesn't, null while it is being made, else the baked texture.
+function madeNormal(i) {
+  const m = state.displayMats[i];
+  if (!settings.bakeNormals || !m || !('normalMap' in m) || loadedMap(m, 'normalMap')) return false;
+  return (state.bakedMats && state.bakedMats[i] && loadedMap(state.bakedMats[i], 'normalMap')) || null;
+}
+const madeKey = () => state.displayMats.map((_, i) => { const t = madeNormal(i); return t === false ? '-' : t ? objId(t) : '…'; }).join(',');
+// Its tile shows the baked map and opens it in Texture & UVs; until the bake is done it waits.
+function madeTile(i, m, t) {
+  const bk = t && state.bake && state.bake.maps.find(x => x.mi === i && x.slot === 'normalMap');
+  const missing = state.pendingMaps.find(p => p.material === m && p.slot === 'normalMap');
+  const from = `the original's surface${(bk ? bk.detail : settings.colorDetail > 0 && loadedMap(m, 'map')) ? ' and base colour' : ''}`;
+  const instead = missing ? `\nIt stands in for the missing ${missing.file}` : '';
+  const url = t ? thumbnail(t.image, true) : null;
+  const b = t
+    ? tile(i, 'normalMap', 'made', `${SLOT_NAMES.normalMap}: made from ${from} · ${imageSize(t.image)[0]} px${instead}\nClick to see it in Texture & UVs`, el('span', { className: 'thumb' }, ...(url ? [el('img', { src: url, alt: '' })] : []), el('span', { className: 'badge', textContent: 'baked' })))
+    : tile(i, 'normalMap', 'made wait', `${SLOT_NAMES.normalMap}: being made from ${from}${instead}\nIt shows here once the bake is done`, el('span', { className: 'thumb' }, el('span', { className: 'busy-dot' })));
+  b.dataset.made = '1';
+  return b;
+}
 function updateTexturePanel() {
   const list = $('texList');
   // A model without UVs can't show a texture, so the whole section goes away.
   const hasUVs = !!(state.collected && state.collected.uvs);
   $('secTex').hidden = !hasUVs && !!state.collected;
   list.hidden = !hasUVs;
+  list.dataset.made = madeKey();
   if (!hasUVs) { list.replaceChildren(); return; }
   const rows = state.displayMats.map((m, i) => {
     const tiles = MAP_SLOTS.filter(slot => m[slot]).map(slot => {
@@ -17373,7 +17401,9 @@ function updateTexturePanel() {
     const waiting = state.pendingMaps.filter(p => p.material === m);
     for (const p of waiting) tiles.push(tile(i, p.slot, 'missing', `${SLOT_NAMES[p.slot]}: ${p.file} is missing\nClick to pick the file, or drop it on the view`, el('span', { className: 'thumb', textContent: '!' })));
     if ('map' in m && !m.map && !waiting.some(p => p.slot === 'map')) tiles.push(tile(i, 'map', 'add', 'Add a base colour texture', el('span', { className: 'thumb', textContent: '+' })));
-    return el('li', {}, el('span', { className: 'mat-name', textContent: m.name || `Material ${i + 1}`, title: m.name || '' }), el('div', { className: 'tiles' }, ...tiles));
+    const made = madeNormal(i);
+    if (made !== false) tiles.push(madeTile(i, m, made));
+    return el('li', {},el('span', { className: 'mat-name', textContent: m.name || `Material ${i + 1}`, title: m.name || '' }), el('div', { className: 'tiles' }, ...tiles));
   });
   list.replaceChildren(...rows);
   refreshUVView();
@@ -19246,6 +19276,8 @@ function uvStatus() {
 function updateUVPanel() {
   $('keepUVOpts').hidden = quadMode() || settings.uvMode === 'new';
   updateExportPanel();
+  // A bake that landed or started, or the normal map setting, changes the made normal map tiles.
+  if ($('texList').dataset.made !== madeKey()) updateTexturePanel();
   const st = uvStatus(), row = $('uvStatus');
   row.hidden = !st;
   if (!st) return;
@@ -20008,7 +20040,8 @@ function syncUVControls() {
   matSel.value = String(uvView.mat);
   const baked = state.bakedMats ? state.bakedMats[uvView.mat] : null;
   const slots = MAP_SLOTS.filter(slot => loadedMap(mats[uvView.mat], slot) || loadedMap(baked, slot));
-  if (!slots.includes(uvView.slot)) uvView.slot = slots.includes(settings.uvSlot) ? settings.uvSlot : slots[0] || 'map';
+  // The map last picked, as soon as this material has it (a baked one arrives after the bake).
+  uvView.slot = slots.includes(settings.uvSlot) ? settings.uvSlot : slots.includes(uvView.slot) ? uvView.slot : slots[0] || 'map';
   const slotSel = $('uvSlot');
   const none = !state.welded ? 'No model' : !state.welded.uvs ? 'No UVs' : 'No texture · UVs only';
   const opts = slots.length ? slots.map(slot => [slot, `${SLOT_NAMES[slot][0].toUpperCase()}${SLOT_NAMES[slot].slice(1)}${loadedMap(mats[uvView.mat], slot) ? '' : ' · baked'}`]) : [['', none]];
@@ -20049,6 +20082,14 @@ function setUVOpen(open) {
   $('uvBtn').setAttribute('aria-expanded', String(open));
   if (open && ensureUVRenderer()) refreshUVView();
   if (!open) releaseUVPanes();
+}
+// Opens Texture & UVs on one material's map, with the result's pane in view; a map still being baked is picked once
+// it is there.
+function showMap(mi, slot) {
+  uvView.mat = mi;
+  uvView.slot = settings.uvSlot = slot;
+  if (settings.uvPanes === 'A') settings.uvPanes = 'both';
+  if (settings.uvOpen) { saveSettings(); refreshUVView(); } else setUVOpen(true);
 }
 // Dragging stops where the view would get too narrow; a narrower window only caps the width (CSS), so the drawer
 // comes back at its size when the window grows again.
@@ -20520,6 +20561,7 @@ $('texInput').addEventListener('change', e => {
 $('texList').addEventListener('click', e => {
   const b = e.target.closest('button[data-mat]');
   if (!b) return;
+  if (b.dataset.made) { showMap(Number(b.dataset.mat), b.dataset.slot); return; }
   textureTarget = { mat: Number(b.dataset.mat), slot: b.dataset.slot || 'map' };
   $('texOneInput').click();
 });

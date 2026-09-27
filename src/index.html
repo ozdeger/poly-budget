@@ -365,6 +365,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .tile.missing .slot { color: var(--warn); }
 .tile.add .thumb { border: 1px dashed var(--line-strong); background: transparent; color: var(--faint); font: 400 22px/1 var(--font-ui); }
 .tile.add:hover .thumb { color: var(--text); }
+/* A normal map the bake makes for a material without one: the baked map with a label, or a pulse until it's there. */
+.tile .badge { position: absolute; left: 3px; bottom: 3px; padding: 1px 4px; border-radius: 3px; background: color-mix(in srgb, var(--bg) 80%, transparent); color: var(--text); font: 600 9px/1.3 var(--font-label); letter-spacing: 0.05em; text-transform: uppercase; pointer-events: none; }
+.tile.wait .thumb { border-style: dashed; background: transparent; }
+.tile .busy-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 0.9s ease-in-out infinite; }
 .checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .checks li { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 1px 9px; font-size: 12px; line-height: 1.4; }
 .checks li::before { content: ""; grid-row: span 2; width: 8px; height: 8px; margin-top: 5px; border-radius: 2px; background: var(--faint); }
@@ -737,7 +741,7 @@ details.more[open] > summary { margin-bottom: 8px; }
   .open-label { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .pill.busy::before, .status-line.busy::before, .uv-msg.busy::before { animation: none; }
+  .vlabel .busy-dot, .tab.busy .tab-title::after, .empty-card .busy-dot, .tile .busy-dot, .pill.busy::before, .status-line.busy::before, .uv-msg.busy::before { animation: none; }
   .hint { transition: none; }
 }
 </style>
