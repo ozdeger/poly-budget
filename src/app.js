@@ -40,7 +40,7 @@ const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
   targetPct: 10, topology: 'quads', quadSharp: true, quadThin: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
-  normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, normalFormat: 'opengl',
+  normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', uvStyle: 'compact', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, normalFormat: 'opengl',
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
@@ -68,7 +68,7 @@ function saveSettings() {
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
 const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'quadThin', 'quadAdapt', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
-  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'bakeSize', 'bakeNormals', 'colorDetail', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
+  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'uvStyle', 'bakeSize', 'bakeNormals', 'colorDetail', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
 const newDocId = () => `t${Date.now().toString(36)}${(docSeq++).toString(36)}`;
@@ -376,7 +376,8 @@ const texEngine = {
   async runLocal(msg) {
     await nextFrame();
     if (msg.type === 'resultVisibility') return computeVisibility(msg.mesh, { rays: msg.rays });
-    return unwrapResult(msg.mesh, msg.plane, msg.labels, msg.size);
+    const vis = msg.style === 'paint' ? computeVisibility(msg.mesh, { rays: msg.rays }).vis : null;
+    return unwrapResult(msg.mesh, msg.plane, msg.labels, msg.size, { style: msg.style, vis, colors: msg.colors });
   },
 };
 
@@ -1817,6 +1818,56 @@ function disposeBakedMaterials(s = state) {
   }
   s.bakedMats = null;
 }
+// The base colour under each vertex of a result (0–255 RGB), read from its material's texture at the original UV of the
+// vertex it came from; grey where there is none. The paintable UV layout keeps parts painted differently apart.
+function baseColors(res) {
+  const w = state.welded, out = new Float32Array(res.vertexCount * 3).fill(128), nMat = state.displayMats.length, pixels = new Map();
+  if (!w || !w.uvs || !res.srcId) return out;
+  for (let v = 0; v < res.vertexCount; v++) {
+    const mi = Math.min(res.vMat[v], nMat - 1);
+    if (!pixels.has(mi)) pixels.set(mi, texturePixels(loadedMap(state.displayMats[mi], 'map')));
+    const px = pixels.get(mi);
+    if (!px) continue;
+    const s = res.srcId[v], u = w.uvs[s * 2], t = w.uvs[s * 2 + 1], e = px.matrix;
+    let x = e[0] * u + e[3] * t + e[6], y = e[1] * u + e[4] * t + e[7];
+    x -= Math.floor(x); y -= Math.floor(y);
+    const X = Math.min(px.w - 1, Math.floor(x * px.w)), Y = Math.min(px.h - 1, Math.floor((px.flipY ? 1 - y : y) * px.h)), o = (Y * px.w + X) * 4;
+    out[v * 3] = px.data[o]; out[v * 3 + 1] = px.data[o + 1]; out[v * 3 + 2] = px.data[o + 2];
+  }
+  return out;
+}
+// A texture's pixels at up to 512 px (averaged down, which also calms fine detail), kept with the texture.
+function texturePixels(tex) {
+  if (!tex || !tex.image) return null;
+  const img = tex.image, [iw, ih] = imageSize(img), k = Math.min(1, 512 / Math.max(iw, ih)), W = Math.max(1, Math.round(iw * k)), H = Math.max(1, Math.round(ih * k));
+  const key = `${tex.uuid}|${tex.version}`;
+  if (!tex.userData.pbPixels || tex.userData.pbPixels.key !== key) {
+    let data = null;
+    try {
+      if (img.data && img.width === iw && img.data.length >= iw * ih * 4) {
+        // raw pixels (a data texture): nearest sample down to the working size
+        data = new Uint8ClampedArray(W * H * 4);
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const sx = Math.min(iw - 1, Math.floor(x / k)), sy = Math.min(ih - 1, Math.floor(y / k)), o = (y * W + x) * 4, q = (sy * iw + sx) * 4;
+          data[o] = img.data[q]; data[o + 1] = img.data[q + 1]; data[o + 2] = img.data[q + 2]; data[o + 3] = 255;
+        }
+      } else {
+        const c = document.createElement('canvas');
+        c.width = W; c.height = H;
+        const g = c.getContext('2d', { willReadFrequently: true });
+        g.imageSmoothingQuality = 'high';
+        g.drawImage(img, 0, 0, W, H);
+        data = g.getImageData(0, 0, W, H).data;
+      }
+    } catch (err) { console.error(err); data = null; }
+    tex.userData.pbPixels = { key, data };
+  }
+  const data = tex.userData.pbPixels.data;
+  if (!data) return null;
+  tex.updateMatrix();
+  return { w: W, h: H, data, matrix: tex.matrix.elements, flipY: tex.flipY };
+}
+
 // ---------- texture jobs ----------
 // A reduction result goes on screen as soon as it exists. For New UVs it arrives without UVs and shows untextured;
 // the unwrap (second worker) and the bake (GPU, spread over frames) follow in the background, and the textured mesh
@@ -1838,7 +1889,8 @@ function startTextureJob(rebakeOnly = false) {
     // The bake reads which surfaces of the original are seen; a pass still missing runs alongside the unwrap.
     const bakes = !!(state.welded.uvs && bakeJobs(kept).length), sourceVis = bakes ? bakeVisibility() : null;
     if (!kept && !(rebakeOnly && res && res.uvLayout === 'new')) {
-      const unwrapped = texEngine.run({ type: 'unwrap', mesh: geo.result, plane: geo.plane, labels: geo.labels, size: settings.bakeSize });
+      const paint = settings.uvStyle === 'paint';
+      const unwrapped = texEngine.run({ type: 'unwrap', mesh: geo.result, plane: geo.plane, labels: geo.labels, size: settings.bakeSize, style: settings.uvStyle, colors: paint ? baseColors(geo.result) : null, rays: RESULT_VIS_RAYS });
       prewarmBakeSources();
       const u = await unwrapped;
       if (!current()) return;
@@ -2913,7 +2965,8 @@ function uvStatus() {
     const a = i.atlas;
     const normal = state.bake && state.bake.maps.some(x => x.slot === 'normalMap'), detail = state.bake && state.bake.maps.some(x => x.detail);
     const baked = state.bake ? `${normal ? `The textures and a normal map of the original's surface${detail ? ', with detail from the base colour,' : ''} are` : 'The texture is'} baked onto them from the original at ${state.bake.size} px.` : textured ? 'The texture could not be baked.' : 'There is no texture to bake.';
-    return [state.bake || !textured ? 'ok' : 'warn', `New UVs · ${fmt(a.charts)} charts · ${pct(a.coverage)} of the sheet`, [why, baked].filter(Boolean).join(' ')];
+    const paint = a.style === 'paint' ? 'Laid out for painting: large charts with seams where they show least, upright, the lowest parts of the model at the bottom of the sheet.' : '';
+    return [state.bake || !textured ? 'ok' : 'warn', `New UVs · ${a.style === 'paint' ? 'paintable · ' : ''}${fmt(a.charts)} charts · ${pct(a.coverage)} of the sheet`, [why, paint, baked].filter(Boolean).join(' ')];
   }
   const nm = state.bake && state.bake.maps.some(x => x.slot === 'normalMap') ? ` A normal map of the original's surface${state.bake.maps.some(x => x.detail) ? ', with detail from the base colour,' : ''} is baked into them at ${state.bake.size} px.`
     : state.texturing ? ' Baking a normal map of the original\'s surface into them…' : '';
@@ -2996,6 +3049,37 @@ async function bakedPng(data, size, flipGreen = false) {
   for (let y = 0; y < size; y++) img.data.set(data.subarray((size - 1 - y) * row, (size - y) * row), y * row);
   if (flipGreen) for (let i = 1; i < img.data.length; i += 4) img.data[i] = 255 - img.data[i];
   c.getContext('2d').putImageData(img, 0, 0);
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+// The UV layout as an image to paint over, one per material with triangles: black lines on a clear sheet, chart
+// borders heavier than the quads' edges, rows from the top as image editors show them.
+function uvTemplates(res, stem) {
+  const names = materialNames(), nMat = Math.max(1, state.displayMats.length), used = new Set();
+  for (let t = 0; t < res.triCount; t++) used.add(Math.min(res.vMat[res.index[t * 3]], nMat - 1));
+  return [...used].sort((a, b) => a - b).map(mi => ({ mi, name: `${stem}_${names[mi]}_uvlayout.png` }));
+}
+async function uvTemplatePng(res, mi, size) {
+  const nMat = Math.max(1, state.displayMats.length), triEnd = state.info && state.info.symmetry ? res.triCount / 2 : res.triCount;
+  const { edges, seams } = uvEdges(res, t => Math.min(res.vMat[res.index[t * 3]], nMat - 1) === mi, triEnd);
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d'), uv = res.uvs, k = size / 1024;
+  const draw = (list, width, alpha) => {
+    g.beginPath();
+    for (let i = 0; i < list.length; i += 2) {
+      const a = list[i], b = list[i + 1];
+      g.moveTo(uv[a * 2] * size, (1 - uv[a * 2 + 1]) * size);
+      g.lineTo(uv[b * 2] * size, (1 - uv[b * 2 + 1]) * size);
+    }
+    g.lineWidth = width;
+    g.strokeStyle = `rgba(0, 0, 0, ${alpha})`;
+    g.stroke();
+  };
+  g.lineCap = g.lineJoin = 'round';
+  draw(edges, Math.max(1, k), 0.55);
+  draw(seams, Math.max(1.5, 2 * k), 1);
   const blob = await new Promise(r => c.toBlob(r, 'image/png'));
   return new Uint8Array(await blob.arrayBuffer());
 }
@@ -3137,7 +3221,8 @@ function exportPlan() {
   const add = (name, note, pending = false) => { if (!seen.has(name)) { seen.add(name); textures.push({ name, note, pending }); } };
   if (res.uvLayout === 'new' && state.bake) {
     for (const x of state.bake.maps) add(`${stem}_${names[x.mi]}_${MAP_FILE[x.slot] || x.slot}.png`, `${SLOT_NAMES[x.slot]} · baked at ${state.bake.size} px${x.slot === 'normalMap' ? ` · ${directXNormals() ? 'DirectX' : 'OpenGL'}` : ''}`);
-  } else if (res.uvLayout === 'pending') {
+  }
+  if (res.uvLayout === 'new') for (const t of uvTemplates(res, stem)) add(t.name, 'UV layout · edges to paint over'); else if (res.uvLayout === 'pending') {
     if (bakeJobs().length) add('Baked textures', 'still being made; the export waits for them', true);
   } else if (res.uvLayout !== 'new') {
     state.displayMats.forEach((m, i) => {
@@ -3255,6 +3340,7 @@ async function buildExport() {
       for (const x of m.extra) files[x.file] = x.bytes;
     }
   }
+  if (res.uvLayout === 'new') for (const t of uvTemplates(res, stem)) files[t.name] = await uvTemplatePng(res, t.mi, settings.bakeSize);
   setStatus('');
   return { filename: `${stem}.zip`, zip: zipSync(files, { level: 6 }) };
 }
@@ -3918,6 +4004,8 @@ function syncControls() {
   // Quads always get new UVs.
   pressSeg('uvModeSeg', 'uvmode', q ? 'new' : settings.uvMode);
   for (const b of $('uvModeSeg').querySelectorAll('button')) b.disabled = q && b.dataset.uvmode !== 'new';
+  pressSeg('uvStyleSeg', 'uvstyle', settings.uvStyle);
+  $('uvStyleField').hidden = !q && settings.uvMode === 'keep';
   pressSeg('bakeSeg', 'bake', settings.bakeSize);
   $('bakeNormals').checked = settings.bakeNormals;
   $('colorDetailField').hidden = !settings.bakeNormals;
@@ -4100,6 +4188,7 @@ bindRange('weldTol', 'weldTol', reweld);
 $('maxErr').addEventListener('change', e => { settings.maxError = Number(e.target.value); saveSettings(); scheduleReduce(0); });
 $('units').addEventListener('change', e => { settings.units = e.target.value; saveSettings(); updateExportPanel(); });
 onSeg('bakeSeg', 'bake', v => { if (settings.bakeSize === Number(v)) return; settings.bakeSize = Number(v); startTextureJob(); });
+onSeg('uvStyleSeg', 'uvstyle', v => { if (settings.uvStyle === v) return; settings.uvStyle = v; if (state.result && state.result.uvLayout !== 'original') startTextureJob(); });
 $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
 $('undoBtn').title = `Undo (${UNDO_KEY})`;

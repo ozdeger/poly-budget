@@ -815,6 +815,11 @@ details.more[open] > summary { margin-bottom: 8px; }
           <button type="button" data-uvmode="auto" title="Keep the original UVs while they still fit the texture, otherwise make new ones">Auto</button><button type="button" data-uvmode="keep" title="Always keep the original UVs">Original UVs</button><button type="button" data-uvmode="new" title="Always make new UVs and bake the texture onto them">New UVs</button>
         </div>
       </div>
+      <div class="field" id="uvStyleField"><span>New UV layout</span>
+        <div class="seg fill" role="group" aria-label="New UV layout" id="uvStyleSeg">
+          <button type="button" data-uvstyle="compact" title="Many small charts packed tightly: the most texels for the baked texture">Compact</button><button type="button" data-uvstyle="paint" title="Few large charts with seams where they show least, upright and laid out bottom to top like the model: for painting by hand">Paintable</button>
+        </div>
+      </div>
       <div class="status-line" id="uvStatus"><b id="uvHead"></b><span id="uvNote"></span></div>
       <div class="field"><span>Baked texture size</span>
         <div class="seg fill" role="group" aria-label="Baked texture size" id="bakeSeg">

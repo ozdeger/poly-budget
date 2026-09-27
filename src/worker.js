@@ -30,7 +30,9 @@ self.onmessage = async ({ data }) => {
       return;
     }
     if (data.type === 'unwrap') {
-      const out = unwrapResult(data.mesh, data.plane, data.labels, data.size), r = out.result;
+      // A paintable layout puts its seams where the surface is seen least: a quick visibility pass first.
+      const vis = data.style === 'paint' ? computeVisibility(data.mesh, { rays: data.rays }).vis : null;
+      const out = unwrapResult(data.mesh, data.plane, data.labels, data.size, { style: data.style, vis, colors: data.colors }), r = out.result;
       const transfer = [r.positions.buffer, r.normals.buffer, r.index.buffer, r.vPart.buffer, r.vMat.buffer, r.srcId.buffer, r.uvs.buffer];
       if (r.twin) transfer.push(r.twin.buffer);
       if (r.colors) transfer.push(r.colors.buffer);

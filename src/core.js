@@ -1,4 +1,5 @@
 import { remeshQuads, QUAD_NONE } from './quad.js';
+import { unwrapPaintable } from './paint.js';
 
 // PLAIN is painted normal detail: it only blocks the automatic hidden-area levels and reaches the reducer as NONE.
 // CULL marks surface that no direction can see, for Delete faces nothing can see.
@@ -2170,7 +2171,9 @@ function reduceVariant(S, c, labels, st, fopt, unwrapOpt) {
 // The texture half of New UVs, run after the geometry is already on screen (st.deferUV): unwraps a reduced result.
 // Under symmetry it unwraps the kept half (the first halfCount vertices and triCount / 2 triangles that mirrorMerge
 // puts first) and mirrors it again, so both halves share the texture space.
-export function unwrapResult(mesh, plane, labels, size) {
+// opt.style 'paint' lays the UVs out for painting by hand (paint.js), from opt.vis (how visible each vertex of mesh is)
+// and opt.colors (the original's colour under it); otherwise they are packed tightly for baking.
+export function unwrapResult(mesh, plane, labels, size, opt = {}) {
   const t0 = Date.now();
   let base = mesh;
   if (plane) {
@@ -2181,7 +2184,10 @@ export function unwrapResult(mesh, plane, labels, size) {
       vPart: mesh.vPart.subarray(0, V), vMat: mesh.vMat.subarray(0, V), srcId: mesh.srcId.subarray(0, V), vertexCount: V, triCount: K,
     };
   }
-  const u = unwrap(base, { size, density: faceDensity(base, labels) });
+  const density = faceDensity(base, labels), V = base.vertexCount;
+  const u = opt.style === 'paint'
+    ? unwrapPaintable(base, { size, density, vis: opt.vis ? opt.vis.subarray(0, V) : null, colors: opt.colors ? opt.colors.subarray(0, V * 3) : null })
+    : unwrap(base, { size, density });
   let result = u.mesh, symmetry = null;
   if (plane) {
     result = mirrorMerge(u.mesh, plane);
@@ -2189,6 +2195,7 @@ export function unwrapResult(mesh, plane, labels, size) {
     symmetry.seamVertices = result.seamVertices;
   }
   result.uvLayout = 'new';
+  u.info.style = opt.style === 'paint' ? 'paint' : 'compact';
   u.info.ms = Date.now() - t0;
   return { result, atlas: u.info, symmetry };
 }
