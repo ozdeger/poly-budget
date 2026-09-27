@@ -12,7 +12,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
-import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, cornerTangents, positionNormals, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
+import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, cornerTangents, positionNormals, bakeReach, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
 import { computeVisibility } from './visibility.js';
 import { formDensity } from './quad.js';
@@ -1137,9 +1137,9 @@ function updateTexturePanel() {
 
 // ---------- texture bake for new UVs ----------
 // The reduced mesh is drawn in its new UV layout. Every texel finds the original surface under it (a ray cast inward
-// from a thin cage along the normal, else the closest point that faces the same way), reads the original UV there and
-// samples the original texture, so the texture fits the new UVs. Where the result shows a surface the original hides,
-// the visible surface covering it is used instead.
+// along the normal from as far out as the result strays from the original around it, else the closest point that faces
+// the same way), reads the original UV there and samples the original texture, so the texture fits the new UVs. Where
+// the result shows a surface the original hides, the visible surface covering it is used instead.
 const BAKE_GLSL = /* glsl */`
 precision highp isampler2D;
 precision highp usampler2D;
@@ -1155,25 +1155,29 @@ varying vec3 vNrm;
 varying vec4 vTan;
 varying vec3 vRay;
 varying float vVis;
+varying float vCage;
 `;
 // bakeTangent: the result's MikkTSpace tangent at each triangle corner (xyz, and the bitangent's sign in w). bakeRay:
 // the direction rays look for the original along, the normals at one position averaged, so hard edges don't split it.
-// bakeVis: how visible the result is there (0 when unknown).
+// bakeVis: how visible the result is there (0 when unknown). bakeCage: how far rays look for the original (core.bakeReach).
 const UV_SPACE_VS = /* glsl */`
 attribute vec4 bakeTangent;
 attribute vec3 bakeRay;
 attribute float bakeVis;
+attribute float bakeCage;
 varying vec3 vPos;
 varying vec3 vNrm;
 varying vec4 vTan;
 varying vec3 vRay;
 varying float vVis;
+varying float vCage;
 void main() {
   vPos = position;
   vNrm = normal;
   vTan = bakeTangent;
   vRay = bakeRay;
   vVis = bakeVis;
+  vCage = bakeCage;
   gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }`;
 const QUAD_VS = /* glsl */'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }';
@@ -1182,7 +1186,6 @@ const QUAD_VS = /* glsl */'void main() { gl_Position = vec4(position.xy, 0.0, 1.
 // (for the mip level), and 1 + the matched triangle (0 = empty texel).
 const CORR_FS = /* glsl */`${BAKE_GLSL}
 uniform float maxDist;
-uniform float cage;
 uniform sampler2D srcVis;
 
 // How visible the original is at a point of triangle f.
@@ -1231,14 +1234,15 @@ float closestFacing(vec3 p, vec3 n, float maxD, inout uvec4 faceIndices, inout v
 
 void main() {
   float texelArea = length(cross(dFdx(vPos), dFdy(vPos)));
+  float cage = vCage;
   vec3 n = normalize(vRay);
   uvec4 fi = uvec4(0u), fo = uvec4(0u);
   vec3 bc = vec3(1.0, 0.0, 0.0), bo = bc;
   vec3 hn = vec3(0.0);
   float side = 0.0, dist = 0.0, so = 0.0, dOut = 0.0;
-  // Along the smoothed normal, within a cage sized to how far this result strays from the original: the outermost surface
-  // facing out, which is what shows from outside (and stays the same surface along an overhang); failing that, the
-  // nearest surface on either side.
+  // Along the smoothed normal, within a cage sized to how far the result strays from the original around here: the
+  // outermost surface facing out, which is what shows from outside (and stays the same surface along an overhang);
+  // failing that, the nearest surface on either side.
   bool hit = bvhIntersectFirstHit(bvh, vPos + n * cage, -n, fi, hn, bc, side, dist) && side > 0.0 && dist < 2.0 * cage;
   if (!hit) {
     bool hitIn = bvhIntersectFirstHit(bvh, vPos, -n, fi, hn, bc, side, dist) && dist < cage;
@@ -1487,7 +1491,7 @@ void main() {
 }`;
 
 const bakeMaterial = (vertexShader, fragmentShader, uniforms) => new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
-const corrMat = bakeMaterial(UV_SPACE_VS, CORR_FS, { bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, srcVis: { value: null }, maxDist: { value: 1 }, cage: { value: 0.01 } });
+const corrMat = bakeMaterial(UV_SPACE_VS, CORR_FS, { bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, srcVis: { value: null }, maxDist: { value: 1 } });
 const mapMat = bakeMaterial(UV_SPACE_VS, MAP_FS, {
   bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, corr: { value: null }, srcMap: { value: null },
   srcMatrix: { value: new THREE.Matrix3() }, srcSize: { value: new THREE.Vector2() }, normalScale: { value: new THREE.Vector2(1, 1) }, mode: { value: 0 },
@@ -1597,11 +1601,11 @@ function prewarmBakeSources() {
   if (!state.welded || !state.welded.uvs || !state.orig.bvh) return;
   for (const { mi } of bakeJobs()) bakeSource(mi);
 }
-// The result's triangles tris, unshared, with the tangent of each corner when the result has them, the ray direction and
-// the result's visibility (vis, when there is one).
-function bakeGeometry(res, tris, rays, vis) {
+// The result's triangles tris, unshared, with the tangent of each corner when the result has them, the ray direction, how
+// far rays look (reach) and the result's visibility (vis, when there is one).
+function bakeGeometry(res, tris, rays, reach, vis) {
   const n = tris.length * 3, P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = new Float32Array(n * 2), TG = new Float32Array(n * 4), R = new Float32Array(n * 3);
-  const VI = new Float32Array(n), idx = res.index, tan = res.tangents;
+  const VI = new Float32Array(n), RC = new Float32Array(n), idx = res.index, tan = res.tangents;
   for (let i = 0; i < tris.length; i++) {
     for (let k = 0; k < 3; k++) {
       const c = tris[i] * 3 + k, v = idx[c], o = i * 3 + k;
@@ -1609,6 +1613,7 @@ function bakeGeometry(res, tris, rays, vis) {
       UV[o * 2] = res.uvs[v * 2]; UV[o * 2 + 1] = res.uvs[v * 2 + 1];
       if (tan) for (let j = 0; j < 4; j++) TG[o * 4 + j] = tan[c * 4 + j];
       if (vis) VI[o] = vis[v];
+      RC[o] = reach[v];
     }
   }
   const geo = new THREE.BufferGeometry();
@@ -1618,22 +1623,16 @@ function bakeGeometry(res, tris, rays, vis) {
   geo.setAttribute('bakeTangent', new THREE.BufferAttribute(TG, 4));
   geo.setAttribute('bakeRay', new THREE.BufferAttribute(R, 3));
   geo.setAttribute('bakeVis', new THREE.BufferAttribute(VI, 1));
+  geo.setAttribute('bakeCage', new THREE.BufferAttribute(RC, 1));
   return geo;
 }
-// How far rays look for the original: past nearly all of how far this result strays from it (the 98th percentile of
-// sampled distances, with room), between 0.4% and 5% of the model's size.
-function bakeCage(res) {
-  const bvh = state.orig.bvh, P = res.positions, V = res.vertexCount, n = Math.min(3000, V), step = V / n, d = [], p = new THREE.Vector3(), hit = {};
-  if (!bvh) return 0.01 * state.size;
-  for (let i = 0; i < n; i++) {
-    const v = Math.floor(i * step);
-    p.set(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]);
-    const h = bvh.closestPointToPoint(p, hit);
-    if (h) d.push(h.distance);
-  }
-  d.sort((a, b) => a - b);
-  const far = d.length ? d[Math.floor(d.length * 0.98)] : 0;
-  return Math.min(0.05 * state.size, Math.max(0.004 * state.size, 2.5 * far));
+// How far rays look for the original around each vertex of the baked triangles [0, triEnd) (core.bakeReach), between
+// 0.1% and 5% of the model's size, measured on the original's BVH a thousand triangles per frame. null when current()
+// turns false on the way.
+function bakeReachOf(res, triEnd, current) {
+  const bvh = state.orig.bvh, p = new THREE.Vector3(), hit = {}, lo = 0.001 * state.size, hi = 0.05 * state.size;
+  const dist = (x, y, z) => { p.set(x, y, z); const h = bvh.closestPointToPoint(p, hit, 0, hi); return h ? h.distance : hi; };
+  return bakeReach(res, triEnd, dist, lo, hi, async () => { await nextFrame(); return current(); });
 }
 // The detail normal map made from material mi's base colour, when it has no normal map of its own and detail is on:
 // a DataTexture in the base colour's texture space (its offset and repeat copied), kept with the tab until the colour,
@@ -1723,13 +1722,14 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
   ensureBakeTargets(size);
   const triEnd = info && info.symmetry ? res.triCount / 2 : res.triCount;
   const nMat = state.displayMats.length, idx = res.index;
-  const out = { size, maps: [] }, rays = positionNormals(res), cage = bakeCage(res);
+  const out = { size, maps: [] }, rays = positionNormals(res), reach = await bakeReachOf(res, triEnd, current);
+  if (!reach) return null;
   const srcVis = bakeVisTexture(), vis = state.vis && res.vis && res.vis.length === res.vertexCount ? res.vis : null;
   for (const job of jobs) {
     const tris = [];
     for (let t = 0; t < triEnd; t++) if (Math.min(res.vMat[idx[t * 3]], nMat - 1) === job.mi) tris.push(t);
     if (!tris.length) continue;
-    const geo = bakeGeometry(res, tris, rays, vis);
+    const geo = bakeGeometry(res, tris, rays, reach, vis);
     const mesh = new THREE.Mesh(geo, corrMat);
     try {
       const src = bakeSource(job.mi);
@@ -1740,7 +1740,6 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
       }
       corrMat.uniforms.srcVis.value = srcVis;
       corrMat.uniforms.maxDist.value = 0.08 * state.size;
-      corrMat.uniforms.cage.value = cage;
       for (let y = 0; y < size; y += rows) {
         bakePass(corrMat, bake.corr, mesh, [y, Math.min(rows, size - y)]);
         await nextFrame();

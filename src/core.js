@@ -1214,12 +1214,17 @@ export function cornerTangents(MT, mesh) {
   return MT.generateTangents(mesh.index, mesh.positions, 3, mesh.normals, 3, mesh.uvs, 2, ['Compatible']);
 }
 
-// Per vertex, the normals of every vertex at its position (bit-identical, as the weld leaves copies) averaged: a direction
-// that doesn't split at hard edges or UV seams, which the texture bake casts its rays along.
+// Vertices grouped by position (bit-identical, as the weld leaves copies along hard edges and UV seams): { group, count }.
+export function positionGroups(mesh) {
+  const V = mesh.vertexCount, bits = new Int32Array(mesh.positions.buffer, mesh.positions.byteOffset, V * 3);
+  return groupBy(V, 3, (i, o) => { o[0] = bits[i * 3]; o[1] = bits[i * 3 + 1]; o[2] = bits[i * 3 + 2]; });
+}
+
+// Per vertex, the normals of every vertex at its position averaged: a direction that doesn't split at hard edges or UV
+// seams, which the texture bake casts its rays along.
 export function positionNormals(mesh) {
-  const V = mesh.vertexCount, P = mesh.positions, N = mesh.normals;
-  const bits = new Int32Array(P.buffer, P.byteOffset, V * 3);
-  const { group, count } = groupBy(V, 3, (i, o) => { o[0] = bits[i * 3]; o[1] = bits[i * 3 + 1]; o[2] = bits[i * 3 + 2]; });
+  const V = mesh.vertexCount, N = mesh.normals;
+  const { group, count } = positionGroups(mesh);
   const sum = new Float64Array(count * 3);
   for (let v = 0; v < V; v++) for (let k = 0; k < 3; k++) sum[group[v] * 3 + k] += N[v * 3 + k];
   const out = new Float32Array(V * 3);
@@ -1227,6 +1232,27 @@ export function positionNormals(mesh) {
     const g = group[v], l = Math.hypot(sum[g * 3], sum[g * 3 + 1], sum[g * 3 + 2]) || 1;
     for (let k = 0; k < 3; k++) out[v * 3 + k] = sum[g * 3 + k] / l;
   }
+  return out;
+}
+
+// How far the texture bake's rays look for the original around each vertex of a result: twice the most the result strays
+// from it there, measured at the centre and edge midpoints of every triangle of [0, triEnd) at the vertex's position (so
+// copies along UV seams agree), between lo and hi. One reach for the whole model would be set by the parts that stray
+// most (hair tips, thin parts) and let texels elsewhere reach past their own surface to a separate one close in front,
+// such as glasses over a cheek. dist(x, y, z) is how far a point lies from the original; pause, when given, is awaited
+// every 1024 triangles, and returning false from it stops the work (null).
+export const BAKE_REACH = 2;
+export async function bakeReach(mesh, triEnd, dist, lo, hi, pause = null) {
+  const { group, count } = positionGroups(mesh), P = mesh.positions, idx = mesh.index, far = new Float32Array(count);
+  const mid = (a, b, c, wa, wb, wc) => dist(wa * P[a] + wb * P[b] + wc * P[c], wa * P[a + 1] + wb * P[b + 1] + wc * P[c + 1], wa * P[a + 2] + wb * P[b + 2] + wc * P[c + 2]);
+  for (let t = 0; t < triEnd; t++) {
+    const a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
+    const m = Math.max(mid(a, b, c, 1 / 3, 1 / 3, 1 / 3), mid(a, b, c, 0.5, 0.5, 0), mid(a, b, c, 0, 0.5, 0.5), mid(a, b, c, 0.5, 0, 0.5));
+    for (let k = 0; k < 3; k++) { const g = group[idx[t * 3 + k]]; if (m > far[g]) far[g] = m; }
+    if (pause && (t & 1023) === 1023 && !(await pause())) return null;
+  }
+  const out = new Float32Array(mesh.vertexCount);
+  for (let v = 0; v < out.length; v++) out[v] = Math.min(hi, Math.max(lo, BAKE_REACH * far[group[v]]));
   return out;
 }
 
