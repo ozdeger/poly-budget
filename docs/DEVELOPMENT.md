@@ -228,6 +228,7 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 | `src/fbx_template.json` | The FBX header and definitions the writer starts from |
 | `social-preview.jpg` | The picture link previews show: a scan of the Artemision bronze (Statens Museum for Kunst, CC0) beside its remesh into 10,000 quads, with More detail painted on the head |
 | `apple-touch-icon.png` | The icon for home screens and for link previews that can't use the page's inline one |
+| `LICENSE`, `THIRD_PARTY_NOTICES.md` | MIT for the code; the Instant Meshes notice, the runtime libraries and the pictures' own licences |
 
 Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with its loaders, exporter and fflate, meshoptimizer and three-mesh-bvh. The type is IBM Plex.
 

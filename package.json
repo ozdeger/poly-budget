@@ -1,6 +1,7 @@
 {
   "name": "poly-budget",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "node build.js",

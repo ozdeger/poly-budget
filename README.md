@@ -111,4 +111,8 @@ Everything happens on your own computer, inside the browser tab. Your models and
 
 The pictures show [*Princess from Akhenaton's family*](https://sketchfab.com/3d-models/princess-from-akhenatons-family-5dadcff13f87484a850e6ed027b90452) by Benoit Rogez, from [Real World Textured Things](http://texturedmesh.isti.cnr.it/) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)), and a [plaster cast of the Artemision Bronze](https://commons.wikimedia.org/wiki/File:Poseidon_eller_Zeus_fra_Artemision_-_KAS2100.stl) from Statens Museum for Kunst (CC0), both remeshed by Poly Budget. Poly Budget is built on [three.js](https://threejs.org), [meshoptimizer](https://github.com/zeux/meshoptimizer) and [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh).
 
+## License
+
+Poly Budget is free and open source under the [MIT License](LICENSE). The pictures of scanned models keep their own licences, listed with the other third-party parts in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 <sub>Poly Budget is written and kept up to date by an AI coding assistant (Claude, in Claude Code) at its owner's direction. How it works, in detail: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).</sub>
