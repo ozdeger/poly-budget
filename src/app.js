@@ -49,6 +49,10 @@ const settings = { ...DEFAULTS };
 // Only settings the tool still has are read back, so options removed since they were saved drop out. Settings saved while
 // Triangles was the default open in Quads, the default now, once; the toggle still picks Triangles after that.
 const QUADS_DEFAULT = 'poly-budget:quads-default';
+// Even is the default triangle shape: settings and tabs saved with Any open with Even, once (tabs in restoreTabs); Any
+// can still be picked after that.
+const EVEN_DEFAULT = 'poly-budget:even-default';
+let evenOnce = false;
 try {
   const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
   for (const key of Object.keys(DEFAULTS)) if (key in saved) settings[key] = saved[key];
@@ -56,6 +60,14 @@ try {
     settings.topology = 'quads';
     if ('topology' in saved) localStorage.setItem(STORE, JSON.stringify({ ...saved, topology: 'quads' }));
     localStorage.setItem(QUADS_DEFAULT, '1');
+  }
+  if (!localStorage.getItem(EVEN_DEFAULT)) {
+    evenOnce = true;
+    if (settings.regularize === 0) {
+      settings.regularize = DEFAULTS.regularize;
+      localStorage.setItem(STORE, JSON.stringify({ ...JSON.parse(localStorage.getItem(STORE) || '{}'), regularize: DEFAULTS.regularize }));
+    }
+    localStorage.setItem(EVEN_DEFAULT, '1');
   }
 } catch { /* storage unavailable */ }
 let saveTimer = 0;
@@ -661,6 +673,11 @@ async function restoreTabs() {
     if (!index || !index.order || !index.order.length) return false;
     records = await readKeys(index.order.map(id => `${id}:session`));
   } catch { return false; }
+  if (evenOnce) {
+    const moved = (records || []).filter(r => r && r.id && r.settings && r.settings.regularize === 0);
+    for (const r of moved) r.settings.regularize = DEFAULTS.regularize;
+    if (moved.length) try { await sessionTx('readwrite', store => { for (const r of moved) store.put(r, `${r.id}:session`); }); } catch { /* storage unavailable */ }
+  }
   const restored = (records || []).filter(r => r && r.model && r.files && r.files.length).map(r => newDoc(r));
   if (!restored.length) return false;
   docs.splice(0, docs.length, ...restored);
