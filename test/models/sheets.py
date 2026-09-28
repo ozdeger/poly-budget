@@ -1,5 +1,5 @@
 # Labelled result sheets from render.mjs's pictures and the bench's numbers: one image per model, and with --examples
-# JPEGs sized for the README of the models marked "example" in the manifest. Needs Pillow (pip install pillow).
+# JPEGs sized for docs/DEVELOPMENT.md of the models marked "example" in the manifest. Needs Pillow (pip install pillow).
 # usage: python3 test/models/sheets.py [id ...] [--renders=testdata/models/renders]
 #        [--runs=testdata/models/results/runs.json] [--examples=docs/examples]
 import json, os, sys
@@ -73,7 +73,7 @@ for m in manifest['models']:
     out = os.path.join(renders, f"{m['id']}.png")
     img.save(out)
     if examples and m.get('example'):
-        # README pictures (models marked "example" in the manifest): at most 1800 px wide, as progressive JPEG.
+        # Pictures for docs/DEVELOPMENT.md (models marked "example" in the manifest): at most 1800 px wide, as progressive JPEG.
         k = min(1, 1800 / img.width)
         small = img.resize((round(img.width * k), round(img.height * k)), Image.LANCZOS) if k < 1 else img
         small.save(os.path.join(examples, f"{m['id']}.jpg"), 'JPEG', quality=86, optimize=True, progressive=True)
