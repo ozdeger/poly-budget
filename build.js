@@ -23,13 +23,30 @@ const html = read('./src/index.html').replace('/*WORKER*/', () => workerSrc).rep
 // index.html: the page as a full document for GitHub Pages, with the template's title, fonts and styles in the head.
 const cut = html.indexOf('</style>') + '</style>'.length;
 const icon = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5 15 14.5H1z' fill='%23f0b23c'/%3E%3C/svg%3E";
+// Link previews (Open Graph, X) need absolute URLs, so they point at the published site; the PNG icon is for the
+// unfurlers and home screens that can't use the inline SVG.
+const site = 'https://ozdeger.github.io/poly-budget/';
+const description = 'Reduce a 3D model to a triangle budget in the browser, or remesh it into quads, with painted detail areas, mirror symmetry and texture re-baking.';
 const page = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Reduce a 3D model to a triangle budget in the browser, or remesh it into quads, with painted detail areas, mirror symmetry and texture re-baking.">
+<meta name="description" content="${description}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Poly Budget">
+<meta property="og:title" content="Poly Budget">
+<meta property="og:description" content="${description}">
+<meta property="og:url" content="${site}">
+<meta property="og:image" content="${site}social-preview.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A statue scan split down the middle: the dense original on one side, its remesh into quads on the other">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="${icon}">
+<link rel="icon" type="image/png" sizes="180x180" href="apple-touch-icon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 ${html.slice(0, cut)}
 <style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
 </head>

@@ -223,10 +223,13 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 | `src/app.js` | The UI: loading, tabs, painting, the texture and UV panel, the GPU bake, saving the session, export |
 | `src/core.js` | The mesh work, with no DOM code so it also runs in Node: welding, the reduction passes, the quad pipeline around the remesher, the UV fit check, unwrapping, UV layout edges, the FBX and OBJ writers |
 | `src/quad.js` | The quad remesher: working surface, field hierarchy, extraction, the all-quad pass, pole moves and relaxation, and the budget zones |
+| `src/paint.js` | The paintable UV layout: seam costs, charts, joins checked by flattening them, upright charts and the packing |
 | `src/visibility.js` | How visible each vertex is from all sides, for hidden areas and the bake |
 | `src/collect.js` | Flattens a three.js scene into one mesh |
 | `src/worker.js` | Reductions, unwraps and the visibility pass, off the main thread |
 | `src/fbx_template.json` | The FBX header and definitions the writer starts from |
+| `social-preview.jpg` | The picture link previews show: a scan of the Artemision bronze (Statens Museum for Kunst, CC0) beside its remesh into 10,000 quads, with More detail painted on the head |
+| `apple-touch-icon.png` | The icon for home screens and for link previews that can't use the page's inline one |
 
 Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with its loaders, exporter and fflate, meshoptimizer and three-mesh-bvh. The type is IBM Plex.
 
