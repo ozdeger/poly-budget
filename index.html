@@ -1922,6 +1922,23 @@ function pentagonSplit(P, poly, taken = null) {
   }
   return [[0, 1, 2, 3].map(k => poly[(bi + k) % 5]), [poly[(bi + 3) % 5], poly[(bi + 4) % 5], poly[bi]]];
 }
+// A hole's rim as faces: odd rims keep five sides (or three) for the all-quad pass, the rest become quads.
+function holeFaces(P, poly, taken) {
+  const out = [];
+  while (poly.length > 5 && poly.length & 1) {
+    let best = Infinity, bi = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
+      const s = quadScore(P, q) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0);
+      if (s < best) { best = s; bi = i; }
+    }
+    out.push([0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]));
+    poly = poly.filter((_, k) => k !== (bi + 1) % poly.length && k !== (bi + 2) % poly.length);
+  }
+  if (poly.length >= 6) out.push(...evenToQuads(P, poly, taken).quads);
+  else if (poly.length >= 3) out.push(poly);
+  return out;
+}
 
 // Faces from the graph: neighbours are sorted around each vertex, and faces are walked by always taking the next edge
 // in that order (Instant Meshes' extract_faces). Quads first, then triangles, then larger faces, which are cut into
@@ -1966,22 +1983,7 @@ function extractFaces(G) {
   const fill = poly => {
     // A loop through one vertex twice would give faces that repeat a corner: its simple loops are filled instead.
     if (new Set(poly).size !== poly.length) { for (const l of simpleLoops(poly)) if (!faceKeys || !faceKeys.has(l.slice().sort((x, y) => x - y).join(','))) fill(l); return; }
-    // Odd faces keep five sides (or three) for the all-quad pass; the rest become quads.
-    while (poly.length > 5 && poly.length & 1) {
-      let best = Infinity, bi = 0;
-      for (let i = 0; i < poly.length; i++) {
-        const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
-        const s = quadScore(P, q) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0);
-        if (s < best) { best = s; bi = i; }
-      }
-      faces.push([0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]));
-      poly = poly.filter((_, k) => k !== (bi + 1) % poly.length && k !== (bi + 2) % poly.length);
-    }
-    if (poly.length >= 6) {
-      faces.push(...evenToQuads(P, poly, taken).quads);
-      return;
-    }
-    if (poly.length >= 3) faces.push(poly);
+    faces.push(...holeFaces(P, poly, taken));
   };
   for (const target of [4, 3, 5, 6, 7, 8]) {
     for (let i = 0; i < nv; i++) {
@@ -2059,9 +2061,9 @@ function extractFaces(G) {
 
 // ---------- all quads ----------
 
-// The mirror plane's cut among a face set's open borders: the loops that mostly run within `reach` of the plane. Returns
-// 1 per vertex on it. After mirroring, a vertex there with k edges into the face set has 2 + 2k, so it is regular only
-// with exactly one; the passes below keep that.
+// The mirror plane's cut among a face set's open borders: the loops that mostly run within reach(v) of the plane (a
+// distance, or one per vertex). Returns 1 per vertex on it. After mirroring, a vertex there with k edges into the face
+// set has 2 + 2k, so it is regular only with exactly one; the passes below keep that.
 function cutVertices(faces, P, nv, plane, reach) {
   const cut = new Uint8Array(nv);
   if (!plane) return cut;
@@ -2080,10 +2082,63 @@ function cutVertices(faces, P, nv, plane, reach) {
     if (!border[v]) continue;
     const r = find(v);
     total.set(r, (total.get(r) || 0) + 1);
-    if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < reach) near.set(r, (near.get(r) || 0) + 1);
+    if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < (typeof reach === 'function' ? reach(v) : reach)) near.set(r, (near.get(r) || 0) + 1);
   }
   for (let v = 0; v < nv; v++) if (border[v] && (near.get(find(v)) || 0) * 2 >= total.get(find(v))) cut[v] = 1;
   return cut;
+}
+
+// Tears beside the mirror plane. Where extraction leaves a hole beside the cut, the hole's rim and the cut are one open
+// loop, which runs along the plane, leaves it through the surface and comes back. The cut takes such a loop whole or
+// not at all: a small detour was pressed flat onto the plane (faces lying in it, four on one edge once mirrored), and a
+// large one kept the whole loop open (a pedestal torn along its middle). A detour is a run of border vertices off the
+// input's borders (not fixed) between two fixed ones within reach(v) of the plane, reaching past it; it is closed with
+// faces on the polygon it makes with the straight way back along the plane. Returns the faces.
+function closeDetours(faces, P, nv, fixed, plane, reach) {
+  const half = new Set();
+  for (const p of faces) for (let k = 0; k < p.length; k++) half.add(p[k] * nv + p[(k + 1) % p.length]);
+  // Border loops, walked against the faces (from b to a for each a -> b no face takes the other way).
+  const next = new Map();
+  for (const p of faces) for (let k = 0; k < p.length; k++) {
+    const a = p[k], b = p[(k + 1) % p.length];
+    if (half.has(b * nv + a)) continue;
+    const l = next.get(b);
+    if (l) l.push(a); else next.set(b, [a]);
+  }
+  const near = v => Math.abs(P[v * 3 + plane.axis] - plane.offset) < reach(v);
+  const taken = (a, b) => half.has(a * nv + b) || half.has(b * nv + a);
+  const walked = new Set(), out = faces.slice();
+  for (const start of next.keys()) {
+    for (const first of next.get(start)) {
+      if (walked.has(start * nv + first)) continue;
+      walked.add(start * nv + first);
+      const loop = [start];
+      let v = first;
+      while (v !== start) {
+        loop.push(v);
+        const options = (next.get(v) || []).filter(x => !walked.has(v * nv + x));
+        if (!options.length) break;
+        const w = options.includes(start) ? start : options[0];
+        walked.add(v * nv + w);
+        v = w;
+      }
+      if (v !== start) continue;
+      const anchors = [];
+      for (let i = 0; i < loop.length; i++) if (fixed[loop[i]] && near(loop[i])) anchors.push(i);
+      if (anchors.length < 2) continue;
+      for (let k = 0; k < anchors.length; k++) {
+        const i = anchors[k], j = anchors[(k + 1) % anchors.length], run = [];
+        for (let s = (i + 1) % loop.length; s !== j; s = (s + 1) % loop.length) run.push(loop[s]);
+        if (!run.length || run.length > 64 || run.some(x => fixed[x]) || run.every(near)) continue;
+        const poly = [loop[i], ...run, loop[j]];
+        if (loop[i] === loop[j] || taken(loop[j], loop[i]) || new Set(poly).size !== poly.length) continue;
+        const add = holeFaces(P, poly, taken);
+        out.push(...add);
+        for (const p of add) for (let m = 0; m < p.length; m++) half.add(p[m] * nv + p[(m + 1) % p.length]);
+      }
+    }
+  }
+  return out;
 }
 
 // Odd faces side by side (a triangle beside a pentagon is how a misplaced grid step shows), or with one quad between
@@ -3091,12 +3146,13 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
 
 // ---------- sharp edges ----------
 
-// Sharp edges of the input: where neighbouring triangles turn by more than `angle` degrees. Short runs are surface
+// Sharp edges of the input: where neighbouring triangles turn by more than `angle` degrees, and where the surface does
+// so at the scale of the faces it will get (sizeAt(v), the wanted size; see scaleCreases). Short runs are surface
 // noise and are dropped; only connected runs at least minLength(v) long count (averaged over the run's vertices, so
 // runs where faces will be small may be short). Returns the kept edges as vertex pairs,
 // normals where each crease vertex takes one side's normal (so the grid snaps to the crease rather than cutting it), and
 // the corners where three or more kept edges meet.
-function findCreases(P, index, N, angle, minLength) {
+function findCreases(P, index, N, angle, minLength, sizeAt = null, plane = null) {
   const V = P.length / 3, T = index.length / 3, fn = new Float64Array(T * 3), fa = new Float64Array(T);
   for (let t = 0; t < T; t++) {
     const a = index[t * 3] * 3, b = index[t * 3 + 1] * 3, c = index[t * 3 + 2] * 3;
@@ -3112,16 +3168,30 @@ function findCreases(P, index, N, angle, minLength) {
   const faces = new Int32Array(index.length), fill = start.slice(0, V);
   for (let k = 0; k < index.length; k++) faces[fill[index[k]]++] = (k / 3) | 0;
   const cosA = Math.cos((angle * Math.PI) / 180);
-  const ea = [], eb = [];
+  // The face across each face edge (edge k runs from corner k to corner k + 1): -1 on a border, -2 where more than two
+  // faces share the edge.
+  const ea = [], eb = [], adj = sizeAt ? new Int32Array(T * 3).fill(-1) : null;
   for (let t = 0; t < T; t++) {
     for (let k = 0; k < 3; k++) {
       const a = index[t * 3 + k], b = index[t * 3 + ((k + 1) % 3)];
       for (let j = start[a]; j < start[a + 1]; j++) {
         const u = faces[j];
-        if (u <= t || (index[u * 3] !== b && index[u * 3 + 1] !== b && index[u * 3 + 2] !== b)) continue;
+        if (u === t || (index[u * 3] !== b && index[u * 3 + 1] !== b && index[u * 3 + 2] !== b)) continue;
+        if (adj) adj[t * 3 + k] = adj[t * 3 + k] === -1 ? u : -2;
+        if (u < t) continue;
         if (fa[t] > 0 && fa[u] > 0 && fn[t * 3] * fn[u * 3] + fn[t * 3 + 1] * fn[u * 3 + 1] + fn[t * 3 + 2] * fn[u * 3 + 2] < cosA) { ea.push(a); eb.push(b); }
       }
     }
+  }
+  if (adj) scaleCreases(P, index, fn, adj, sizeAt, cosA, ea, eb);
+  // Beside the mirror plane the cut is an edge loop already: a crease within half a face of it (a fold down the
+  // model's middle) was snapped onto the plane beside the cut's own loop, and mirrored the two stacked four faces on one
+  // edge.
+  if (plane && sizeAt) {
+    const off = v => Math.abs(P[v * 3 + plane.axis] - plane.offset) >= 0.5 * sizeAt(v);
+    let k = 0;
+    for (let e = 0; e < ea.length; e++) if (off(ea[e]) || off(eb[e])) { ea[k] = ea[e]; eb[k] = eb[e]; k++; }
+    ea.length = eb.length = k;
   }
   // Runs: sharp edges joined at shared vertices; each keeps its total length.
   const parent = new Int32Array(V);
@@ -3159,6 +3229,82 @@ function findCreases(P, index, N, angle, minLength) {
     if (l > 0) { out[v * 3] = x / l; out[v * 3 + 1] = y / l; out[v * 3 + 2] = z / l; }
   }
   return { N: out, segs: Uint32Array.from(segs), corners: Int32Array.from(corners) };
+}
+
+// Sharp at the scale of the faces: a rim rounded by a bevel much narrower than a face turns by 90° across it, yet no
+// single edge of the bevel turns by the sharp angle, so the grid ran straight across such rims and rounded them off (a
+// bracelet came out as a barrel). Seen from SCALE_WALK of the wanted face size to either side, the surface there faces
+// directions more than the sharp angle apart. Twice as far out the directions have levelled off: past SCALE_LEVEL times
+// the turn it is a thin tube, such as a finger, which keeps turning. The crease is the edge where the bevel's own faces
+// switch from facing one side's way to the other's: its middle, one line along the rim. Edges turning less than
+// SCALE_MIN_TURN degrees can't be that middle for any bevel narrow enough to count.
+const SCALE_WALK = 0.3, SCALE_LEVEL = 1.5, SCALE_MIN_TURN = 6;
+function scaleCreases(P, index, fn, adj, sizeAt, cosA, ea, eb) {
+  const T = index.length / 3, cosMin = Math.cos((SCALE_MIN_TURN * Math.PI) / 180);
+  const nd = (f, g) => fn[f * 3] * fn[g * 3] + fn[f * 3 + 1] * fn[g * 3 + 1] + fn[f * 3 + 2] * fn[g * 3 + 2];
+  const turn = (f, g) => Math.acos(Math.max(-1, Math.min(1, nd(f, g))));
+  for (let t = 0; t < T; t++) {
+    for (let k = 0; k < 3; k++) {
+      const u = adj[t * 3 + k];
+      if (u < t) continue;
+      // Barely bent, or sharp on its own (found already).
+      const c = nd(t, u);
+      if (c > cosMin || c < cosA) continue;
+      const a = index[t * 3 + k], b = index[t * 3 + ((k + 1) % 3)];
+      let ku = 0;
+      while (ku < 2 && !(index[u * 3 + ku] === b && index[u * 3 + ((ku + 1) % 3)] === a) && !(index[u * 3 + ku] === a && index[u * 3 + ((ku + 1) % 3)] === b)) ku++;
+      const d = (SCALE_WALK * (sizeAt(a) + sizeAt(b))) / 2, sa = walkFrom(P, index, fn, adj, t, k, d), sb = walkFrom(P, index, fn, adj, u, ku, d);
+      if (nd(sa, sb) > cosA || nd(t, sa) < nd(t, sb) || nd(u, sb) < nd(u, sa)) continue;
+      if (turn(walkFrom(P, index, fn, adj, t, k, 2 * d), walkFrom(P, index, fn, adj, u, ku, 2 * d)) > SCALE_LEVEL * turn(sa, sb)) continue;
+      ea.push(a); eb.push(b);
+    }
+  }
+}
+// The face reached walking dist straight across the surface from the middle of edge k of face f, into f at a right angle
+// to the edge. Crossing an edge keeps the direction's part along it and turns the rest into the next face (unfolding);
+// the walk stops at a border.
+function walkFrom(P, index, fn, adj, f, k, dist) {
+  let ea = index[f * 3 + k], eb = index[f * 3 + ((k + 1) % 3)];
+  let px = (P[ea * 3] + P[eb * 3]) / 2, py = (P[ea * 3 + 1] + P[eb * 3 + 1]) / 2, pz = (P[ea * 3 + 2] + P[eb * 3 + 2]) / 2;
+  let dx, dy, dz;
+  {
+    const c = index[f * 3 + ((k + 2) % 3)], ex = P[eb * 3] - P[ea * 3], ey = P[eb * 3 + 1] - P[ea * 3 + 1], ez = P[eb * 3 + 2] - P[ea * 3 + 2];
+    const cx = P[c * 3] - P[ea * 3], cy = P[c * 3 + 1] - P[ea * 3 + 1], cz = P[c * 3 + 2] - P[ea * 3 + 2], s = (cx * ex + cy * ey + cz * ez) / (ex * ex + ey * ey + ez * ez || 1);
+    dx = cx - s * ex; dy = cy - s * ey; dz = cz - s * ez;
+    const l = Math.hypot(dx, dy, dz) || 1;
+    dx /= l; dy /= l; dz /= l;
+  }
+  let face = f, gone = 0;
+  for (let step = 0; step < 32; step++) {
+    const nx = fn[face * 3], ny = fn[face * 3 + 1], nz = fn[face * 3 + 2], wx = ny * dz - nz * dy, wy = nz * dx - nx * dz, wz = nx * dy - ny * dx;
+    let best = Infinity, bj = -1, bs = 0;
+    for (let j = 0; j < 3; j++) {
+      const va = index[face * 3 + j], vb = index[face * 3 + ((j + 1) % 3)];
+      if ((va === ea && vb === eb) || (va === eb && vb === ea)) continue;
+      const ax = P[va * 3] - px, ay = P[va * 3 + 1] - py, az = P[va * 3 + 2] - pz, bx = P[vb * 3] - px, by = P[vb * 3 + 1] - py, bz = P[vb * 3 + 2] - pz;
+      const aw = ax * wx + ay * wy + az * wz, bw = bx * wx + by * wy + bz * wz;
+      if ((aw > 0 && bw > 0) || (aw < 0 && bw < 0) || aw === bw) continue;
+      const s = aw / (aw - bw), au = ax * dx + ay * dy + az * dz, t = au + s * (bx * dx + by * dy + bz * dz - au);
+      if (t > 1e-12 && t < best) { best = t; bj = j; bs = s; }
+    }
+    if (bj < 0 || gone + best >= dist) return face;
+    gone += best;
+    const va = index[face * 3 + bj], vb = index[face * 3 + ((bj + 1) % 3)], next = adj[face * 3 + bj];
+    if (next < 0) return face;
+    px = P[va * 3] + bs * (P[vb * 3] - P[va * 3]); py = P[va * 3 + 1] + bs * (P[vb * 3 + 1] - P[va * 3 + 1]); pz = P[va * 3 + 2] + bs * (P[vb * 3 + 2] - P[va * 3 + 2]);
+    const ex = P[vb * 3] - P[va * 3], ey = P[vb * 3 + 1] - P[va * 3 + 1], ez = P[vb * 3 + 2] - P[va * 3 + 2], el = Math.hypot(ex, ey, ez) || 1;
+    const ux = ex / el, uy = ey / el, uz = ez / el, along = dx * ux + dy * uy + dz * uz, across = Math.sqrt(Math.max(0, 1 - along * along));
+    let w = -1;
+    for (let j = 0; j < 3; j++) { const v = index[next * 3 + j]; if (v !== va && v !== vb) w = v; }
+    if (w < 0) return face;
+    const qx0 = P[w * 3] - P[va * 3], qy0 = P[w * 3 + 1] - P[va * 3 + 1], qz0 = P[w * 3 + 2] - P[va * 3 + 2], qs = qx0 * ux + qy0 * uy + qz0 * uz;
+    let qx = qx0 - qs * ux, qy = qy0 - qs * uy, qz = qz0 - qs * uz;
+    const ql = Math.hypot(qx, qy, qz) || 1;
+    qx /= ql; qy /= ql; qz /= ql;
+    dx = along * ux + across * qx; dy = along * uy + across * qy; dz = along * uz + across * qz;
+    ea = va; eb = vb; face = next;
+  }
+  return face;
 }
 
 // Nearest points on a set of segments, through a uniform grid.
@@ -4005,6 +4151,29 @@ function applyFit(levels, fit) {
 
 // ---------- the whole remesh ----------
 
+// Paint is brushwork: the brush labels the vertices inside a sphere, so a painted region's edge is ragged at the input's
+// own vertices and flecked where strokes missed, far finer than any grid step. The working surface keeps sizes apart
+// in its clusters, so every fleck made clusters of its own and the grid broke up around them: a pedestal painted Less,
+// flecked with unpainted and More vertices along its rings, tore at 11 of 21 budgets (none once smoothed). So the
+// density is averaged with its neighbours' PAINT_ROUNDS times first, in log (its factors multiply); paint wider than a
+// few vertices stays as it was.
+const PAINT_ROUNDS = 3;
+function smoothPaint(dens, index) {
+  const V = dens.length, L = new Float64Array(V), sum = new Float64Array(V), cnt = new Uint32Array(V);
+  for (let v = 0; v < V; v++) L[v] = Math.log(dens[v] || 1);
+  for (let round = 0; round < PAINT_ROUNDS; round++) {
+    sum.fill(0); cnt.fill(0);
+    for (let t = 0; t < index.length; t += 3) {
+      for (let k = 0; k < 3; k++) {
+        const a = index[t + k], b = index[t + (k + 1) % 3];
+        sum[a] += L[b]; cnt[a]++; sum[b] += L[a]; cnt[b]++;
+      }
+    }
+    for (let v = 0; v < V; v++) if (cnt[v]) L[v] = (L[v] + sum[v] / cnt[v]) / 2;
+  }
+  return Float32Array.from(L, Math.exp);
+}
+
 // mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
 // opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), adapt: how far face sizes and
 //        directions follow the surface's curvature (0 even squares … 1, see formSizes), boundary: align open borders (true),
@@ -4027,7 +4196,7 @@ function remeshQuads(mesh, opt) {
   // worked out once per surface, the sizes once per budget step of 2^(1/4) (so they, the working surface and the
   // direction field are reused while the budget stays within the step; the grid scale fits the exact budget), both
   // kept with the cache. Painted density multiplies faces per area.
-  const dens = opt.density || null, cache = opt.cache || null;
+  const dens = opt.density ? smoothPaint(opt.density, srcIdx) : null, cache = opt.cache || null;
   const step = Math.round(4 * Math.log2(target));
   let Msrc = null;
   if (opt.adapt > 0) {
@@ -4101,7 +4270,7 @@ function remeshQuads(mesh, opt) {
   const sizeRef = () => scale * Math.sqrt(areaTotal / weighted);
   // Sharp edges (opt.sharp: the angle, 0 for none): the fields see one side's normal along them, and vertices near
   // them are snapped onto them after extraction.
-  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, v => 3 * sizeMean(v)) : null;
+  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, v => 3 * sizeMean(v), sizeMean, opt.plane) : null;
   const fieldN = crease && crease.segs.length ? crease.N : srcN;
 
   // The working surface, its hierarchy and the direction field don't depend on the exact budget: they are kept in
@@ -4176,7 +4345,7 @@ function remeshQuads(mesh, opt) {
   for (let attempt = 0; attempt < 4; attempt++) {
     const G = extractGraph(L0);
     cleanGraph(G);
-    const polys = extractFaces(G);
+    let polys = extractFaces(G);
     // Faces face the same way as the surface.
     let agree = 0;
     for (const p of polys) {
@@ -4191,7 +4360,11 @@ function remeshQuads(mesh, opt) {
       agree += nx * vx + ny * vy + nz * vz > 0 ? 1 : -1;
     }
     if (agree < 0) for (const p of polys) p.reverse();
-    const cut = opt.plane ? cutVertices(polys, G.P, G.nv, opt.plane, 0.75 * sizeRef()) : null;
+    // The reach is the local grid step's: where paint asks for Less, a grid three times coarser sags three times as far
+    // from the plane, and a cut judged by the average step came out as a tear on both sides (a flat cap split open).
+    const reach = v => 0.75 * Math.max(sizeRef(), G.S[v] || 0);
+    if (opt.plane) polys = closeDetours(polys, G.P, G.nv, G.fixed, opt.plane, reach);
+    const cut = opt.plane ? cutVertices(polys, G.P, G.nv, opt.plane, reach) : null;
     const even = opt.pure === false
       ? { faces: polys.flatMap(p => (p.length === 5 ? pentagonSplit(G.P, p) : [p])), positions: G.P, nv: G.nv, unpaired: 0, cut }
       : evenFaces(polys, G.P, G.nv, cut);
@@ -4250,9 +4423,15 @@ function remeshQuads(mesh, opt) {
     P[v * 3] = h.x; P[v * 3 + 1] = h.y; P[v * 3 + 2] = h.z;
     hitT[v] = h.t; bary[v * 3] = h.u; bary[v * 3 + 1] = h.v; bary[v * 3 + 2] = h.w;
   };
-  // The mirror plane's cut: open borders that mostly run within 0.75 grid steps of the plane are the cut, and all their
-  // vertices go onto it however far they sagged, or the mirrored half would leave a gap there.
-  const onCut = cutVertices(faces, P, nv, plane, 0.75 * sizeRef());
+  // The mirror plane's cut: open borders that mostly run within 0.75 grid steps of the plane (the local steps, from each
+  // vertex's own edges) are the cut, and all their vertices go onto it however far they sagged, or the mirrored half
+  // would leave a gap there.
+  const spacing = new Float64Array(nv), ends = new Int32Array(nv);
+  for (const p of faces) for (let k = 0; k < p.length; k++) {
+    const a = p[k], b = p[(k + 1) % p.length], l = Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]);
+    spacing[a] += l; ends[a]++; spacing[b] += l; ends[b]++;
+  }
+  const onCut = cutVertices(faces, P, nv, plane, v => 0.75 * Math.max(sizeRef(), ends[v] ? spacing[v] / ends[v] : 0));
   const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
   // No move may bring a vertex within 8% of its spacing (its mean distance to its faces' other corners) of a vertex up to
   // two faces away, unless it was already that close and moves apart: projections and snaps onto creases, their corners
@@ -4371,6 +4550,20 @@ function remeshQuads(mesh, opt) {
     }
   }
   for (let v = 0; v < nv; v++) if (border[v]) guarded(v, u => { project(u); snapPlane(u); });
+  // A vertex whose neighbours all lie on the plane sits in a pocket of the cut, and relaxing pulled it within a hair of
+  // the plane: its faces were slivers that their mirrored copies nearly covered (edges of four faces once welded, on a
+  // drum painted More along the plane). It goes onto the plane with them, and mirroring drops the faces that lie in it.
+  if (plane) {
+    for (let round = 0; round < 3; round++) {
+      let moved = 0;
+      for (let v = 0; v < nv; v++) {
+        if (!nbr[v].length || P[v * 3 + plane.axis] === plane.offset || !nbr[v].every(u => P[u * 3 + plane.axis] === plane.offset)) continue;
+        P[v * 3 + plane.axis] = plane.offset;
+        moved++;
+      }
+      if (!moved) break;
+    }
+  }
   mark('relax');
   if (progress) progress('relax', 1);
 
@@ -8364,16 +8557,16 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     return !(nx * nx + ny * ny + nz * nz > 1e-14 * l * l);
   };
   // Which diagonal a quad splits along: never one that is already an edge of other faces (that edge would join three or
-  // four triangles), then not one that leaves a triangle without area or lying wholly on the mirror plane, otherwise
-  // the shorter.
+  // four triangles), nor one with both ends on the mirror plane (both triangles use it, and so do their mirrored copies:
+  // a quad with two corners on the cut, split between them, left four triangles on one edge), then not one that leaves
+  // a triangle without area, otherwise the shorter.
   const alongAC = (a, b, c, d) => {
     const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
     if (acTaken !== bdTaken) return bdTaken;
+    const acPlane = onPlane(a) && onPlane(c), bdPlane = onPlane(b) && onPlane(d);
+    if (acPlane !== bdPlane) return bdPlane;
     const acZero = flat(a, b, c) || flat(a, c, d), bdZero = flat(b, c, d) || flat(b, d, a);
     if (acZero !== bdZero) return bdZero;
-    const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
-    const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
-    if (acFlat !== bdFlat) return bdFlat;
     return d2(a, c) <= d2(b, d);
   };
   const tris = [], marks = [];
@@ -9536,6 +9729,23 @@ function pentagonSplit(P, poly, taken = null) {
   }
   return [[0, 1, 2, 3].map(k => poly[(bi + k) % 5]), [poly[(bi + 3) % 5], poly[(bi + 4) % 5], poly[bi]]];
 }
+// A hole's rim as faces: odd rims keep five sides (or three) for the all-quad pass, the rest become quads.
+function holeFaces(P, poly, taken) {
+  const out = [];
+  while (poly.length > 5 && poly.length & 1) {
+    let best = Infinity, bi = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
+      const s = quadScore(P, q) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0);
+      if (s < best) { best = s; bi = i; }
+    }
+    out.push([0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]));
+    poly = poly.filter((_, k) => k !== (bi + 1) % poly.length && k !== (bi + 2) % poly.length);
+  }
+  if (poly.length >= 6) out.push(...evenToQuads(P, poly, taken).quads);
+  else if (poly.length >= 3) out.push(poly);
+  return out;
+}
 
 // Faces from the graph: neighbours are sorted around each vertex, and faces are walked by always taking the next edge
 // in that order (Instant Meshes' extract_faces). Quads first, then triangles, then larger faces, which are cut into
@@ -9580,22 +9790,7 @@ function extractFaces(G) {
   const fill = poly => {
     // A loop through one vertex twice would give faces that repeat a corner: its simple loops are filled instead.
     if (new Set(poly).size !== poly.length) { for (const l of simpleLoops(poly)) if (!faceKeys || !faceKeys.has(l.slice().sort((x, y) => x - y).join(','))) fill(l); return; }
-    // Odd faces keep five sides (or three) for the all-quad pass; the rest become quads.
-    while (poly.length > 5 && poly.length & 1) {
-      let best = Infinity, bi = 0;
-      for (let i = 0; i < poly.length; i++) {
-        const q = [0, 1, 2, 3].map(k => poly[(i + k) % poly.length]);
-        const s = quadScore(P, q) + (taken(poly[i], poly[(i + 3) % poly.length]) ? 1000 : 0) + (foldedQuad(P, q) ? 1000 : 0);
-        if (s < best) { best = s; bi = i; }
-      }
-      faces.push([0, 1, 2, 3].map(k => poly[(bi + k) % poly.length]));
-      poly = poly.filter((_, k) => k !== (bi + 1) % poly.length && k !== (bi + 2) % poly.length);
-    }
-    if (poly.length >= 6) {
-      faces.push(...evenToQuads(P, poly, taken).quads);
-      return;
-    }
-    if (poly.length >= 3) faces.push(poly);
+    faces.push(...holeFaces(P, poly, taken));
   };
   for (const target of [4, 3, 5, 6, 7, 8]) {
     for (let i = 0; i < nv; i++) {
@@ -9673,9 +9868,9 @@ function extractFaces(G) {
 
 // ---------- all quads ----------
 
-// The mirror plane's cut among a face set's open borders: the loops that mostly run within `reach` of the plane. Returns
-// 1 per vertex on it. After mirroring, a vertex there with k edges into the face set has 2 + 2k, so it is regular only
-// with exactly one; the passes below keep that.
+// The mirror plane's cut among a face set's open borders: the loops that mostly run within reach(v) of the plane (a
+// distance, or one per vertex). Returns 1 per vertex on it. After mirroring, a vertex there with k edges into the face
+// set has 2 + 2k, so it is regular only with exactly one; the passes below keep that.
 function cutVertices(faces, P, nv, plane, reach) {
   const cut = new Uint8Array(nv);
   if (!plane) return cut;
@@ -9694,10 +9889,63 @@ function cutVertices(faces, P, nv, plane, reach) {
     if (!border[v]) continue;
     const r = find(v);
     total.set(r, (total.get(r) || 0) + 1);
-    if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < reach) near.set(r, (near.get(r) || 0) + 1);
+    if (Math.abs(P[v * 3 + plane.axis] - plane.offset) < (typeof reach === 'function' ? reach(v) : reach)) near.set(r, (near.get(r) || 0) + 1);
   }
   for (let v = 0; v < nv; v++) if (border[v] && (near.get(find(v)) || 0) * 2 >= total.get(find(v))) cut[v] = 1;
   return cut;
+}
+
+// Tears beside the mirror plane. Where extraction leaves a hole beside the cut, the hole's rim and the cut are one open
+// loop, which runs along the plane, leaves it through the surface and comes back. The cut takes such a loop whole or
+// not at all: a small detour was pressed flat onto the plane (faces lying in it, four on one edge once mirrored), and a
+// large one kept the whole loop open (a pedestal torn along its middle). A detour is a run of border vertices off the
+// input's borders (not fixed) between two fixed ones within reach(v) of the plane, reaching past it; it is closed with
+// faces on the polygon it makes with the straight way back along the plane. Returns the faces.
+function closeDetours(faces, P, nv, fixed, plane, reach) {
+  const half = new Set();
+  for (const p of faces) for (let k = 0; k < p.length; k++) half.add(p[k] * nv + p[(k + 1) % p.length]);
+  // Border loops, walked against the faces (from b to a for each a -> b no face takes the other way).
+  const next = new Map();
+  for (const p of faces) for (let k = 0; k < p.length; k++) {
+    const a = p[k], b = p[(k + 1) % p.length];
+    if (half.has(b * nv + a)) continue;
+    const l = next.get(b);
+    if (l) l.push(a); else next.set(b, [a]);
+  }
+  const near = v => Math.abs(P[v * 3 + plane.axis] - plane.offset) < reach(v);
+  const taken = (a, b) => half.has(a * nv + b) || half.has(b * nv + a);
+  const walked = new Set(), out = faces.slice();
+  for (const start of next.keys()) {
+    for (const first of next.get(start)) {
+      if (walked.has(start * nv + first)) continue;
+      walked.add(start * nv + first);
+      const loop = [start];
+      let v = first;
+      while (v !== start) {
+        loop.push(v);
+        const options = (next.get(v) || []).filter(x => !walked.has(v * nv + x));
+        if (!options.length) break;
+        const w = options.includes(start) ? start : options[0];
+        walked.add(v * nv + w);
+        v = w;
+      }
+      if (v !== start) continue;
+      const anchors = [];
+      for (let i = 0; i < loop.length; i++) if (fixed[loop[i]] && near(loop[i])) anchors.push(i);
+      if (anchors.length < 2) continue;
+      for (let k = 0; k < anchors.length; k++) {
+        const i = anchors[k], j = anchors[(k + 1) % anchors.length], run = [];
+        for (let s = (i + 1) % loop.length; s !== j; s = (s + 1) % loop.length) run.push(loop[s]);
+        if (!run.length || run.length > 64 || run.some(x => fixed[x]) || run.every(near)) continue;
+        const poly = [loop[i], ...run, loop[j]];
+        if (loop[i] === loop[j] || taken(loop[j], loop[i]) || new Set(poly).size !== poly.length) continue;
+        const add = holeFaces(P, poly, taken);
+        out.push(...add);
+        for (const p of add) for (let m = 0; m < p.length; m++) half.add(p[m] * nv + p[(m + 1) % p.length]);
+      }
+    }
+  }
+  return out;
 }
 
 // Odd faces side by side (a triangle beside a pentagon is how a misplaced grid step shows), or with one quad between
@@ -10705,12 +10953,13 @@ function buildWorking(srcP, srcIdx, srcN, srcA, sizeAt, cellFactor, splitFactor,
 
 // ---------- sharp edges ----------
 
-// Sharp edges of the input: where neighbouring triangles turn by more than `angle` degrees. Short runs are surface
+// Sharp edges of the input: where neighbouring triangles turn by more than `angle` degrees, and where the surface does
+// so at the scale of the faces it will get (sizeAt(v), the wanted size; see scaleCreases). Short runs are surface
 // noise and are dropped; only connected runs at least minLength(v) long count (averaged over the run's vertices, so
 // runs where faces will be small may be short). Returns the kept edges as vertex pairs,
 // normals where each crease vertex takes one side's normal (so the grid snaps to the crease rather than cutting it), and
 // the corners where three or more kept edges meet.
-function findCreases(P, index, N, angle, minLength) {
+function findCreases(P, index, N, angle, minLength, sizeAt = null, plane = null) {
   const V = P.length / 3, T = index.length / 3, fn = new Float64Array(T * 3), fa = new Float64Array(T);
   for (let t = 0; t < T; t++) {
     const a = index[t * 3] * 3, b = index[t * 3 + 1] * 3, c = index[t * 3 + 2] * 3;
@@ -10726,16 +10975,30 @@ function findCreases(P, index, N, angle, minLength) {
   const faces = new Int32Array(index.length), fill = start.slice(0, V);
   for (let k = 0; k < index.length; k++) faces[fill[index[k]]++] = (k / 3) | 0;
   const cosA = Math.cos((angle * Math.PI) / 180);
-  const ea = [], eb = [];
+  // The face across each face edge (edge k runs from corner k to corner k + 1): -1 on a border, -2 where more than two
+  // faces share the edge.
+  const ea = [], eb = [], adj = sizeAt ? new Int32Array(T * 3).fill(-1) : null;
   for (let t = 0; t < T; t++) {
     for (let k = 0; k < 3; k++) {
       const a = index[t * 3 + k], b = index[t * 3 + ((k + 1) % 3)];
       for (let j = start[a]; j < start[a + 1]; j++) {
         const u = faces[j];
-        if (u <= t || (index[u * 3] !== b && index[u * 3 + 1] !== b && index[u * 3 + 2] !== b)) continue;
+        if (u === t || (index[u * 3] !== b && index[u * 3 + 1] !== b && index[u * 3 + 2] !== b)) continue;
+        if (adj) adj[t * 3 + k] = adj[t * 3 + k] === -1 ? u : -2;
+        if (u < t) continue;
         if (fa[t] > 0 && fa[u] > 0 && fn[t * 3] * fn[u * 3] + fn[t * 3 + 1] * fn[u * 3 + 1] + fn[t * 3 + 2] * fn[u * 3 + 2] < cosA) { ea.push(a); eb.push(b); }
       }
     }
+  }
+  if (adj) scaleCreases(P, index, fn, adj, sizeAt, cosA, ea, eb);
+  // Beside the mirror plane the cut is an edge loop already: a crease within half a face of it (a fold down the
+  // model's middle) was snapped onto the plane beside the cut's own loop, and mirrored the two stacked four faces on one
+  // edge.
+  if (plane && sizeAt) {
+    const off = v => Math.abs(P[v * 3 + plane.axis] - plane.offset) >= 0.5 * sizeAt(v);
+    let k = 0;
+    for (let e = 0; e < ea.length; e++) if (off(ea[e]) || off(eb[e])) { ea[k] = ea[e]; eb[k] = eb[e]; k++; }
+    ea.length = eb.length = k;
   }
   // Runs: sharp edges joined at shared vertices; each keeps its total length.
   const parent = new Int32Array(V);
@@ -10773,6 +11036,82 @@ function findCreases(P, index, N, angle, minLength) {
     if (l > 0) { out[v * 3] = x / l; out[v * 3 + 1] = y / l; out[v * 3 + 2] = z / l; }
   }
   return { N: out, segs: Uint32Array.from(segs), corners: Int32Array.from(corners) };
+}
+
+// Sharp at the scale of the faces: a rim rounded by a bevel much narrower than a face turns by 90° across it, yet no
+// single edge of the bevel turns by the sharp angle, so the grid ran straight across such rims and rounded them off (a
+// bracelet came out as a barrel). Seen from SCALE_WALK of the wanted face size to either side, the surface there faces
+// directions more than the sharp angle apart. Twice as far out the directions have levelled off: past SCALE_LEVEL times
+// the turn it is a thin tube, such as a finger, which keeps turning. The crease is the edge where the bevel's own faces
+// switch from facing one side's way to the other's: its middle, one line along the rim. Edges turning less than
+// SCALE_MIN_TURN degrees can't be that middle for any bevel narrow enough to count.
+const SCALE_WALK = 0.3, SCALE_LEVEL = 1.5, SCALE_MIN_TURN = 6;
+function scaleCreases(P, index, fn, adj, sizeAt, cosA, ea, eb) {
+  const T = index.length / 3, cosMin = Math.cos((SCALE_MIN_TURN * Math.PI) / 180);
+  const nd = (f, g) => fn[f * 3] * fn[g * 3] + fn[f * 3 + 1] * fn[g * 3 + 1] + fn[f * 3 + 2] * fn[g * 3 + 2];
+  const turn = (f, g) => Math.acos(Math.max(-1, Math.min(1, nd(f, g))));
+  for (let t = 0; t < T; t++) {
+    for (let k = 0; k < 3; k++) {
+      const u = adj[t * 3 + k];
+      if (u < t) continue;
+      // Barely bent, or sharp on its own (found already).
+      const c = nd(t, u);
+      if (c > cosMin || c < cosA) continue;
+      const a = index[t * 3 + k], b = index[t * 3 + ((k + 1) % 3)];
+      let ku = 0;
+      while (ku < 2 && !(index[u * 3 + ku] === b && index[u * 3 + ((ku + 1) % 3)] === a) && !(index[u * 3 + ku] === a && index[u * 3 + ((ku + 1) % 3)] === b)) ku++;
+      const d = (SCALE_WALK * (sizeAt(a) + sizeAt(b))) / 2, sa = walkFrom(P, index, fn, adj, t, k, d), sb = walkFrom(P, index, fn, adj, u, ku, d);
+      if (nd(sa, sb) > cosA || nd(t, sa) < nd(t, sb) || nd(u, sb) < nd(u, sa)) continue;
+      if (turn(walkFrom(P, index, fn, adj, t, k, 2 * d), walkFrom(P, index, fn, adj, u, ku, 2 * d)) > SCALE_LEVEL * turn(sa, sb)) continue;
+      ea.push(a); eb.push(b);
+    }
+  }
+}
+// The face reached walking dist straight across the surface from the middle of edge k of face f, into f at a right angle
+// to the edge. Crossing an edge keeps the direction's part along it and turns the rest into the next face (unfolding);
+// the walk stops at a border.
+function walkFrom(P, index, fn, adj, f, k, dist) {
+  let ea = index[f * 3 + k], eb = index[f * 3 + ((k + 1) % 3)];
+  let px = (P[ea * 3] + P[eb * 3]) / 2, py = (P[ea * 3 + 1] + P[eb * 3 + 1]) / 2, pz = (P[ea * 3 + 2] + P[eb * 3 + 2]) / 2;
+  let dx, dy, dz;
+  {
+    const c = index[f * 3 + ((k + 2) % 3)], ex = P[eb * 3] - P[ea * 3], ey = P[eb * 3 + 1] - P[ea * 3 + 1], ez = P[eb * 3 + 2] - P[ea * 3 + 2];
+    const cx = P[c * 3] - P[ea * 3], cy = P[c * 3 + 1] - P[ea * 3 + 1], cz = P[c * 3 + 2] - P[ea * 3 + 2], s = (cx * ex + cy * ey + cz * ez) / (ex * ex + ey * ey + ez * ez || 1);
+    dx = cx - s * ex; dy = cy - s * ey; dz = cz - s * ez;
+    const l = Math.hypot(dx, dy, dz) || 1;
+    dx /= l; dy /= l; dz /= l;
+  }
+  let face = f, gone = 0;
+  for (let step = 0; step < 32; step++) {
+    const nx = fn[face * 3], ny = fn[face * 3 + 1], nz = fn[face * 3 + 2], wx = ny * dz - nz * dy, wy = nz * dx - nx * dz, wz = nx * dy - ny * dx;
+    let best = Infinity, bj = -1, bs = 0;
+    for (let j = 0; j < 3; j++) {
+      const va = index[face * 3 + j], vb = index[face * 3 + ((j + 1) % 3)];
+      if ((va === ea && vb === eb) || (va === eb && vb === ea)) continue;
+      const ax = P[va * 3] - px, ay = P[va * 3 + 1] - py, az = P[va * 3 + 2] - pz, bx = P[vb * 3] - px, by = P[vb * 3 + 1] - py, bz = P[vb * 3 + 2] - pz;
+      const aw = ax * wx + ay * wy + az * wz, bw = bx * wx + by * wy + bz * wz;
+      if ((aw > 0 && bw > 0) || (aw < 0 && bw < 0) || aw === bw) continue;
+      const s = aw / (aw - bw), au = ax * dx + ay * dy + az * dz, t = au + s * (bx * dx + by * dy + bz * dz - au);
+      if (t > 1e-12 && t < best) { best = t; bj = j; bs = s; }
+    }
+    if (bj < 0 || gone + best >= dist) return face;
+    gone += best;
+    const va = index[face * 3 + bj], vb = index[face * 3 + ((bj + 1) % 3)], next = adj[face * 3 + bj];
+    if (next < 0) return face;
+    px = P[va * 3] + bs * (P[vb * 3] - P[va * 3]); py = P[va * 3 + 1] + bs * (P[vb * 3 + 1] - P[va * 3 + 1]); pz = P[va * 3 + 2] + bs * (P[vb * 3 + 2] - P[va * 3 + 2]);
+    const ex = P[vb * 3] - P[va * 3], ey = P[vb * 3 + 1] - P[va * 3 + 1], ez = P[vb * 3 + 2] - P[va * 3 + 2], el = Math.hypot(ex, ey, ez) || 1;
+    const ux = ex / el, uy = ey / el, uz = ez / el, along = dx * ux + dy * uy + dz * uz, across = Math.sqrt(Math.max(0, 1 - along * along));
+    let w = -1;
+    for (let j = 0; j < 3; j++) { const v = index[next * 3 + j]; if (v !== va && v !== vb) w = v; }
+    if (w < 0) return face;
+    const qx0 = P[w * 3] - P[va * 3], qy0 = P[w * 3 + 1] - P[va * 3 + 1], qz0 = P[w * 3 + 2] - P[va * 3 + 2], qs = qx0 * ux + qy0 * uy + qz0 * uz;
+    let qx = qx0 - qs * ux, qy = qy0 - qs * uy, qz = qz0 - qs * uz;
+    const ql = Math.hypot(qx, qy, qz) || 1;
+    qx /= ql; qy /= ql; qz /= ql;
+    dx = along * ux + across * qx; dy = along * uy + across * qy; dz = along * uz + across * qz;
+    ea = va; eb = vb; face = next;
+  }
+  return face;
 }
 
 // Nearest points on a set of segments, through a uniform grid.
@@ -11619,6 +11958,29 @@ function applyFit(levels, fit) {
 
 // ---------- the whole remesh ----------
 
+// Paint is brushwork: the brush labels the vertices inside a sphere, so a painted region's edge is ragged at the input's
+// own vertices and flecked where strokes missed, far finer than any grid step. The working surface keeps sizes apart
+// in its clusters, so every fleck made clusters of its own and the grid broke up around them: a pedestal painted Less,
+// flecked with unpainted and More vertices along its rings, tore at 11 of 21 budgets (none once smoothed). So the
+// density is averaged with its neighbours' PAINT_ROUNDS times first, in log (its factors multiply); paint wider than a
+// few vertices stays as it was.
+const PAINT_ROUNDS = 3;
+function smoothPaint(dens, index) {
+  const V = dens.length, L = new Float64Array(V), sum = new Float64Array(V), cnt = new Uint32Array(V);
+  for (let v = 0; v < V; v++) L[v] = Math.log(dens[v] || 1);
+  for (let round = 0; round < PAINT_ROUNDS; round++) {
+    sum.fill(0); cnt.fill(0);
+    for (let t = 0; t < index.length; t += 3) {
+      for (let k = 0; k < 3; k++) {
+        const a = index[t + k], b = index[t + (k + 1) % 3];
+        sum[a] += L[b]; cnt[a]++; sum[b] += L[a]; cnt[b]++;
+      }
+    }
+    for (let v = 0; v < V; v++) if (cnt[v]) L[v] = (L[v] + sum[v] / cnt[v]) / 2;
+  }
+  return Float32Array.from(L, Math.exp);
+}
+
 // mesh: { positions, index, normals? } — the surface to remesh (no UV seams; parts may touch).
 // opt: { targetFaces, density (per-vertex multiplier of faces per area, or null), adapt: how far face sizes and
 //        directions follow the surface's curvature (0 even squares … 1, see formSizes), boundary: align open borders (true),
@@ -11641,7 +12003,7 @@ function remeshQuads(mesh, opt) {
   // worked out once per surface, the sizes once per budget step of 2^(1/4) (so they, the working surface and the
   // direction field are reused while the budget stays within the step; the grid scale fits the exact budget), both
   // kept with the cache. Painted density multiplies faces per area.
-  const dens = opt.density || null, cache = opt.cache || null;
+  const dens = opt.density ? smoothPaint(opt.density, srcIdx) : null, cache = opt.cache || null;
   const step = Math.round(4 * Math.log2(target));
   let Msrc = null;
   if (opt.adapt > 0) {
@@ -11715,7 +12077,7 @@ function remeshQuads(mesh, opt) {
   const sizeRef = () => scale * Math.sqrt(areaTotal / weighted);
   // Sharp edges (opt.sharp: the angle, 0 for none): the fields see one side's normal along them, and vertices near
   // them are snapped onto them after extraction.
-  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, v => 3 * sizeMean(v)) : null;
+  const crease = opt.sharp > 0 ? findCreases(srcP, srcIdx, srcN, opt.sharp, v => 3 * sizeMean(v), sizeMean, opt.plane) : null;
   const fieldN = crease && crease.segs.length ? crease.N : srcN;
 
   // The working surface, its hierarchy and the direction field don't depend on the exact budget: they are kept in
@@ -11790,7 +12152,7 @@ function remeshQuads(mesh, opt) {
   for (let attempt = 0; attempt < 4; attempt++) {
     const G = extractGraph(L0);
     cleanGraph(G);
-    const polys = extractFaces(G);
+    let polys = extractFaces(G);
     // Faces face the same way as the surface.
     let agree = 0;
     for (const p of polys) {
@@ -11805,7 +12167,11 @@ function remeshQuads(mesh, opt) {
       agree += nx * vx + ny * vy + nz * vz > 0 ? 1 : -1;
     }
     if (agree < 0) for (const p of polys) p.reverse();
-    const cut = opt.plane ? cutVertices(polys, G.P, G.nv, opt.plane, 0.75 * sizeRef()) : null;
+    // The reach is the local grid step's: where paint asks for Less, a grid three times coarser sags three times as far
+    // from the plane, and a cut judged by the average step came out as a tear on both sides (a flat cap split open).
+    const reach = v => 0.75 * Math.max(sizeRef(), G.S[v] || 0);
+    if (opt.plane) polys = closeDetours(polys, G.P, G.nv, G.fixed, opt.plane, reach);
+    const cut = opt.plane ? cutVertices(polys, G.P, G.nv, opt.plane, reach) : null;
     const even = opt.pure === false
       ? { faces: polys.flatMap(p => (p.length === 5 ? pentagonSplit(G.P, p) : [p])), positions: G.P, nv: G.nv, unpaired: 0, cut }
       : evenFaces(polys, G.P, G.nv, cut);
@@ -11864,9 +12230,15 @@ function remeshQuads(mesh, opt) {
     P[v * 3] = h.x; P[v * 3 + 1] = h.y; P[v * 3 + 2] = h.z;
     hitT[v] = h.t; bary[v * 3] = h.u; bary[v * 3 + 1] = h.v; bary[v * 3 + 2] = h.w;
   };
-  // The mirror plane's cut: open borders that mostly run within 0.75 grid steps of the plane are the cut, and all their
-  // vertices go onto it however far they sagged, or the mirrored half would leave a gap there.
-  const onCut = cutVertices(faces, P, nv, plane, 0.75 * sizeRef());
+  // The mirror plane's cut: open borders that mostly run within 0.75 grid steps of the plane (the local steps, from each
+  // vertex's own edges) are the cut, and all their vertices go onto it however far they sagged, or the mirrored half
+  // would leave a gap there.
+  const spacing = new Float64Array(nv), ends = new Int32Array(nv);
+  for (const p of faces) for (let k = 0; k < p.length; k++) {
+    const a = p[k], b = p[(k + 1) % p.length], l = Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]);
+    spacing[a] += l; ends[a]++; spacing[b] += l; ends[b]++;
+  }
+  const onCut = cutVertices(faces, P, nv, plane, v => 0.75 * Math.max(sizeRef(), ends[v] ? spacing[v] / ends[v] : 0));
   const snapPlane = v => { if (onCut[v]) P[v * 3 + plane.axis] = plane.offset; };
   // No move may bring a vertex within 8% of its spacing (its mean distance to its faces' other corners) of a vertex up to
   // two faces away, unless it was already that close and moves apart: projections and snaps onto creases, their corners
@@ -11985,6 +12357,20 @@ function remeshQuads(mesh, opt) {
     }
   }
   for (let v = 0; v < nv; v++) if (border[v]) guarded(v, u => { project(u); snapPlane(u); });
+  // A vertex whose neighbours all lie on the plane sits in a pocket of the cut, and relaxing pulled it within a hair of
+  // the plane: its faces were slivers that their mirrored copies nearly covered (edges of four faces once welded, on a
+  // drum painted More along the plane). It goes onto the plane with them, and mirroring drops the faces that lie in it.
+  if (plane) {
+    for (let round = 0; round < 3; round++) {
+      let moved = 0;
+      for (let v = 0; v < nv; v++) {
+        if (!nbr[v].length || P[v * 3 + plane.axis] === plane.offset || !nbr[v].every(u => P[u * 3 + plane.axis] === plane.offset)) continue;
+        P[v * 3 + plane.axis] = plane.offset;
+        moved++;
+      }
+      if (!moved) break;
+    }
+  }
   mark('relax');
   if (progress) progress('relax', 1);
 
@@ -15978,16 +16364,16 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     return !(nx * nx + ny * ny + nz * nz > 1e-14 * l * l);
   };
   // Which diagonal a quad splits along: never one that is already an edge of other faces (that edge would join three or
-  // four triangles), then not one that leaves a triangle without area or lying wholly on the mirror plane, otherwise
-  // the shorter.
+  // four triangles), nor one with both ends on the mirror plane (both triangles use it, and so do their mirrored copies:
+  // a quad with two corners on the cut, split between them, left four triangles on one edge), then not one that leaves
+  // a triangle without area, otherwise the shorter.
   const alongAC = (a, b, c, d) => {
     const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
     if (acTaken !== bdTaken) return bdTaken;
+    const acPlane = onPlane(a) && onPlane(c), bdPlane = onPlane(b) && onPlane(d);
+    if (acPlane !== bdPlane) return bdPlane;
     const acZero = flat(a, b, c) || flat(a, c, d), bdZero = flat(b, c, d) || flat(b, d, a);
     if (acZero !== bdZero) return bdZero;
-    const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
-    const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
-    if (acFlat !== bdFlat) return bdFlat;
     return d2(a, c) <= d2(b, d);
   };
   const tris = [], marks = [];

@@ -2329,16 +2329,16 @@ function quadSurface(rq, base, smooth, triMat, welded, fopt, plane = null, label
     return !(nx * nx + ny * ny + nz * nz > 1e-14 * l * l);
   };
   // Which diagonal a quad splits along: never one that is already an edge of other faces (that edge would join three or
-  // four triangles), then not one that leaves a triangle without area or lying wholly on the mirror plane, otherwise
-  // the shorter.
+  // four triangles), nor one with both ends on the mirror plane (both triangles use it, and so do their mirrored copies:
+  // a quad with two corners on the cut, split between them, left four triangles on one edge), then not one that leaves
+  // a triangle without area, otherwise the shorter.
   const alongAC = (a, b, c, d) => {
     const acTaken = edges.has(ek(a, c)), bdTaken = edges.has(ek(b, d));
     if (acTaken !== bdTaken) return bdTaken;
+    const acPlane = onPlane(a) && onPlane(c), bdPlane = onPlane(b) && onPlane(d);
+    if (acPlane !== bdPlane) return bdPlane;
     const acZero = flat(a, b, c) || flat(a, c, d), bdZero = flat(b, c, d) || flat(b, d, a);
     if (acZero !== bdZero) return bdZero;
-    const acFlat = onPlane(a) && onPlane(c) && (onPlane(b) || onPlane(d));
-    const bdFlat = onPlane(b) && onPlane(d) && (onPlane(a) || onPlane(c));
-    if (acFlat !== bdFlat) return bdFlat;
     return d2(a, c) <= d2(b, d);
   };
   const tris = [], marks = [];

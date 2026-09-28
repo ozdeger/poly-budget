@@ -144,6 +144,41 @@ const w = core.smartWeld(sceneOf(bumpySphere(160, 80)), { keepUV: true, hardAngl
   check(on / total > 0.95, `sharp rims: ${(100 * on / total).toFixed(0)}% of a cylinder's rims lie on an edge loop with the quads following the shape`);
 }
 
+// Rims rounded by a bevel much narrower than a quad: a band on an arm, its outer rims rounded with a radius of a
+// quarter of a quad. No edge of the bevel is sharp on its own, yet at the quads' scale the rim is a 90° edge, and it
+// lies on an edge loop instead of the band coming out as a barrel.
+{
+  const rf = 0.05, pts = [], V2 = THREE.Vector2;
+  const line = (r0, y0, r1, y1, n) => { for (let i = 0; i < n; i++) pts.push(new V2(r0 + ((r1 - r0) * i) / n, y0 + ((y1 - y0) * i) / n)); };
+  const arc = (cr, cy, a0, a1, n) => { for (let i = 0; i < n; i++) { const a = a0 + ((a1 - a0) * i) / n; pts.push(new V2(cr + rf * Math.cos(a), cy + rf * Math.sin(a))); } };
+  line(0, -4, 1, -4, 20); line(1, -4, 1, -0.6, 68); line(1, -0.6, 1.35 - rf, -0.6, 8);
+  arc(1.35 - rf, -0.6 + rf, -Math.PI / 2, 0, 8); line(1.35, -0.6 + rf, 1.35, 0.6 - rf, 24); arc(1.35 - rf, 0.6 - rf, 0, Math.PI / 2, 8);
+  line(1.35 - rf, 0.6, 1, 0.6, 8); line(1, 0.6, 1, 4, 68); line(1, 4, 0, 4, 20); pts.push(new V2(0, 4));
+  const wb = core.smartWeld(sceneOf(new THREE.LatheGeometry(pts, 256)), { keepUV: false, hardAngle: 180 });
+  const onRims = sharp => {
+    const rq = remeshQuads({ positions: wb.positions, index: wb.index }, { targetFaces: 1600, adapt: 1, sharp });
+    const P = rq.positions, nv = P.length / 3, edges = new Set();
+    for (let f = 0; f < rq.faceCount; f++) {
+      const p = [...rq.faces.subarray(f * 4, f * 4 + 4)].filter(v => v !== QUAD_NONE);
+      for (let k = 0; k < p.length; k++) { const a = p[k], b = p[(k + 1) % p.length]; edges.add(a < b ? a * nv + b : b * nv + a); }
+    }
+    let sum = 0;
+    const E = [...edges].map(k => { const a = Math.floor(k / nv), b = k - a * nv; sum += Math.hypot(P[a * 3] - P[b * 3], P[a * 3 + 1] - P[b * 3 + 1], P[a * 3 + 2] - P[b * 3 + 2]); return [a, b]; });
+    const h = sum / E.length, near = (x, y, z) => E.some(([a, b]) => {
+      const dx = P[b * 3] - P[a * 3], dy = P[b * 3 + 1] - P[a * 3 + 1], dz = P[b * 3 + 2] - P[a * 3 + 2], ll = dx * dx + dy * dy + dz * dz;
+      const t = Math.max(0, Math.min(1, ((x - P[a * 3]) * dx + (y - P[a * 3 + 1]) * dy + (z - P[a * 3 + 2]) * dz) / (ll || 1)));
+      return Math.hypot(P[a * 3] + dx * t - x, P[a * 3 + 1] + dy * t - y, P[a * 3 + 2] + dz * t - z) < 0.1 * h;
+    });
+    // The middle of each bevel.
+    const R = 1.35 - rf + rf * Math.SQRT1_2, Y = 0.6 - rf + rf * Math.SQRT1_2;
+    let on = 0, total = 0;
+    for (const y of [-Y, Y]) for (let k = 0; k < 360; k++) { total++; if (near(R * Math.cos((k * Math.PI) / 180), y, R * Math.sin((k * Math.PI) / 180))) on++; }
+    return on / total;
+  };
+  const kept = onRims(45), off = onRims(0);
+  check(kept > 0.9, `bevelled rims: ${(100 * kept).toFixed(0)}% of a band's rounded rims lie on an edge loop (${(100 * off).toFixed(0)}% without sharp edges)`);
+}
+
 // Bumps that the mirror plane only grazes: the cut loop there is smaller than a quad and sags off the plane unless the
 // whole loop is put back on it, which left gaps along the seam.
 {
@@ -195,6 +230,62 @@ const seamValences = (r, axis, offset) => {
   }
   check(fewest >= 20 && open === 0, `mirrored drum: the cut stays an edge loop at every budget (${fewest} vertices on it at least, ${open} open edges)`);
   check(pinched <= 0.08 * seam, `mirrored drum: ${pinched} of ${seam} seam vertices with only two edges`);
+}
+
+// A drum painted More in a band along the mirror plane and Less beyond: a quad with two corners on the cut was split
+// between them, which put four triangles on that diagonal once mirrored. Counted by exact position, as the result is
+// exported (vertices a hair apart stay two).
+{
+  const wd = core.smartWeld(sceneOf(new THREE.CylinderGeometry(0.6, 0.6, 1, 160, 60)), { keepUV: false, hardAngle: 30 });
+  const labels = new Int8Array(wd.vertexCount);
+  for (let v = 0; v < wd.vertexCount; v++) labels[v] = Math.abs(wd.positions[v * 3]) < 0.08 ? core.LABEL.MORE3 : core.LABEL.LESS3;
+  let open = 0, nonManifold = 0;
+  for (const target of [3000, 3600, 4400]) {
+    const { result: r } = run(wd, { targetTris: target, deferUV: true, quadAdapt: 1, symmetry: { axis: 0, offset: 0, keepPositive: true } }, { normals: 'smooth' }, labels);
+    const P = r.positions, id = new Map(), g = new Uint32Array(r.vertexCount), edges = new Map();
+    for (let v = 0; v < r.vertexCount; v++) { const k = `${P[v * 3]},${P[v * 3 + 1]},${P[v * 3 + 2]}`; if (!id.has(k)) id.set(k, id.size); g[v] = id.get(k); }
+    for (let t = 0; t < r.index.length; t += 3) for (let k = 0; k < 3; k++) {
+      const a = g[r.index[t + k]], b = g[r.index[t + ((k + 1) % 3)]], key = a < b ? a * id.size + b : b * id.size + a;
+      edges.set(key, (edges.get(key) || 0) + 1);
+    }
+    for (const c of edges.values()) { if (c === 1) open++; else if (c > 2) nonManifold++; }
+  }
+  check(open === 0 && nonManifold === 0, `painted drum, mirrored: closed and manifold at three budgets (${open} open, ${nonManifold} non-manifold edges)`);
+}
+
+// Paint is brushwork, flecked where the strokes missed: a pedestal with a groove painted Less, one vertex in six of it
+// left unpainted or painted More, beside an unpainted ball and a foot painted More. The grid broke up around the flecks
+// and the pedestal tore open.
+{
+  const { mergeGeometries } = await import('three/addons/utils/BufferGeometryUtils.js');
+  const step = 0.005, prof = [], at = (r, y) => prof.push(new THREE.Vector2(r, y));
+  for (let r = 0; r < 0.245; r += step) at(r, 0);
+  for (let a = 0; a <= 8; a++) { const t = (a / 8 - 1) * (Math.PI / 2); at(0.245 + 0.005 * Math.cos(t), 0.005 + 0.005 * Math.sin(t)); }
+  for (let y = 0.01; y < 0.065; y += step) at(0.25, y);
+  for (let a = 0; a <= 8; a++) { const t = (a / 8) * (Math.PI / 2); at(0.245 + 0.005 * Math.cos(t), 0.065 + 0.005 * Math.sin(t)); }
+  for (let r = 0.244; r > 0.226; r -= step) at(r, 0.07);
+  for (const [r, y] of [[0.224, 0.069], [0.223, 0.067], [0.219, 0.067], [0.216, 0.069], [0.215, 0.07]]) at(r, y);
+  for (let r = 0.212; r > 0; r -= step) at(r, 0.07);
+  at(0, 0.07);
+  prof.reverse();
+  const parts = [new THREE.LatheGeometry(prof, 314), new THREE.SphereGeometry(0.12, 96, 48).translate(0, 0.25, 0), new THREE.CylinderGeometry(0.03, 0.03, 0.05, 48, 10).translate(0.08, 0.095, 0)];
+  for (const g of parts) g.deleteAttribute('uv');
+  const wp = core.smartWeld(sceneOf(mergeGeometries(parts)), { keepUV: false, hardAngle: 30 });
+  const labels = new Int8Array(wp.vertexCount);
+  let seed = 7;
+  const rand = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+  for (let v = 0; v < wp.vertexCount; v++) {
+    const x = wp.positions[v * 3], y = wp.positions[v * 3 + 1], z = wp.positions[v * 3 + 2];
+    if (Math.hypot(x - 0.08, z) < 0.031 && y > 0.069 && y < 0.121) labels[v] = core.LABEL.MORE1;
+    else if (y < 0.0705 && Math.hypot(x, z) < 0.2505) { const u = rand(); labels[v] = u < 0.12 ? 0 : u < 0.17 ? core.LABEL.MORE1 : core.LABEL.LESS3; }
+  }
+  let open = 0, nonManifold = 0;
+  for (const [target, sym] of [[1600, true], [2600, true], [3200, true], [1200, false], [2000, false]]) {
+    const st = { targetTris: target, deferUV: true, quadAdapt: 1, symmetry: sym ? { axis: 0, offset: 0, keepPositive: true } : null };
+    const oe = openEdges(run(wp, st, { normals: 'smooth' }, labels).result);
+    open += oe.open; nonManifold += oe.nonManifold;
+  }
+  check(open === 0 && nonManifold === 0, `flecked paint: a pedestal painted Less with flecks stays closed at five budgets, mirrored or not (${open} open, ${nonManifold} non-manifold edges)`);
 }
 
 // A sheet of two triangles: its border runs along four long edges, which the grid took for a tear and closed.
