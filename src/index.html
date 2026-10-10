@@ -722,6 +722,8 @@ details.more[open] > summary { margin-bottom: 8px; }
 #app[data-space="rig"] #toolPal, #app[data-space="rig"] #toolOpts, #app:not([data-space="rig"]) #rigPal, #app:not([data-space="rig"]) #rigOpts { display: none !important; }
 .space-bar { position: sticky; top: 0; z-index: 3; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .space-bar .seg button { gap: 6px; }
+.sec-head .beta { margin-left: 0; }
+.beta { margin-left: 6px; padding: 1px 5px; border-radius: 3px; background: var(--accent-soft); color: var(--accent); font: 600 9.5px/1.4 var(--font-label); letter-spacing: 0.08em; text-transform: uppercase; vertical-align: 1px; }
 .bone-tree { list-style: none; margin: 0; padding: 4px 0; max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raise); }
 .bone-tree:empty { display: none; }
 .bone-tree li { display: flex; align-items: center; gap: 7px; padding: 3px 10px 3px calc(10px + var(--d, 0) * 11px); cursor: pointer; font: 12px/1.35 var(--font-num); white-space: nowrap; }
@@ -831,7 +833,7 @@ details.more[open] > summary { margin-bottom: 8px; }
   <aside class="side" id="side" aria-label="Model and settings">
     <div class="space-bar">
       <div class="seg fill" role="group" aria-label="Workspace" id="spaceSeg">
-        <button type="button" data-space="shape" title="Budget, paint and texture (R)">Shape</button><button type="button" data-space="rig" title="Skeleton and weights, for animation (R)">Rig</button>
+        <button type="button" data-space="shape" title="Budget, paint and texture (R)">Shape</button><button type="button" data-space="rig" title="Skeleton and weights, for animation (R). In beta: check the rig before you rely on it">Rig<span class="beta" aria-label="beta">Beta</span></button>
       </div>
     </div>
     <section class="sec" aria-labelledby="hModel">
@@ -993,7 +995,7 @@ details.more[open] > summary { margin-bottom: 8px; }
     </details>
 
     <section class="sec" id="secRig" aria-labelledby="hRig" data-space="rig" data-needs-model>
-      <div class="sec-head"><h2 id="hRig">Skeleton</h2><button type="button" class="btn small" id="rigClear" title="Remove the skeleton (it can be undone)">Clear</button></div>
+      <div class="sec-head"><h2 id="hRig">Skeleton</h2><span class="beta" title="Rigging is in beta: check the skeleton and weights before you rely on them">Beta</span><button type="button" class="btn small" id="rigClear" title="Remove the skeleton (it can be undone)">Clear</button></div>
       <div class="status-line" id="rigStatus"><b id="rigHead"></b><span id="rigNote"></span></div>
       <div class="field"><span>Fingers</span>
         <div class="seg fill" role="group" aria-label="Fingers" id="rigFingerSeg">
