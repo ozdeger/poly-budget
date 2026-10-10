@@ -646,6 +646,7 @@ async function saveSession() {
     vis: state.vis ? packVis(state.vis) : null, visCurve: state.vis && state.visCurve ? packCurve(state.visCurve) : null, visStats: state.vis ? state.visStats : null,
     symPlane: symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset } : null,
     camera: { position: camera.position.toArray(), target: controls.target.toArray() },
+    rig: rigUI ? rigUI.record() : null,
   };
   try { await sessionTx('readwrite', store => { store.put(record, `${id}:session`); store.put(tabsRecord(), 'tabs'); }); } catch (err) { console.error(err); }
 }
@@ -861,6 +862,7 @@ async function prepareModel(root, meta) {
   if (!collected.index.length) throw new Error('the file has no triangle meshes');
   state.meta = meta;
   state.collected = collected;
+  if (rigUI) rigUI.loaded(collected, meta.restore && meta.restore.rig);
   doc.title = meta.sample ? 'Sample pawn' : meta.name.replace(/\.[^.]+$/, '');
   showEmptyState(false);
   renderTabs();
@@ -3102,7 +3104,7 @@ function updateModelPanel() {
     const names = [...new Set(state.pendingMaps.map(p => p.file))];
     checks.push(['warn', names.length === 1 ? 'A texture is missing' : `${names.length} textures are missing`, `${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}. Drop the files on the view, or click the dashed tile under Texture.`]);
   }
-  if (c.parts.some(p => p.skinned)) checks.push(['warn', 'Skinned mesh', 'Reduced in its bind pose and exported without bones.']);
+  if (c.parts.some(p => p.skinned)) checks.push(['warn', 'Skinned mesh', c.skin ? `Reduced in its bind pose. Its skeleton of ${c.skin.bones.length} joints and its weights go with the result: see Rig. Animations aren't carried over.` : 'Reduced in its bind pose and exported without bones.']);
   if (settings.symmetry && symPlane.ready && symPlane.fit && symPlane.fit.max > 0.02) {
     checks.push(['warn', `Not symmetric about ${AXES[symPlane.axis]} = ${+symPlane.offset.toPrecision(4)}`, "Mirroring replaces the other half's differences."]);
   }

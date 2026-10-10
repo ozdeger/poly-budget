@@ -1031,6 +1031,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
       <button type="button" class="btn primary wide" id="rigAuto">Find the skeleton</button>
       <button type="button" class="btn wide" id="rigCustom" title="Start from a single root on the floor and add joints by clicking the model">Build your own</button>
+      <button type="button" class="btn wide" id="rigFromFile" title="The skeleton the file came with, its names and orientations kept, with its weights" hidden>Use the file's skeleton</button>
     </section>
 
     <section class="sec" id="secBones" aria-labelledby="hBones" data-space="rig" data-needs-model>
@@ -1060,6 +1061,7 @@ details.more[open] > summary { margin-bottom: 8px; }
         <button type="button" class="btn small" id="rigMirrorRL" title="Copy the right side's weights onto the left">R→L</button>
       </div>
       <button type="button" class="btn wide" id="rigReweight" title="Bone heat: each joint's weight spreads over the surface from the parts that see it nearest. Replaces painted weights">Work out the weights again</button>
+      <button type="button" class="btn wide" id="rigFileWeights" title="The file's own weights, carried onto the result by position. Replaces painted weights" hidden>Use the file's weights</button>
     </section>
 
     <section class="sec" id="secPose" aria-labelledby="hPose" data-space="rig" data-needs-model>
@@ -10265,7 +10267,70 @@ function testPose(rig, name, t) {
   return { pose, rootOffset, offsetJoint };
 }
 
-return { RIG_VERSION, sub, add, scale, dot, cross, len, dist, lerp, norm, quatFromAxes, qnorm, qconj, qmul, qrot, qaxis, qbetween, compose, mmul, rigidInverse, eulerXYZ, FINGERS, humanoidSlots, mirrorSlot, NAMINGS, boneName, humanoidRig, frameOf, childrenOf, mainChild, orientJoints, restMatrices, exportSkeleton, renameRig, uniqueNames, cloneRig, meshGraph, alongPolyline, mirrorPlaneOf, centreAlong, placeHumanoid, MOTIONS, mirrorDelta, testPose };
+// ---------- a skeleton from the file ----------
+
+// The humanoid slot a file's bone name stands for, if any: Mixamo's names with or without their prefix, Unreal's
+// mannequin names, and the common Left/Right, _l/_r, .L/.R spellings of them.
+const UNREAL_SLOT = Object.fromEntries(Object.entries(UNREAL).map(([k, v]) => [v, k]));
+function slotOfName(name) {
+  const bare = String(name).replace(/^.*[:|]/, '');
+  if (humanoidSlots(true, true).some(s => s.slot === bare)) return bare;
+  if (UNREAL_SLOT[bare.toLowerCase()]) return UNREAL_SLOT[bare.toLowerCase()];
+  const m = /^(.+?)[._](l|r)$/i.exec(bare);
+  if (m) {
+    const base = UNREAL_SLOT[m[1].toLowerCase()], side = m[2].toLowerCase() === 'l' ? 'Left' : 'Right';
+    if (base) return `${side}${base}`;
+    const f = /^(thumb|index|middle|ring|pinky)_0(\d)$/i.exec(m[1]);
+    if (f) return `${side}Hand${f[1][0].toUpperCase()}${f[1].slice(1).toLowerCase()}${f[2]}`;
+  }
+  return null;
+}
+// Which side a name says a bone is on: Left/Right, or L/R as a separate token (upperarm_l, Arm.L, Bip01 L Thigh).
+const SIDE_TOKEN = /(^|[\s._:|-])([lr])(?=$|[\s._|-])/i;
+function sideOfName(name) {
+  const s = String(name).replace(/^.*[:|]/, '');
+  if (/left/i.test(s)) return 'L';
+  if (/right/i.test(s)) return 'R';
+  const m = SIDE_TOKEN.exec(s);
+  return m ? (m[2].toLowerCase() === 'l' ? 'L' : 'R') : 'C';
+}
+// The same name for the other side.
+function otherSide(name) {
+  const s = String(name), swap = { l: 'r', r: 'l', L: 'R', R: 'L' };
+  if (/Left/.test(s)) return s.replace(/Left/g, 'Right');
+  if (/Right/.test(s)) return s.replace(/Right/g, 'Left');
+  if (/left/i.test(s)) return s.replace(/left/gi, w => (w[0] === 'L' ? 'Right' : 'right'));
+  if (/right/i.test(s)) return s.replace(/right/gi, w => (w[0] === 'R' ? 'Left' : 'left'));
+  return s.replace(SIDE_TOKEN, (m, pre, c) => `${pre}${swap[c]}`);
+}
+const isHumanoid = rig => !!rig && (rig.template === 'humanoid' || !!rig.humanoid);
+
+// A rig of the file's own bones (collect.js skin.bones), parents first, each keeping its rest place and orientation so
+// animations made for it still fit. plane: the model's mirror plane, for mirror editing (null if it isn't symmetric).
+function rigFromSkeleton(bones, plane = null) {
+  const n = bones.length, order = [], placed = new Uint8Array(n), kids = bones.map(() => []);
+  bones.forEach((b, i) => { if (b.parent >= 0) kids[b.parent].push(i); });
+  const visit = i => { placed[i] = 1; order.push(i); for (const c of kids[i]) visit(c); };
+  bones.forEach((b, i) => { if (b.parent < 0 || b.parent >= n) visit(i); });
+  bones.forEach((b, i) => { if (!placed[i]) visit(i); });
+  const at = new Int32Array(n);
+  order.forEach((old, k) => { at[old] = k; });
+  const joints = order.map(old => {
+    const b = bones[old], m = b.matrix;
+    // The rotation of the rest matrix, its axes freed of any scale.
+    const x = norm([m[0], m[1], m[2]]), y0 = [m[4], m[5], m[6]], y = norm(sub(y0, scale(x, dot(y0, x)))), z = cross(x, y);
+    return {
+      name: b.name, slot: slotOfName(b.name), parent: b.parent >= 0 && b.parent < n ? at[b.parent] : -1, pos: [m[12], m[13], m[14]],
+      rot: quatFromAxes(x, y, z), deform: b.deform !== false, side: sideOfName(b.name), mirror: -1, placed: 'detected', keepRot: true,
+    };
+  });
+  const byName = new Map(joints.map((j, i) => [j.name, i]));
+  joints.forEach(j => { if (j.side !== 'C') { const m = byName.get(otherSide(j.name)); if (m !== undefined && joints[m].side !== j.side) j.mirror = m; } });
+  const humanoid = joints.some(j => j.slot === 'Hips');
+  return { version: RIG_VERSION, template: 'original', humanoid, fingers: joints.some(j => /Hand(Index|Middle)\d/.test(j.slot || '')), naming: 'file', frame: frameOf(), plane, joints };
+}
+
+return { RIG_VERSION, sub, add, scale, dot, cross, len, dist, lerp, norm, quatFromAxes, qnorm, qconj, qmul, qrot, qaxis, qbetween, compose, mmul, rigidInverse, eulerXYZ, FINGERS, humanoidSlots, mirrorSlot, NAMINGS, boneName, humanoidRig, frameOf, childrenOf, mainChild, orientJoints, restMatrices, exportSkeleton, renameRig, uniqueNames, cloneRig, meshGraph, alongPolyline, mirrorPlaneOf, centreAlong, placeHumanoid, MOTIONS, mirrorDelta, testPose, slotOfName, isHumanoid, rigFromSkeleton };
 })();
 const SKIN = (() => {
 const { compose, mmul, rigidInverse, restMatrices, childrenOf, mainChild, qmul, qnorm, sub, dot, len, norm, scale, add, dist, meshGraph } = RIG;
@@ -10880,7 +10945,95 @@ function mirrorSide(W, B, positions, G, partners, rig, from) {
   return changed;
 }
 
-return { MAX_INFLUENCES, MIN_WEIGHT, skinGroups, boneSegments, segmentDistance, envelopeWeights, limitWeights, vertexSkin, poseMatrices, skinVertices, boneHeat, mirrorWeights, remapWeights, setWeight, smoothWeights, cleanWeights, mirrorPartners, mirrorSide };
+// Weights carried from one surface's points onto another's by position: each destination point takes the weights of
+// the three source points nearest it, by inverse distance. src: positions (n·3), with K joints and weights per point
+// (index, weight); the result is dense, G × B, summing to 1 where the sources had any weight.
+function transferWeights(srcP, srcIndex, srcWeight, K, B, dstP, G) {
+  const n = srcP.length / 3;
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], srcP[i * 3 + k]); hi[k] = Math.max(hi[k], srcP[i * 3 + k]); }
+  const size = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1, h = size / Math.max(8, Math.cbrt(n) * 1.5);
+  const key = (x, y, z) => `${Math.floor((x - lo[0]) / h)},${Math.floor((y - lo[1]) / h)},${Math.floor((z - lo[2]) / h)}`;
+  const cells = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = key(srcP[i * 3], srcP[i * 3 + 1], srcP[i * 3 + 2]);
+    let c = cells.get(k);
+    if (!c) cells.set(k, (c = []));
+    c.push(i);
+  }
+  const W = new Float32Array(G * B), best = [[Infinity, -1], [Infinity, -1], [Infinity, -1]];
+  for (let g = 0; g < G; g++) {
+    const x = dstP[g * 3], y = dstP[g * 3 + 1], z = dstP[g * 3 + 2];
+    const cx = Math.floor((x - lo[0]) / h), cy = Math.floor((y - lo[1]) / h), cz = Math.floor((z - lo[2]) / h);
+    for (const b of best) { b[0] = Infinity; b[1] = -1; }
+    // Rings of cells outward until three points are found and no nearer one can lie further out.
+    for (let r = 0; r < 64; r++) {
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== r) continue;
+        for (const i of cells.get(`${cx + dx},${cy + dy},${cz + dz}`) || []) {
+          const d = (srcP[i * 3] - x) ** 2 + (srcP[i * 3 + 1] - y) ** 2 + (srcP[i * 3 + 2] - z) ** 2;
+          if (d < best[2][0]) { best[2][0] = d; best[2][1] = i; best.sort((a, b) => a[0] - b[0]); }
+        }
+      }
+      if (best[2][1] >= 0 && Math.sqrt(best[2][0]) <= r * h) break;
+    }
+    let total = 0;
+    for (const [d, i] of best) {
+      if (i < 0) continue;
+      const f = 1 / (Math.sqrt(d) + 1e-9 * size);
+      for (let k = 0; k < K; k++) { const w = srcWeight[i * K + k]; if (w > 0) { W[g * B + srcIndex[i * K + k]] += f * w; total += f * w; } }
+    }
+    if (total > 0) for (let b = 0; b < B; b++) W[g * B + b] /= total;
+  }
+  return W;
+}
+
+// Dense weights kept compact: each group's K largest (index, weight), for storing.
+function sparseWeights(W, B, G, K = 8) {
+  const index = new Uint16Array(G * K), weight = new Float32Array(G * K), order = [...Array(B).keys()];
+  for (let g = 0; g < G; g++) {
+    order.sort((a, b) => W[g * B + b] - W[g * B + a]);
+    for (let k = 0; k < Math.min(K, B); k++) { index[g * K + k] = order[k]; weight[g * K + k] = W[g * B + order[k]]; }
+  }
+  return { index, weight, K };
+}
+
+// The file's bone indices (collect.js skin.bones) as the rig's joints, matched by name; a bone the rig no longer has
+// (deleted or renamed) gives its weight to its nearest ancestor that it does have, or the first joint.
+function fileBoneMap(bones, rig) {
+  const byName = new Map(rig.joints.map((j, i) => [j.name, i]));
+  return Uint16Array.from(bones, (b, i) => {
+    for (let k = i, n = 0; k >= 0 && n < bones.length; k = bones[k].parent, n++) if (byName.has(bones[k].name)) return byName.get(bones[k].name);
+    return 0;
+  });
+}
+
+// Positions left without any weight (a part the file didn't skin) go wholly to the nearest bone. How many there were.
+function fillEmptyWeights(W, B, groups, rig) {
+  const segs = boneSegments(rig);
+  let filled = 0;
+  for (let g = 0; g < groups.count; g++) {
+    let t = 0;
+    for (let b = 0; b < B; b++) t += W[g * B + b];
+    if (t > 1e-6) continue;
+    const p = [groups.positions[g * 3], groups.positions[g * 3 + 1], groups.positions[g * 3 + 2]];
+    let best = 0, bd = Infinity;
+    segs.forEach((sg, b) => { if (sg) { const d = segmentDistance(p, sg); if (d < bd) { bd = d; best = b; } } });
+    W[g * B + best] = 1;
+    filled++;
+  }
+  return filled;
+}
+
+// The file's own weights (collect.js skin) on a result, by position: { W, groups }.
+function fileWeights(collected, rig, res) {
+  const groups = skinGroups(res), B = rig.joints.length, map = fileBoneMap(collected.skin.bones, rig);
+  const W = transferWeights(collected.positions, collected.skin.index.map(i => map[i]), collected.skin.weight, 4, B, groups.positions, groups.count);
+  fillEmptyWeights(W, B, groups, rig);
+  return { W, groups };
+}
+
+return { MAX_INFLUENCES, MIN_WEIGHT, skinGroups, boneSegments, segmentDistance, envelopeWeights, limitWeights, vertexSkin, poseMatrices, skinVertices, boneHeat, mirrorWeights, remapWeights, setWeight, smoothWeights, cleanWeights, mirrorPartners, mirrorSide, transferWeights, sparseWeights, fileBoneMap, fillEmptyWeights, fileWeights };
 })();
 
 
@@ -20059,7 +20212,70 @@ function testPose(rig, name, t) {
   return { pose, rootOffset, offsetJoint };
 }
 
-return { RIG_VERSION, sub, add, scale, dot, cross, len, dist, lerp, norm, quatFromAxes, qnorm, qconj, qmul, qrot, qaxis, qbetween, compose, mmul, rigidInverse, eulerXYZ, FINGERS, humanoidSlots, mirrorSlot, NAMINGS, boneName, humanoidRig, frameOf, childrenOf, mainChild, orientJoints, restMatrices, exportSkeleton, renameRig, uniqueNames, cloneRig, meshGraph, alongPolyline, mirrorPlaneOf, centreAlong, placeHumanoid, MOTIONS, mirrorDelta, testPose };
+// ---------- a skeleton from the file ----------
+
+// The humanoid slot a file's bone name stands for, if any: Mixamo's names with or without their prefix, Unreal's
+// mannequin names, and the common Left/Right, _l/_r, .L/.R spellings of them.
+const UNREAL_SLOT = Object.fromEntries(Object.entries(UNREAL).map(([k, v]) => [v, k]));
+function slotOfName(name) {
+  const bare = String(name).replace(/^.*[:|]/, '');
+  if (humanoidSlots(true, true).some(s => s.slot === bare)) return bare;
+  if (UNREAL_SLOT[bare.toLowerCase()]) return UNREAL_SLOT[bare.toLowerCase()];
+  const m = /^(.+?)[._](l|r)$/i.exec(bare);
+  if (m) {
+    const base = UNREAL_SLOT[m[1].toLowerCase()], side = m[2].toLowerCase() === 'l' ? 'Left' : 'Right';
+    if (base) return `${side}${base}`;
+    const f = /^(thumb|index|middle|ring|pinky)_0(\d)$/i.exec(m[1]);
+    if (f) return `${side}Hand${f[1][0].toUpperCase()}${f[1].slice(1).toLowerCase()}${f[2]}`;
+  }
+  return null;
+}
+// Which side a name says a bone is on: Left/Right, or L/R as a separate token (upperarm_l, Arm.L, Bip01 L Thigh).
+const SIDE_TOKEN = /(^|[\s._:|-])([lr])(?=$|[\s._|-])/i;
+function sideOfName(name) {
+  const s = String(name).replace(/^.*[:|]/, '');
+  if (/left/i.test(s)) return 'L';
+  if (/right/i.test(s)) return 'R';
+  const m = SIDE_TOKEN.exec(s);
+  return m ? (m[2].toLowerCase() === 'l' ? 'L' : 'R') : 'C';
+}
+// The same name for the other side.
+function otherSide(name) {
+  const s = String(name), swap = { l: 'r', r: 'l', L: 'R', R: 'L' };
+  if (/Left/.test(s)) return s.replace(/Left/g, 'Right');
+  if (/Right/.test(s)) return s.replace(/Right/g, 'Left');
+  if (/left/i.test(s)) return s.replace(/left/gi, w => (w[0] === 'L' ? 'Right' : 'right'));
+  if (/right/i.test(s)) return s.replace(/right/gi, w => (w[0] === 'R' ? 'Left' : 'left'));
+  return s.replace(SIDE_TOKEN, (m, pre, c) => `${pre}${swap[c]}`);
+}
+const isHumanoid = rig => !!rig && (rig.template === 'humanoid' || !!rig.humanoid);
+
+// A rig of the file's own bones (collect.js skin.bones), parents first, each keeping its rest place and orientation so
+// animations made for it still fit. plane: the model's mirror plane, for mirror editing (null if it isn't symmetric).
+function rigFromSkeleton(bones, plane = null) {
+  const n = bones.length, order = [], placed = new Uint8Array(n), kids = bones.map(() => []);
+  bones.forEach((b, i) => { if (b.parent >= 0) kids[b.parent].push(i); });
+  const visit = i => { placed[i] = 1; order.push(i); for (const c of kids[i]) visit(c); };
+  bones.forEach((b, i) => { if (b.parent < 0 || b.parent >= n) visit(i); });
+  bones.forEach((b, i) => { if (!placed[i]) visit(i); });
+  const at = new Int32Array(n);
+  order.forEach((old, k) => { at[old] = k; });
+  const joints = order.map(old => {
+    const b = bones[old], m = b.matrix;
+    // The rotation of the rest matrix, its axes freed of any scale.
+    const x = norm([m[0], m[1], m[2]]), y0 = [m[4], m[5], m[6]], y = norm(sub(y0, scale(x, dot(y0, x)))), z = cross(x, y);
+    return {
+      name: b.name, slot: slotOfName(b.name), parent: b.parent >= 0 && b.parent < n ? at[b.parent] : -1, pos: [m[12], m[13], m[14]],
+      rot: quatFromAxes(x, y, z), deform: b.deform !== false, side: sideOfName(b.name), mirror: -1, placed: 'detected', keepRot: true,
+    };
+  });
+  const byName = new Map(joints.map((j, i) => [j.name, i]));
+  joints.forEach(j => { if (j.side !== 'C') { const m = byName.get(otherSide(j.name)); if (m !== undefined && joints[m].side !== j.side) j.mirror = m; } });
+  const humanoid = joints.some(j => j.slot === 'Hips');
+  return { version: RIG_VERSION, template: 'original', humanoid, fingers: joints.some(j => /Hand(Index|Middle)\d/.test(j.slot || '')), naming: 'file', frame: frameOf(), plane, joints };
+}
+
+return { RIG_VERSION, sub, add, scale, dot, cross, len, dist, lerp, norm, quatFromAxes, qnorm, qconj, qmul, qrot, qaxis, qbetween, compose, mmul, rigidInverse, eulerXYZ, FINGERS, humanoidSlots, mirrorSlot, NAMINGS, boneName, humanoidRig, frameOf, childrenOf, mainChild, orientJoints, restMatrices, exportSkeleton, renameRig, uniqueNames, cloneRig, meshGraph, alongPolyline, mirrorPlaneOf, centreAlong, placeHumanoid, MOTIONS, mirrorDelta, testPose, slotOfName, isHumanoid, rigFromSkeleton };
 })();
 const SKIN = (() => {
 const { compose, mmul, rigidInverse, restMatrices, childrenOf, mainChild, qmul, qnorm, sub, dot, len, norm, scale, add, dist, meshGraph } = RIG;
@@ -20674,17 +20890,126 @@ function mirrorSide(W, B, positions, G, partners, rig, from) {
   return changed;
 }
 
-return { MAX_INFLUENCES, MIN_WEIGHT, skinGroups, boneSegments, segmentDistance, envelopeWeights, limitWeights, vertexSkin, poseMatrices, skinVertices, boneHeat, mirrorWeights, remapWeights, setWeight, smoothWeights, cleanWeights, mirrorPartners, mirrorSide };
+// Weights carried from one surface's points onto another's by position: each destination point takes the weights of
+// the three source points nearest it, by inverse distance. src: positions (n·3), with K joints and weights per point
+// (index, weight); the result is dense, G × B, summing to 1 where the sources had any weight.
+function transferWeights(srcP, srcIndex, srcWeight, K, B, dstP, G) {
+  const n = srcP.length / 3;
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], srcP[i * 3 + k]); hi[k] = Math.max(hi[k], srcP[i * 3 + k]); }
+  const size = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1, h = size / Math.max(8, Math.cbrt(n) * 1.5);
+  const key = (x, y, z) => `${Math.floor((x - lo[0]) / h)},${Math.floor((y - lo[1]) / h)},${Math.floor((z - lo[2]) / h)}`;
+  const cells = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = key(srcP[i * 3], srcP[i * 3 + 1], srcP[i * 3 + 2]);
+    let c = cells.get(k);
+    if (!c) cells.set(k, (c = []));
+    c.push(i);
+  }
+  const W = new Float32Array(G * B), best = [[Infinity, -1], [Infinity, -1], [Infinity, -1]];
+  for (let g = 0; g < G; g++) {
+    const x = dstP[g * 3], y = dstP[g * 3 + 1], z = dstP[g * 3 + 2];
+    const cx = Math.floor((x - lo[0]) / h), cy = Math.floor((y - lo[1]) / h), cz = Math.floor((z - lo[2]) / h);
+    for (const b of best) { b[0] = Infinity; b[1] = -1; }
+    // Rings of cells outward until three points are found and no nearer one can lie further out.
+    for (let r = 0; r < 64; r++) {
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== r) continue;
+        for (const i of cells.get(`${cx + dx},${cy + dy},${cz + dz}`) || []) {
+          const d = (srcP[i * 3] - x) ** 2 + (srcP[i * 3 + 1] - y) ** 2 + (srcP[i * 3 + 2] - z) ** 2;
+          if (d < best[2][0]) { best[2][0] = d; best[2][1] = i; best.sort((a, b) => a[0] - b[0]); }
+        }
+      }
+      if (best[2][1] >= 0 && Math.sqrt(best[2][0]) <= r * h) break;
+    }
+    let total = 0;
+    for (const [d, i] of best) {
+      if (i < 0) continue;
+      const f = 1 / (Math.sqrt(d) + 1e-9 * size);
+      for (let k = 0; k < K; k++) { const w = srcWeight[i * K + k]; if (w > 0) { W[g * B + srcIndex[i * K + k]] += f * w; total += f * w; } }
+    }
+    if (total > 0) for (let b = 0; b < B; b++) W[g * B + b] /= total;
+  }
+  return W;
+}
+
+// Dense weights kept compact: each group's K largest (index, weight), for storing.
+function sparseWeights(W, B, G, K = 8) {
+  const index = new Uint16Array(G * K), weight = new Float32Array(G * K), order = [...Array(B).keys()];
+  for (let g = 0; g < G; g++) {
+    order.sort((a, b) => W[g * B + b] - W[g * B + a]);
+    for (let k = 0; k < Math.min(K, B); k++) { index[g * K + k] = order[k]; weight[g * K + k] = W[g * B + order[k]]; }
+  }
+  return { index, weight, K };
+}
+
+// The file's bone indices (collect.js skin.bones) as the rig's joints, matched by name; a bone the rig no longer has
+// (deleted or renamed) gives its weight to its nearest ancestor that it does have, or the first joint.
+function fileBoneMap(bones, rig) {
+  const byName = new Map(rig.joints.map((j, i) => [j.name, i]));
+  return Uint16Array.from(bones, (b, i) => {
+    for (let k = i, n = 0; k >= 0 && n < bones.length; k = bones[k].parent, n++) if (byName.has(bones[k].name)) return byName.get(bones[k].name);
+    return 0;
+  });
+}
+
+// Positions left without any weight (a part the file didn't skin) go wholly to the nearest bone. How many there were.
+function fillEmptyWeights(W, B, groups, rig) {
+  const segs = boneSegments(rig);
+  let filled = 0;
+  for (let g = 0; g < groups.count; g++) {
+    let t = 0;
+    for (let b = 0; b < B; b++) t += W[g * B + b];
+    if (t > 1e-6) continue;
+    const p = [groups.positions[g * 3], groups.positions[g * 3 + 1], groups.positions[g * 3 + 2]];
+    let best = 0, bd = Infinity;
+    segs.forEach((sg, b) => { if (sg) { const d = segmentDistance(p, sg); if (d < bd) { bd = d; best = b; } } });
+    W[g * B + best] = 1;
+    filled++;
+  }
+  return filled;
+}
+
+// The file's own weights (collect.js skin) on a result, by position: { W, groups }.
+function fileWeights(collected, rig, res) {
+  const groups = skinGroups(res), B = rig.joints.length, map = fileBoneMap(collected.skin.bones, rig);
+  const W = transferWeights(collected.positions, collected.skin.index.map(i => map[i]), collected.skin.weight, 4, B, groups.positions, groups.count);
+  fillEmptyWeights(W, B, groups, rig);
+  return { W, groups };
+}
+
+return { MAX_INFLUENCES, MIN_WEIGHT, skinGroups, boneSegments, segmentDistance, envelopeWeights, limitWeights, vertexSkin, poseMatrices, skinVertices, boneHeat, mirrorWeights, remapWeights, setWeight, smoothWeights, cleanWeights, mirrorPartners, mirrorSide, transferWeights, sparseWeights, fileBoneMap, fillEmptyWeights, fileWeights };
 })();
 
 
 
-// Flattens every mesh under root into one world-space triangle soup with part and material ids.
+// Flattens every mesh under root into one world-space triangle soup with part and material ids. A skinned file also
+// gives its skeleton: skin = { bones: [{ name, parent, matrix }], index, weight }, each bone's rest matrix in the same
+// space as the positions (where the skin leaves the mesh as it is) and four joints and weights per vertex. Meshes that
+// aren't skinned follow the bone they hang from, if any.
 function collectScene(root) {
   root.updateMatrixWorld(true);
   const parts = [], materials = [], matIndex = new Map(), chunks = [];
   let anyUV = false, anyColor = false, totalV = 0, totalI = 0;
   const v = new THREE.Vector3();
+  const bones = [], boneIndex = new Map();
+  root.traverse(obj => {
+    if (!obj.isSkinnedMesh || !obj.skeleton) return;
+    const toWorld = new THREE.Matrix4().multiplyMatrices(obj.matrixWorld, obj.bindMatrixInverse);
+    obj.skeleton.bones.forEach((b, i) => {
+      if (!b || boneIndex.has(b)) return;
+      boneIndex.set(b, bones.length);
+      const rest = new THREE.Matrix4().copy(obj.skeleton.boneInverses[i]).invert().premultiply(toWorld);
+      bones.push({ bone: b, name: b.name || `Bone${bones.length}`, matrix: Float64Array.from(rest.elements), deform: true });
+    });
+  });
+  // Bones no skin uses (end joints, helpers) come along too, where they stand, so the hierarchy stays the file's.
+  if (bones.length) root.traverse(obj => {
+    if (!obj.isBone || boneIndex.has(obj)) return;
+    boneIndex.set(obj, bones.length);
+    bones.push({ bone: obj, name: obj.name || `Bone${bones.length}`, matrix: Float64Array.from(obj.matrixWorld.elements), deform: false });
+  });
+  const boneAbove = obj => { for (let o = obj.parent; o; o = o.parent) if (boneIndex.has(o)) return boneIndex.get(o); return -1; };
   root.traverse(obj => {
     if (!obj.isMesh || !obj.geometry || !obj.geometry.attributes.position) return;
     const g = obj.geometry;
@@ -20723,9 +21048,22 @@ function collectScene(root) {
         for (let t = s; t < e; t++) triMat[t] = toGlobal[gr.materialIndex ?? 0] ?? toGlobal[0];
       }
     }
+    // Joints and weights per vertex, into the file's bone list.
+    let SI = null, SW = null;
+    if (bones.length) {
+      SI = new Uint16Array(n * 4); SW = new Float32Array(n * 4);
+      const si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
+      if (obj.isSkinnedMesh && si && sw) {
+        const map = obj.skeleton.bones.map(b => (boneIndex.has(b) ? boneIndex.get(b) : 0));
+        for (let i = 0; i < n; i++) for (let k = 0; k < 4; k++) { SI[i * 4 + k] = map[si.getComponent(i, k)] ?? 0; SW[i * 4 + k] = sw.getComponent(i, k); }
+      } else {
+        const b = boneAbove(obj);
+        if (b >= 0) for (let i = 0; i < n; i++) { SI[i * 4] = b; SW[i * 4] = 1; }
+      }
+    }
     const partId = parts.length;
     parts.push({ name: (obj.name || `Part${partId + 1}`).replace(/[^\w.-]+/g, '_'), triCount: T, hasUV: !!uv, skinned: !!obj.isSkinnedMesh });
-    chunks.push({ P, N, U, C: Cc, idx, triMat, partId, n });
+    chunks.push({ P, N, U, C: Cc, idx, triMat, partId, n, SI, SW });
     anyUV = anyUV || !!uv;
     anyColor = anyColor || !!col;
     totalV += n;
@@ -20735,8 +21073,13 @@ function collectScene(root) {
   const uvs = anyUV ? new Float32Array(totalV * 2) : null;
   const colors = anyColor ? new Float32Array(totalV * 3).fill(1) : null;
   const index = new Uint32Array(totalI), triPart = new Uint16Array(totalI / 3), triMat = new Uint16Array(totalI / 3);
+  const skin = bones.length ? {
+    bones: bones.map(b => ({ name: b.name, parent: boneAbove(b.bone), matrix: b.matrix, deform: b.deform })),
+    index: new Uint16Array(totalV * 4), weight: new Float32Array(totalV * 4),
+  } : null;
   let vo = 0, io = 0;
   for (const c of chunks) {
+    if (skin) { skin.index.set(c.SI, vo * 4); skin.weight.set(c.SW, vo * 4); }
     positions.set(c.P, vo * 3);
     normals.set(c.N, vo * 3);
     if (uvs && c.U) uvs.set(c.U, vo * 2);
@@ -20747,7 +21090,7 @@ function collectScene(root) {
     vo += c.n;
     io += c.idx.length;
   }
-  return { positions, normals, uvs, colors, index, triPart, triMat, parts, materials };
+  return { positions, normals, uvs, colors, index, triPart, triMat, parts, materials, skin };
 }
 
 
@@ -20883,7 +21226,8 @@ function initRig(host) {
   const R = () => st() && st().rig;
   const ensure = () => {
     const s = st();
-    if (!s.rig) s.rig = { rig: null, weights: null, edited: false, stale: false, report: null, undo: [], redo: [], selected: -1, busy: null, pose: null, rootOffset: null };
+    // source: where the weights come from: 'heat' (worked out), 'file' (the file's own, carried over) or 'paint'.
+    if (!s.rig) s.rig = { rig: null, weights: null, edited: false, source: 'heat', file: null, pending: null, transferred: false, stale: false, report: null, undo: [], redo: [], selected: -1, busy: null, pose: null, rootOffset: null };
     return s.rig;
   };
   const inRig = () => settings.space === 'rig';
@@ -21193,6 +21537,8 @@ function initRig(host) {
       }
       s.weights = { W: out.W, groups: { group: out.group, count: out.count, positions: out.positions }, res, joints: s.rig.joints.length };
       s.edited = false;
+      s.source = 'heat';
+      s.transferred = false;
       s.stale = false;
       if (out.stats && out.stats.ms) s.weightMs = out.stats.ms;
       // The result moved on while the job ran (its UVs came): the weights follow it by position, or are worked out again.
@@ -21221,23 +21567,62 @@ function initRig(host) {
 
   // A new result (another budget, or the same one with its UVs): weights carry over where every position is still there
   // (UV seams only split vertices); otherwise they are worked out again, or marked out of date where painted by hand.
+  // The file's own weights, carried from its vertices onto the result's by position.
+  function weightsFromFile(res) {
+    const s = R(), { W, groups } = SKIN.fileWeights(s.file, s.rig, res);
+    s.weights = { W, groups, res, joints: s.rig.joints.length };
+    s.stale = false;
+    s.transferred = false;
+  }
+  const fillEmpty = (W, B, groups) => SKIN.fillEmptyWeights(W, B, groups, R().rig);
+  // Weights from other positions (an earlier result's, or ones saved with the tab) onto res: exactly where every position
+  // is still there, by closest points otherwise.
+  function weightsFrom(positions, sparse, res) {
+    const s = R(), B = s.rig.joints.length, groups = SKIN.skinGroups(res);
+    // Stored compact (each position's eight largest), so each row is summed to 1 again.
+    const dense = new Float32Array((positions.length / 3) * B);
+    for (let g = 0; g < positions.length / 3; g++) {
+      let t = 0;
+      for (let k = 0; k < sparse.K; k++) { const w = sparse.weight[g * sparse.K + k]; if (w > 0) { dense[g * B + sparse.index[g * sparse.K + k]] += w; t += w; } }
+      if (t > 0) for (let b = 0; b < B; b++) dense[g * B + b] /= t;
+    }
+    let W = SKIN.remapWeights(dense, B, positions, groups), moved = false;
+    if (!W) { W = SKIN.transferWeights(positions, sparse.index, sparse.weight, sparse.K, B, groups.positions, groups.count); fillEmpty(W, B, groups); moved = true; }
+    s.weights = { W, groups, res, joints: B };
+    s.stale = false;
+    return moved;
+  }
+  // A new result (another budget, or the same one with its UVs): weights carry over where every position is still there
+  // (UV seams only split vertices). Otherwise worked-out weights are worked out again, the file's are carried from it
+  // again, and painted ones are carried from the last result by closest points (and flagged for a look).
   function carryWeights(res) {
     const s = R(), w = s && s.weights;
     if (!w || !res || w.res === res) return true;
     const groups = SKIN.skinGroups(res);
     const W = SKIN.remapWeights(w.W, s.rig.joints.length, w.groups.positions, groups);
     if (W) { s.weights = { W, groups, res, joints: s.rig.joints.length }; return true; }
+    if (s.source === 'file' && s.file) { weightsFromFile(res); return true; }
+    if (s.edited) { s.transferred = weightsFrom(w.groups.positions, SKIN.sparseWeights(w.W, w.joints, w.groups.count), res); return true; }
     s.weights = null;
     s.stale = true;
-    if (!s.edited && inRig()) scheduleWeights(0);
+    if (inRig()) scheduleWeights(0);
     return false;
   }
-  function onResult(res) {
+  // Weights for the current result, however they come: saved with the tab, carried from the last result, from the file,
+  // or worked out (in the Rig workspace only, where they show).
+  function ensureWeights() {
+    const s = R(), res = st() && st().result;
+    if (!s || !s.rig || !res) return;
+    // A file's skeleton finds its mirror plane on the first result, for mirror editing.
+    if (s.rig.plane === undefined) { const m = RIG.mirrorPlaneOf(res.positions, res.vertexCount); s.rig.plane = m && m.error < 0.01 ? { axis: m.axis, offset: m.offset } : null; }
+    if (s.pending && s.pending.positions) { s.transferred = weightsFrom(s.pending.positions, s.pending, res); s.pending = null; }
+    else if (s.weights) carryWeights(res);
+    else if (s.source === 'file' && s.file) weightsFromFile(res);
+    else if (inRig() && !s.busy && !engine.job) scheduleWeights(0);
+  }
+  function onResult() {
     bvhOf = null;
-    const s = R();
-    if (!s || !s.rig) { sync(); return; }
-    if (s.weights) carryWeights(res);
-    else if (inRig() && !s.busy) scheduleWeights(0);
+    ensureWeights();
     sync();
   }
 
@@ -21411,8 +21796,8 @@ function initRig(host) {
     }
     s.savedPose = s.pose; s.savedOffset = s.rootOffset;
     if (!ensurePoser() && !s.busy) scheduleWeights(0);
-    const t0 = performance.now(), motion = s.rig.template === 'humanoid' ? settings.rigMotion : 'each';
-    const loop = settings.rigMotion === 'each' || s.rig.template !== 'humanoid' ? 1.6 * s.rig.joints.filter(j => j.deform).length : 2.2;
+    const t0 = performance.now(), motion = RIG.isHumanoid(s.rig) ? settings.rigMotion : 'each';
+    const loop = motion === 'each' ? 1.6 * s.rig.joints.filter(j => j.deform).length : 2.2;
     playing = { raf: 0 };
     const frame = now => {
       if (!playing) return;
@@ -21507,6 +21892,7 @@ function initRig(host) {
   function weightsEdited(final) {
     const s = R();
     s.edited = true;
+    s.source = 'paint';
     if (poser) poser.W = null;
     if (posing()) applyPose();
     paintWeights();
@@ -21625,7 +22011,11 @@ function initRig(host) {
     if (!res) { head.textContent = 'Waiting for the result'; note.textContent = 'The skeleton goes on the reduced model.'; row.className = 'status-line busy'; }
     else if (s && s.busy === 'place') { head.textContent = 'Finding the skeleton'; note.textContent = 'Reading the head, hands and feet from the shape…'; row.className = 'status-line busy'; }
     else if (!rig) { head.textContent = 'No skeleton yet'; note.textContent = 'Find one from the shape of a standing figure, or build your own bone by bone.'; row.className = 'status-line'; }
-    else if (rig.template === 'custom') {
+    else if (rig.template === 'original') {
+      head.textContent = `${rig.joints.length} joints from the file`;
+      note.textContent = `The file's own skeleton, names and orientations kept, so animations made for it still fit.${RIG.isHumanoid(rig) ? '' : ' It isn\'t a humanoid one, so the test motion bends each joint in turn.'}`;
+      row.className = 'status-line ok';
+    } else if (rig.template === 'custom') {
       head.textContent = `${rig.joints.length} ${rig.joints.length === 1 ? 'joint' : 'joints'}`;
       note.textContent = `Built by hand: click the model with Add joints (J) to chain new ones from the selected joint${rig.plane ? ', mirrored across the model\'s plane' : ''}, and drag them with Move joints (V).`;
       row.className = 'status-line ok';
@@ -21641,7 +22031,11 @@ function initRig(host) {
     if (!rig) { wHead.textContent = 'No weights'; wNote.textContent = 'They come with the skeleton.'; wRow.className = 'status-line'; }
     else if (s.busy) { wHead.textContent = 'Working out the weights'; wNote.textContent = 'Bone heat over the reduced surface…'; wRow.className = 'status-line busy'; }
     else if (!s.weights || s.stale) { wHead.textContent = 'Out of date'; wNote.textContent = s.edited ? 'The skeleton changed since the weights were painted. Work them out again to fit it, or keep painting.' : 'They follow the skeleton in a moment.'; wRow.className = 'status-line warn'; }
+    else if (s.source === 'file') { wHead.textContent = 'From the file'; wNote.textContent = `The file's own weights, carried onto the result by position. Up to ${SKIN.MAX_INFLUENCES} joints per vertex in the export.`; wRow.className = 'status-line ok'; }
+    else if (s.transferred) { wHead.textContent = 'Carried over'; wNote.textContent = 'The painted weights were carried onto this result from the last one by position: check the joints that bend most.'; wRow.className = 'status-line warn'; }
     else { wHead.textContent = s.edited ? 'Painted' : 'Bone heat'; wNote.textContent = `Up to ${SKIN.MAX_INFLUENCES} joints per vertex in the export${s.weightMs && !s.edited ? ` · worked out in ${(s.weightMs / 1000).toFixed(1)} s` : ''}. ${s.selected >= 0 ? `Showing ${rig.joints[s.selected].name}'s weights: paint them with D, S, G and H.` : 'Select a joint to see and paint its weights.'}`; wRow.className = 'status-line ok'; }
+    $('rigFromFile').hidden = !(s && s.file) || !!(rig && rig.template === 'original');
+    $('rigFileWeights').hidden = !(s && s.file && rig && rig.template === 'original' && s.source !== 'file');
     const ready = !!(rig && s.weights && s.weights.res === res && !s.busy);
     for (const id of ['rigSmoothAll', 'rigClean', 'rigMirrorLR', 'rigMirrorRL']) $(id).disabled = !ready || (/Mirror/.test(id) && !rig.plane);
     // Bone tree.
@@ -21667,7 +22061,7 @@ function initRig(host) {
       $('rigPlaced').className = `note ${sel.placed === 'estimated' ? 'warn' : ''}`;
     }
     // Pose.
-    const custom = rig && rig.template !== 'humanoid';
+    const custom = rig && !RIG.isHumanoid(rig);
     $('rigPlay').disabled = !rig;
     $('rigPlay').textContent = playing ? 'Stop' : 'Play the test motion';
     $('rigResetPose').disabled = !(s && s.pose && s.pose.some(Boolean)) || !!playing;
@@ -21920,6 +22314,7 @@ function initRig(host) {
     for (const b of document.querySelectorAll('#rigMotionSeg button')) b.setAttribute('aria-pressed', String(b.dataset.motion === settings.rigMotion));
     if (rig) applyControls();
     if (!rig && playing) play(false);
+    if (rig) ensureWeights();
     refreshPose();
     drawSkeleton();
     paintWeights();
@@ -21932,6 +22327,16 @@ function initRig(host) {
   $('rigRedo').addEventListener('click', () => undoRedo(true));
   $('rigAuto').addEventListener('click', () => runRig('place'));
   $('rigReweight').addEventListener('click', () => { const s = R(); if (s) { s.edited = false; runRig('weights'); } });
+  // Back to the file's own skeleton, or its weights.
+  $('rigFromFile').addEventListener('click', () => {
+    const s = R();
+    if (!s || !s.file) return;
+    commit(s.rig ? RIG.cloneRig(s.rig) : null);
+    s.rig = fileRig(s);
+    s.selected = -1; s.pose = null;
+    useFileWeights(s);
+  });
+  $('rigFileWeights').addEventListener('click', () => { const s = R(); if (s && s.file && s.rig && s.rig.template === 'original') useFileWeights(s); });
   $('rigCustom').addEventListener('click', () => {
     const s = ensure(), res = st().result;
     if (!res) return;
@@ -22041,8 +22446,51 @@ function initRig(host) {
   host.canvas.addEventListener('pointercancel', onPointerUp);
   host.canvas.addEventListener('pointerleave', () => { if (!stroke) { ring.visible = ring2.visible = false; $('rigUnder').textContent = ''; host.requestRender(); } });
 
+  function fileRig(s) {
+    const rig = RIG.rigFromSkeleton(s.file.skin.bones);
+    rig.plane = undefined;
+    s.report = { notes: [] };
+    return rig;
+  }
+  function useFileWeights(s) {
+    s.source = 'file'; s.edited = true; s.transferred = false;
+    s.weights = null;
+    if (st().result) weightsFromFile(st().result);
+    onResult();
+    host.saveSessionSoon();
+  }
+
   // ---------- what the page asks of the workspace ----------
   return {
+    // A model was opened: its rig from the tab's saved record, or the file's own skeleton, or none yet.
+    loaded(collected, saved) {
+      const s0 = st();
+      s0.rig = null;
+      const s = ensure();
+      s.file = collected && collected.skin && collected.skin.bones.length ? collected : null;
+      if (saved && saved.rig) {
+        s.rig = saved.rig;
+        s.source = saved.source || 'heat';
+        s.edited = s.source !== 'heat';
+        s.pending = saved.weights || null;
+        s.locks = saved.locks ? Uint8Array.from(saved.locks) : null;
+        s.report = saved.report || null;
+        if (s.source === 'file' && !s.file) { s.source = 'heat'; s.edited = false; }
+      } else if (s.file) {
+        s.rig = fileRig(s);
+        s.source = 'file';
+        s.edited = true;
+      }
+    },
+    // What the tab saves of its rig: the skeleton, where its weights come from, and painted weights themselves (compact,
+    // with their positions, so they find their places on the result again).
+    record() {
+      const s = R();
+      if (!s || !s.rig) return null;
+      const w = s.weights;
+      const weights = s.source === 'paint' && w ? { ...SKIN.sparseWeights(w.W, w.joints, w.groups.count, 8), positions: w.groups.positions } : s.source === 'paint' && s.pending ? s.pending : null;
+      return { version: 1, rig: RIG.cloneRig(s.rig), source: s.source, report: s.report, locks: s.locks ? Array.from(s.locks) : null, weights };
+    },
     sync,
     onKey,
     onPointerDown,
@@ -22069,6 +22517,8 @@ function initRig(host) {
       const s = R();
       if (!s || !s.rig || !s.rig.joints.length) return null;
       let w = s.weights && s.weights.res === res ? s.weights : null;
+      if (!w && s.source === 'file' && s.file) { weightsFromFile(res); w = s.weights; }
+      if (!w && s.pending) { weightsFrom(s.pending.positions, s.pending, res); s.pending = null; w = s.weights; }
       if (!w) {
         const h = SKIN.boneHeat(meshOf(res), s.rig);
         w = s.weights = { W: h.W, groups: h.groups, res, joints: s.rig.joints.length };
@@ -22730,6 +23180,7 @@ async function saveSession() {
     vis: state.vis ? packVis(state.vis) : null, visCurve: state.vis && state.visCurve ? packCurve(state.visCurve) : null, visStats: state.vis ? state.visStats : null,
     symPlane: symPlane.ready ? { axis: symPlane.axis, offset: symPlane.offset } : null,
     camera: { position: camera.position.toArray(), target: controls.target.toArray() },
+    rig: rigUI ? rigUI.record() : null,
   };
   try { await sessionTx('readwrite', store => { store.put(record, `${id}:session`); store.put(tabsRecord(), 'tabs'); }); } catch (err) { console.error(err); }
 }
@@ -22945,6 +23396,7 @@ async function prepareModel(root, meta) {
   if (!collected.index.length) throw new Error('the file has no triangle meshes');
   state.meta = meta;
   state.collected = collected;
+  if (rigUI) rigUI.loaded(collected, meta.restore && meta.restore.rig);
   doc.title = meta.sample ? 'Sample pawn' : meta.name.replace(/\.[^.]+$/, '');
   showEmptyState(false);
   renderTabs();
@@ -25186,7 +25638,7 @@ function updateModelPanel() {
     const names = [...new Set(state.pendingMaps.map(p => p.file))];
     checks.push(['warn', names.length === 1 ? 'A texture is missing' : `${names.length} textures are missing`, `${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}. Drop the files on the view, or click the dashed tile under Texture.`]);
   }
-  if (c.parts.some(p => p.skinned)) checks.push(['warn', 'Skinned mesh', 'Reduced in its bind pose and exported without bones.']);
+  if (c.parts.some(p => p.skinned)) checks.push(['warn', 'Skinned mesh', c.skin ? `Reduced in its bind pose. Its skeleton of ${c.skin.bones.length} joints and its weights go with the result: see Rig. Animations aren't carried over.` : 'Reduced in its bind pose and exported without bones.']);
   if (settings.symmetry && symPlane.ready && symPlane.fit && symPlane.fit.max > 0.02) {
     checks.push(['warn', `Not symmetric about ${AXES[symPlane.axis]} = ${+symPlane.offset.toPrecision(4)}`, "Mirroring replaces the other half's differences."]);
   }

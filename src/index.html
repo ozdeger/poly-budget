@@ -1007,6 +1007,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
       <button type="button" class="btn primary wide" id="rigAuto">Find the skeleton</button>
       <button type="button" class="btn wide" id="rigCustom" title="Start from a single root on the floor and add joints by clicking the model">Build your own</button>
+      <button type="button" class="btn wide" id="rigFromFile" title="The skeleton the file came with, its names and orientations kept, with its weights" hidden>Use the file's skeleton</button>
     </section>
 
     <section class="sec" id="secBones" aria-labelledby="hBones" data-space="rig" data-needs-model>
@@ -1036,6 +1037,7 @@ details.more[open] > summary { margin-bottom: 8px; }
         <button type="button" class="btn small" id="rigMirrorRL" title="Copy the right side's weights onto the left">R→L</button>
       </div>
       <button type="button" class="btn wide" id="rigReweight" title="Bone heat: each joint's weight spreads over the surface from the parts that see it nearest. Replaces painted weights">Work out the weights again</button>
+      <button type="button" class="btn wide" id="rigFileWeights" title="The file's own weights, carried onto the result by position. Replaces painted weights" hidden>Use the file's weights</button>
     </section>
 
     <section class="sec" id="secPose" aria-labelledby="hPose" data-space="rig" data-needs-model>

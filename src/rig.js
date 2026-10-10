@@ -1189,3 +1189,66 @@ export function testPose(rig, name, t) {
   }
   return { pose, rootOffset, offsetJoint };
 }
+
+// ---------- a skeleton from the file ----------
+
+// The humanoid slot a file's bone name stands for, if any: Mixamo's names with or without their prefix, Unreal's
+// mannequin names, and the common Left/Right, _l/_r, .L/.R spellings of them.
+const UNREAL_SLOT = Object.fromEntries(Object.entries(UNREAL).map(([k, v]) => [v, k]));
+export function slotOfName(name) {
+  const bare = String(name).replace(/^.*[:|]/, '');
+  if (humanoidSlots(true, true).some(s => s.slot === bare)) return bare;
+  if (UNREAL_SLOT[bare.toLowerCase()]) return UNREAL_SLOT[bare.toLowerCase()];
+  const m = /^(.+?)[._](l|r)$/i.exec(bare);
+  if (m) {
+    const base = UNREAL_SLOT[m[1].toLowerCase()], side = m[2].toLowerCase() === 'l' ? 'Left' : 'Right';
+    if (base) return `${side}${base}`;
+    const f = /^(thumb|index|middle|ring|pinky)_0(\d)$/i.exec(m[1]);
+    if (f) return `${side}Hand${f[1][0].toUpperCase()}${f[1].slice(1).toLowerCase()}${f[2]}`;
+  }
+  return null;
+}
+// Which side a name says a bone is on: Left/Right, or L/R as a separate token (upperarm_l, Arm.L, Bip01 L Thigh).
+const SIDE_TOKEN = /(^|[\s._:|-])([lr])(?=$|[\s._|-])/i;
+function sideOfName(name) {
+  const s = String(name).replace(/^.*[:|]/, '');
+  if (/left/i.test(s)) return 'L';
+  if (/right/i.test(s)) return 'R';
+  const m = SIDE_TOKEN.exec(s);
+  return m ? (m[2].toLowerCase() === 'l' ? 'L' : 'R') : 'C';
+}
+// The same name for the other side.
+function otherSide(name) {
+  const s = String(name), swap = { l: 'r', r: 'l', L: 'R', R: 'L' };
+  if (/Left/.test(s)) return s.replace(/Left/g, 'Right');
+  if (/Right/.test(s)) return s.replace(/Right/g, 'Left');
+  if (/left/i.test(s)) return s.replace(/left/gi, w => (w[0] === 'L' ? 'Right' : 'right'));
+  if (/right/i.test(s)) return s.replace(/right/gi, w => (w[0] === 'R' ? 'Left' : 'left'));
+  return s.replace(SIDE_TOKEN, (m, pre, c) => `${pre}${swap[c]}`);
+}
+export const isHumanoid = rig => !!rig && (rig.template === 'humanoid' || !!rig.humanoid);
+
+// A rig of the file's own bones (collect.js skin.bones), parents first, each keeping its rest place and orientation so
+// animations made for it still fit. plane: the model's mirror plane, for mirror editing (null if it isn't symmetric).
+export function rigFromSkeleton(bones, plane = null) {
+  const n = bones.length, order = [], placed = new Uint8Array(n), kids = bones.map(() => []);
+  bones.forEach((b, i) => { if (b.parent >= 0) kids[b.parent].push(i); });
+  const visit = i => { placed[i] = 1; order.push(i); for (const c of kids[i]) visit(c); };
+  bones.forEach((b, i) => { if (b.parent < 0 || b.parent >= n) visit(i); });
+  bones.forEach((b, i) => { if (!placed[i]) visit(i); });
+  const at = new Int32Array(n);
+  order.forEach((old, k) => { at[old] = k; });
+  const joints = order.map(old => {
+    const b = bones[old], m = b.matrix;
+    // The rotation of the rest matrix, its axes freed of any scale.
+    const x = norm([m[0], m[1], m[2]]), y0 = [m[4], m[5], m[6]], y = norm(sub(y0, scale(x, dot(y0, x)))), z = cross(x, y);
+    return {
+      name: b.name, slot: slotOfName(b.name), parent: b.parent >= 0 && b.parent < n ? at[b.parent] : -1, pos: [m[12], m[13], m[14]],
+      rot: quatFromAxes(x, y, z), deform: b.deform !== false, side: sideOfName(b.name), mirror: -1, placed: 'detected', keepRot: true,
+    };
+  });
+  const byName = new Map(joints.map((j, i) => [j.name, i]));
+  joints.forEach(j => { if (j.side !== 'C') { const m = byName.get(otherSide(j.name)); if (m !== undefined && joints[m].side !== j.side) j.mirror = m; } });
+  const humanoid = joints.some(j => j.slot === 'Hips');
+  return { version: RIG_VERSION, template: 'original', humanoid, fingers: joints.some(j => /Hand(Index|Middle)\d/.test(j.slot || '')), naming: 'file', frame: frameOf(), plane, joints };
+}

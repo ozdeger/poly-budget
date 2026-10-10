@@ -70,6 +70,12 @@ UVs and normals:
   --hard-edge-angle <deg>  welding keeps normals further apart than this split (default 30)
   --merge-distance <x>     welding merges vertices this close, a share of the model's size (default 0.0001%)
 
+Rig (FBX and GLB carry it):
+  --rig <kind>             humanoid: a skeleton found from the shape of a standing figure, weighted by bone heat;
+                           original: the file's own skeleton and weights, carried onto the result; none (default)
+  --fingers <f>            auto (default: where the hands have them apart), full or none
+  --bone-names <n>         mixamo (default: Unity's Humanoid, Godot and Blender map them) or unreal
+
 Output:
   -o, --out <dir>          where the files go (default: the current directory)
   -f, --format <f>         fbx (default), obj or glb
@@ -95,6 +101,7 @@ const options = {
   'lock-borders': { type: 'boolean' }, 'cross-seams': { type: 'boolean' }, 'no-optimize': { type: 'boolean' },
   uvs: { type: 'string' }, 'uv-layout': { type: 'string' }, 'texture-size': { type: 'string' },
   normals: { type: 'string' }, 'crease-angle': { type: 'string' }, 'hard-edge-angle': { type: 'string' }, 'merge-distance': { type: 'string' },
+  rig: { type: 'string' }, fingers: { type: 'string' }, 'bone-names': { type: 'string' },
   out: { type: 'string', short: 'o' }, format: { type: 'string', short: 'f' }, units: { type: 'string' }, name: { type: 'string' }, zip: { type: 'boolean' },
   json: { type: 'boolean' }, info: { type: 'boolean' }, 'no-measure': { type: 'boolean' }, quiet: { type: 'boolean', short: 'q' },
   help: { type: 'boolean', short: 'h' }, version: { type: 'boolean' },
@@ -153,6 +160,9 @@ function optionsOf(values, positionals, MODEL_EXT, IMAGE_EXT, extOf) {
   if (values['crease-angle'] !== undefined) o.creaseAngle = num('crease-angle', values['crease-angle'], 10, 90);
   if (values['hard-edge-angle'] !== undefined) o.hardAngle = num('hard-edge-angle', values['hard-edge-angle'], 0, 90);
   if (values['merge-distance'] !== undefined) o.mergeDistance = share('merge-distance', values['merge-distance']);
+  if (values.rig !== undefined) o.rig = choice('rig', values.rig, { humanoid: 'humanoid', original: 'original', none: 'none' });
+  if (values.fingers !== undefined) o.fingers = choice('fingers', values.fingers, { auto: 'auto', full: 'full', none: 'none' });
+  if (values['bone-names'] !== undefined) o.boneNames = choice('bone-names', values['bone-names'], { mixamo: 'mixamo', unreal: 'unreal' });
   if (values.format !== undefined) o.format = choice('format', values.format.toLowerCase(), { fbx: 'fbx', obj: 'obj', glb: 'glb' });
   if (values.units !== undefined) o.units = choice('units', values.units, { auto: 'auto', m: 'm', cm: 'cm' });
   if (values.name !== undefined) o.name = values.name;
@@ -214,6 +224,11 @@ function summary(r) {
   const why = x.uvFit && x.uvFit.decision === 'rebuilt' ? `: the original UVs would put ${pct(100 * x.uvFit.misplaced)}% of the texture in the wrong place` : '';
   lines.push(`  UVs         ${x.uvs === 'new' ? `new · ${fmt(x.uvCharts)} charts${x.uvLayout === 'paint' ? ', paintable' : ''}${why}` : x.uvs === 'original' ? `original${x.uvFit ? ` · ${pct(100 * x.uvFit.misplaced)}% of the texture misplaced` : ''}` : 'none'}`);
   if (x.symmetry) lines.push(`  symmetry    ${x.symmetry.paired === x.symmetry.total ? `all ${fmt(x.symmetry.total)} vertices paired` : `${fmt(x.symmetry.total - x.symmetry.paired)} of ${fmt(x.symmetry.total)} unpaired`}`);
+  if (r.rig) {
+    const g = r.rig;
+    lines.push(`  rig         ${g.skeleton === 'file' ? "the file's skeleton" : 'humanoid'} · ${fmt(g.joints)} joints (${fmt(g.deforming)} deform)${g.fingers ? ' with fingers' : ''}${g.base ? ' · a Root carries the base' : ''} · weights by ${g.weights.method}`);
+    if (g.estimated && g.estimated.length) lines.push(`              placed by proportion, check: ${g.estimated.join(', ')}`);
+  }
   lines.push('', 'Wrote');
   const w = Math.max(...r.files.map(f => (f.path || f.name).length));
   for (const f of r.files) lines.push(`  ${(f.path || f.name).padEnd(w)}  ${size(f.bytes).padStart(8)}  ${f.note}`);

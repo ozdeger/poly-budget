@@ -1,14 +1,17 @@
 // Rigging: the humanoid skeleton and its rest orientations, skin weights on the result's distinct positions, posing,
 // and FBX and GLB files that carry the skeleton and the weights the way three.js and Assimp read them.
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { createRequire } from 'module';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { THREE, core, S, settings, check, sceneOf, context } from './helpers.js';
+import { THREE, core, S, settings, check, sceneOf, context, collectScene } from './helpers.js';
 import { figure, figureJoints } from './figure.js';
 import * as R from '../src/rig.js';
 import * as K from '../src/skin.js';
 import { glbBytes } from '../src/glb.js';
+import { run } from '../cli/pipeline.mjs';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const template = JSON.parse(fs.readFileSync(new URL('../src/fbx_template.json', import.meta.url), 'utf8'));
@@ -376,4 +379,67 @@ for (const scale of [1, 0.01]) {
   const glb = await glbBytes(objects, scale, R.exportSkeleton(rig, scale));
   const gltf = await new GLTFLoader().parseAsync(glb.buffer.slice(glb.byteOffset, glb.byteOffset + glb.byteLength), '');
   comparePosed(gltf.scene, scale, `GLB at scale ${scale}`);
+}
+
+console.log("== a file's own skeleton");
+// A rigged file opened again: its skeleton and weights come along, the joints where they were, oriented as they were,
+// and the weights land back on the result's positions.
+{
+  const fbx = core.writeFBX(objects, { unitScale: 100, fileName: 'Figure.fbx', skeleton: R.exportSkeleton(rig, 1) }, template);
+  const glb = await glbBytes(objects, 1, R.exportSkeleton(rig, 1));
+  const fromFbx = collectScene(new FBXLoader().parse(fbx.buffer.slice(fbx.byteOffset, fbx.byteOffset + fbx.byteLength), ''));
+  const fromGlb = collectScene((await new GLTFLoader().parseAsync(glb.buffer.slice(glb.byteOffset, glb.byteOffset + glb.byteLength), '')).scene);
+  for (const [label, c] of [['FBX', fromFbx], ['GLB', fromGlb]]) {
+    const fileRig = c.skin && R.rigFromSkeleton(c.skin.bones);
+    if (!fileRig) { check(false, `${label}: the skeleton is read`); continue; }
+    let off = 0, turn = 0;
+    for (const j of fileRig.joints) {
+      const o = rig.joints.find(k => k.name === j.name);
+      if (!o) { off = Infinity; continue; }
+      off = Math.max(off, R.dist(j.pos, o.pos));
+      turn = Math.max(turn, angle(R.qrot(j.rot, [0, 1, 0]), R.qrot(o.rot, [0, 1, 0])), angle(R.qrot(j.rot, [1, 0, 0]), R.qrot(o.rot, [1, 0, 0])));
+    }
+    const paired = fileRig.joints.filter(j => j.side !== 'C').every(j => j.mirror >= 0 && fileRig.joints[j.mirror].mirror === fileRig.joints.indexOf(j));
+    check(fileRig.joints.length === rig.joints.length && off < 1e-5 && turn < 1e-3, `${label}: ${fileRig.joints.length} joints back where they were (${off.toExponential(1)} m), turned as they were (${turn.toExponential(1)}°)`);
+    check(R.isHumanoid(fileRig) && paired && fileRig.joints.every(j => j.slot === j.name), `${label}: read as a humanoid, every left joint paired with its right one by name`);
+    const map = K.fileBoneMap(c.skin.bones, fileRig), B = fileRig.joints.length;
+    const W = K.transferWeights(c.positions, c.skin.index.map(i => map[i]), c.skin.weight, 4, B, groups.positions, groups.count);
+    let worst = 0;
+    for (let g = 0; g < groups.count; g++) {
+      for (let k = 0; k < 4; k++) {
+        const w0 = gskin.weight[g * 4 + k];
+        if (!w0) continue;
+        const name = rig.joints[gskin.index[g * 4 + k]].name, b = fileRig.joints.findIndex(j => j.name === name);
+        worst = Math.max(worst, Math.abs((b >= 0 ? W[g * B + b] : 0) - w0));
+      }
+    }
+    check(worst < 0.01, `${label}: the file's weights carried onto the result by position differ from the exported ones by ${worst.toFixed(4)} at most`);
+  }
+}
+
+console.log('== the command line');
+// --rig humanoid on a figure written as an OBJ, then --rig original on the GLB that comes out: the same skeleton comes
+// back by name, with its weights.
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'poly-budget-rig-'));
+  process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+  const f = figure({ pose: 'A', fingers: false, step: 0.01 }), g = f.geometry.toNonIndexed(), p = g.attributes.position, nrm = g.attributes.normal;
+  const lines = ['o Figure'];
+  for (let i = 0; i < p.count; i++) lines.push(`v ${p.getX(i)} ${p.getY(i)} ${p.getZ(i)}`);
+  for (let i = 0; i < p.count; i++) lines.push(`vn ${nrm.getX(i)} ${nrm.getY(i)} ${nrm.getZ(i)}`);
+  for (let i = 0; i < p.count; i += 3) lines.push(`f ${i + 1}//${i + 1} ${i + 2}//${i + 2} ${i + 3}//${i + 3}`);
+  const obj = path.join(dir, 'figure.obj');
+  fs.writeFileSync(obj, lines.join('\n'));
+  const a = await run(obj, { budget: '6k', rig: 'humanoid', format: 'glb', measure: false, hidden: false });
+  const g1 = a.report.rig;
+  check(g1 && g1.skeleton === 'humanoid' && g1.joints === 25 && g1.weights.unweighted === 0 && /rigged: 25 joints/.test(a.files[0].note), `--rig humanoid: ${g1 && g1.joints} joints, weights by ${g1 && g1.weights.method}, the GLB rigged`);
+  const glbFile = path.join(dir, a.files[0].name);
+  fs.writeFileSync(glbFile, a.files[0].bytes);
+  const b = await run(glbFile, { budget: '3k', rig: 'original', format: 'fbx', measure: false, hidden: false });
+  const g2 = b.report.rig;
+  const same = g2 && g1.bones.every(x => g2.bones.some(y => y.name === x.name && R.dist(y.position, x.position) < 1e-4));
+  check(g2 && g2.skeleton === 'file' && g2.joints === g1.joints && same && g2.weights.unweighted === 0, `--rig original on that GLB: the same ${g2 && g2.joints} joints where they were, weights from the file`);
+  let threw = false;
+  try { await run(obj, { budget: '2k', rig: 'original', measure: false, hidden: false }); } catch (e) { threw = /no skeleton/.test(e.message); }
+  check(threw, '--rig original on a model without a skeleton says so');
 }

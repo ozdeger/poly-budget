@@ -43,7 +43,8 @@ export function initRig(host) {
   const R = () => st() && st().rig;
   const ensure = () => {
     const s = st();
-    if (!s.rig) s.rig = { rig: null, weights: null, edited: false, stale: false, report: null, undo: [], redo: [], selected: -1, busy: null, pose: null, rootOffset: null };
+    // source: where the weights come from: 'heat' (worked out), 'file' (the file's own, carried over) or 'paint'.
+    if (!s.rig) s.rig = { rig: null, weights: null, edited: false, source: 'heat', file: null, pending: null, transferred: false, stale: false, report: null, undo: [], redo: [], selected: -1, busy: null, pose: null, rootOffset: null };
     return s.rig;
   };
   const inRig = () => settings.space === 'rig';
@@ -353,6 +354,8 @@ export function initRig(host) {
       }
       s.weights = { W: out.W, groups: { group: out.group, count: out.count, positions: out.positions }, res, joints: s.rig.joints.length };
       s.edited = false;
+      s.source = 'heat';
+      s.transferred = false;
       s.stale = false;
       if (out.stats && out.stats.ms) s.weightMs = out.stats.ms;
       // The result moved on while the job ran (its UVs came): the weights follow it by position, or are worked out again.
@@ -381,23 +384,62 @@ export function initRig(host) {
 
   // A new result (another budget, or the same one with its UVs): weights carry over where every position is still there
   // (UV seams only split vertices); otherwise they are worked out again, or marked out of date where painted by hand.
+  // The file's own weights, carried from its vertices onto the result's by position.
+  function weightsFromFile(res) {
+    const s = R(), { W, groups } = SKIN.fileWeights(s.file, s.rig, res);
+    s.weights = { W, groups, res, joints: s.rig.joints.length };
+    s.stale = false;
+    s.transferred = false;
+  }
+  const fillEmpty = (W, B, groups) => SKIN.fillEmptyWeights(W, B, groups, R().rig);
+  // Weights from other positions (an earlier result's, or ones saved with the tab) onto res: exactly where every position
+  // is still there, by closest points otherwise.
+  function weightsFrom(positions, sparse, res) {
+    const s = R(), B = s.rig.joints.length, groups = SKIN.skinGroups(res);
+    // Stored compact (each position's eight largest), so each row is summed to 1 again.
+    const dense = new Float32Array((positions.length / 3) * B);
+    for (let g = 0; g < positions.length / 3; g++) {
+      let t = 0;
+      for (let k = 0; k < sparse.K; k++) { const w = sparse.weight[g * sparse.K + k]; if (w > 0) { dense[g * B + sparse.index[g * sparse.K + k]] += w; t += w; } }
+      if (t > 0) for (let b = 0; b < B; b++) dense[g * B + b] /= t;
+    }
+    let W = SKIN.remapWeights(dense, B, positions, groups), moved = false;
+    if (!W) { W = SKIN.transferWeights(positions, sparse.index, sparse.weight, sparse.K, B, groups.positions, groups.count); fillEmpty(W, B, groups); moved = true; }
+    s.weights = { W, groups, res, joints: B };
+    s.stale = false;
+    return moved;
+  }
+  // A new result (another budget, or the same one with its UVs): weights carry over where every position is still there
+  // (UV seams only split vertices). Otherwise worked-out weights are worked out again, the file's are carried from it
+  // again, and painted ones are carried from the last result by closest points (and flagged for a look).
   function carryWeights(res) {
     const s = R(), w = s && s.weights;
     if (!w || !res || w.res === res) return true;
     const groups = SKIN.skinGroups(res);
     const W = SKIN.remapWeights(w.W, s.rig.joints.length, w.groups.positions, groups);
     if (W) { s.weights = { W, groups, res, joints: s.rig.joints.length }; return true; }
+    if (s.source === 'file' && s.file) { weightsFromFile(res); return true; }
+    if (s.edited) { s.transferred = weightsFrom(w.groups.positions, SKIN.sparseWeights(w.W, w.joints, w.groups.count), res); return true; }
     s.weights = null;
     s.stale = true;
-    if (!s.edited && inRig()) scheduleWeights(0);
+    if (inRig()) scheduleWeights(0);
     return false;
   }
-  function onResult(res) {
+  // Weights for the current result, however they come: saved with the tab, carried from the last result, from the file,
+  // or worked out (in the Rig workspace only, where they show).
+  function ensureWeights() {
+    const s = R(), res = st() && st().result;
+    if (!s || !s.rig || !res) return;
+    // A file's skeleton finds its mirror plane on the first result, for mirror editing.
+    if (s.rig.plane === undefined) { const m = RIG.mirrorPlaneOf(res.positions, res.vertexCount); s.rig.plane = m && m.error < 0.01 ? { axis: m.axis, offset: m.offset } : null; }
+    if (s.pending && s.pending.positions) { s.transferred = weightsFrom(s.pending.positions, s.pending, res); s.pending = null; }
+    else if (s.weights) carryWeights(res);
+    else if (s.source === 'file' && s.file) weightsFromFile(res);
+    else if (inRig() && !s.busy && !engine.job) scheduleWeights(0);
+  }
+  function onResult() {
     bvhOf = null;
-    const s = R();
-    if (!s || !s.rig) { sync(); return; }
-    if (s.weights) carryWeights(res);
-    else if (inRig() && !s.busy) scheduleWeights(0);
+    ensureWeights();
     sync();
   }
 
@@ -571,8 +613,8 @@ export function initRig(host) {
     }
     s.savedPose = s.pose; s.savedOffset = s.rootOffset;
     if (!ensurePoser() && !s.busy) scheduleWeights(0);
-    const t0 = performance.now(), motion = s.rig.template === 'humanoid' ? settings.rigMotion : 'each';
-    const loop = settings.rigMotion === 'each' || s.rig.template !== 'humanoid' ? 1.6 * s.rig.joints.filter(j => j.deform).length : 2.2;
+    const t0 = performance.now(), motion = RIG.isHumanoid(s.rig) ? settings.rigMotion : 'each';
+    const loop = motion === 'each' ? 1.6 * s.rig.joints.filter(j => j.deform).length : 2.2;
     playing = { raf: 0 };
     const frame = now => {
       if (!playing) return;
@@ -667,6 +709,7 @@ export function initRig(host) {
   function weightsEdited(final) {
     const s = R();
     s.edited = true;
+    s.source = 'paint';
     if (poser) poser.W = null;
     if (posing()) applyPose();
     paintWeights();
@@ -785,7 +828,11 @@ export function initRig(host) {
     if (!res) { head.textContent = 'Waiting for the result'; note.textContent = 'The skeleton goes on the reduced model.'; row.className = 'status-line busy'; }
     else if (s && s.busy === 'place') { head.textContent = 'Finding the skeleton'; note.textContent = 'Reading the head, hands and feet from the shape…'; row.className = 'status-line busy'; }
     else if (!rig) { head.textContent = 'No skeleton yet'; note.textContent = 'Find one from the shape of a standing figure, or build your own bone by bone.'; row.className = 'status-line'; }
-    else if (rig.template === 'custom') {
+    else if (rig.template === 'original') {
+      head.textContent = `${rig.joints.length} joints from the file`;
+      note.textContent = `The file's own skeleton, names and orientations kept, so animations made for it still fit.${RIG.isHumanoid(rig) ? '' : ' It isn\'t a humanoid one, so the test motion bends each joint in turn.'}`;
+      row.className = 'status-line ok';
+    } else if (rig.template === 'custom') {
       head.textContent = `${rig.joints.length} ${rig.joints.length === 1 ? 'joint' : 'joints'}`;
       note.textContent = `Built by hand: click the model with Add joints (J) to chain new ones from the selected joint${rig.plane ? ', mirrored across the model\'s plane' : ''}, and drag them with Move joints (V).`;
       row.className = 'status-line ok';
@@ -801,7 +848,11 @@ export function initRig(host) {
     if (!rig) { wHead.textContent = 'No weights'; wNote.textContent = 'They come with the skeleton.'; wRow.className = 'status-line'; }
     else if (s.busy) { wHead.textContent = 'Working out the weights'; wNote.textContent = 'Bone heat over the reduced surface…'; wRow.className = 'status-line busy'; }
     else if (!s.weights || s.stale) { wHead.textContent = 'Out of date'; wNote.textContent = s.edited ? 'The skeleton changed since the weights were painted. Work them out again to fit it, or keep painting.' : 'They follow the skeleton in a moment.'; wRow.className = 'status-line warn'; }
+    else if (s.source === 'file') { wHead.textContent = 'From the file'; wNote.textContent = `The file's own weights, carried onto the result by position. Up to ${SKIN.MAX_INFLUENCES} joints per vertex in the export.`; wRow.className = 'status-line ok'; }
+    else if (s.transferred) { wHead.textContent = 'Carried over'; wNote.textContent = 'The painted weights were carried onto this result from the last one by position: check the joints that bend most.'; wRow.className = 'status-line warn'; }
     else { wHead.textContent = s.edited ? 'Painted' : 'Bone heat'; wNote.textContent = `Up to ${SKIN.MAX_INFLUENCES} joints per vertex in the export${s.weightMs && !s.edited ? ` · worked out in ${(s.weightMs / 1000).toFixed(1)} s` : ''}. ${s.selected >= 0 ? `Showing ${rig.joints[s.selected].name}'s weights: paint them with D, S, G and H.` : 'Select a joint to see and paint its weights.'}`; wRow.className = 'status-line ok'; }
+    $('rigFromFile').hidden = !(s && s.file) || !!(rig && rig.template === 'original');
+    $('rigFileWeights').hidden = !(s && s.file && rig && rig.template === 'original' && s.source !== 'file');
     const ready = !!(rig && s.weights && s.weights.res === res && !s.busy);
     for (const id of ['rigSmoothAll', 'rigClean', 'rigMirrorLR', 'rigMirrorRL']) $(id).disabled = !ready || (/Mirror/.test(id) && !rig.plane);
     // Bone tree.
@@ -827,7 +878,7 @@ export function initRig(host) {
       $('rigPlaced').className = `note ${sel.placed === 'estimated' ? 'warn' : ''}`;
     }
     // Pose.
-    const custom = rig && rig.template !== 'humanoid';
+    const custom = rig && !RIG.isHumanoid(rig);
     $('rigPlay').disabled = !rig;
     $('rigPlay').textContent = playing ? 'Stop' : 'Play the test motion';
     $('rigResetPose').disabled = !(s && s.pose && s.pose.some(Boolean)) || !!playing;
@@ -1080,6 +1131,7 @@ export function initRig(host) {
     for (const b of document.querySelectorAll('#rigMotionSeg button')) b.setAttribute('aria-pressed', String(b.dataset.motion === settings.rigMotion));
     if (rig) applyControls();
     if (!rig && playing) play(false);
+    if (rig) ensureWeights();
     refreshPose();
     drawSkeleton();
     paintWeights();
@@ -1092,6 +1144,16 @@ export function initRig(host) {
   $('rigRedo').addEventListener('click', () => undoRedo(true));
   $('rigAuto').addEventListener('click', () => runRig('place'));
   $('rigReweight').addEventListener('click', () => { const s = R(); if (s) { s.edited = false; runRig('weights'); } });
+  // Back to the file's own skeleton, or its weights.
+  $('rigFromFile').addEventListener('click', () => {
+    const s = R();
+    if (!s || !s.file) return;
+    commit(s.rig ? RIG.cloneRig(s.rig) : null);
+    s.rig = fileRig(s);
+    s.selected = -1; s.pose = null;
+    useFileWeights(s);
+  });
+  $('rigFileWeights').addEventListener('click', () => { const s = R(); if (s && s.file && s.rig && s.rig.template === 'original') useFileWeights(s); });
   $('rigCustom').addEventListener('click', () => {
     const s = ensure(), res = st().result;
     if (!res) return;
@@ -1201,8 +1263,51 @@ export function initRig(host) {
   host.canvas.addEventListener('pointercancel', onPointerUp);
   host.canvas.addEventListener('pointerleave', () => { if (!stroke) { ring.visible = ring2.visible = false; $('rigUnder').textContent = ''; host.requestRender(); } });
 
+  function fileRig(s) {
+    const rig = RIG.rigFromSkeleton(s.file.skin.bones);
+    rig.plane = undefined;
+    s.report = { notes: [] };
+    return rig;
+  }
+  function useFileWeights(s) {
+    s.source = 'file'; s.edited = true; s.transferred = false;
+    s.weights = null;
+    if (st().result) weightsFromFile(st().result);
+    onResult();
+    host.saveSessionSoon();
+  }
+
   // ---------- what the page asks of the workspace ----------
   return {
+    // A model was opened: its rig from the tab's saved record, or the file's own skeleton, or none yet.
+    loaded(collected, saved) {
+      const s0 = st();
+      s0.rig = null;
+      const s = ensure();
+      s.file = collected && collected.skin && collected.skin.bones.length ? collected : null;
+      if (saved && saved.rig) {
+        s.rig = saved.rig;
+        s.source = saved.source || 'heat';
+        s.edited = s.source !== 'heat';
+        s.pending = saved.weights || null;
+        s.locks = saved.locks ? Uint8Array.from(saved.locks) : null;
+        s.report = saved.report || null;
+        if (s.source === 'file' && !s.file) { s.source = 'heat'; s.edited = false; }
+      } else if (s.file) {
+        s.rig = fileRig(s);
+        s.source = 'file';
+        s.edited = true;
+      }
+    },
+    // What the tab saves of its rig: the skeleton, where its weights come from, and painted weights themselves (compact,
+    // with their positions, so they find their places on the result again).
+    record() {
+      const s = R();
+      if (!s || !s.rig) return null;
+      const w = s.weights;
+      const weights = s.source === 'paint' && w ? { ...SKIN.sparseWeights(w.W, w.joints, w.groups.count, 8), positions: w.groups.positions } : s.source === 'paint' && s.pending ? s.pending : null;
+      return { version: 1, rig: RIG.cloneRig(s.rig), source: s.source, report: s.report, locks: s.locks ? Array.from(s.locks) : null, weights };
+    },
     sync,
     onKey,
     onPointerDown,
@@ -1229,6 +1334,8 @@ export function initRig(host) {
       const s = R();
       if (!s || !s.rig || !s.rig.joints.length) return null;
       let w = s.weights && s.weights.res === res ? s.weights : null;
+      if (!w && s.source === 'file' && s.file) { weightsFromFile(res); w = s.weights; }
+      if (!w && s.pending) { weightsFrom(s.pending.positions, s.pending, res); s.pending = null; w = s.weights; }
       if (!w) {
         const h = SKIN.boneHeat(meshOf(res), s.rig);
         w = s.weights = { W: h.W, groups: h.groups, res, joints: s.rig.joints.length };

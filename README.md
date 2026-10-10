@@ -16,6 +16,7 @@ Scans, sculpts and AI-generated characters often arrive with millions of triangl
 
 - **From millions to thousands.** A two-million-triangle scan becomes 10,000 quads that look almost the same once textured.
 - **Clean enough to rig.** Quads that follow the form, ready to edit, subdivide and animate.
+- **Rigged in a click.** A skeleton found from the shape, weights worked out and ready to paint, and a file that animates in Unity, Unreal, Godot and Blender.
 - **Your textures come along.** Colours and surface detail are carried onto the new model for you.
 
 ![The Poly Budget editor: a scan of two million triangles beside its remesh into ten thousand quads, both textured](docs/images/editor.jpg)
@@ -56,6 +57,16 @@ Choose **Paintable** and the texture layout comes in a few large, upright pieces
 
 ![The Texture and UVs panel: the original's texture layout above, the new paintable layout below](docs/images/uvs.jpg)
 
+## Rig it for animation
+
+Switch to **Rig** (R) and press **Find the skeleton**. For a figure standing in a T or A pose, the head, hands and feet are read from the shape, and the joints go where the limbs narrow, turn and bend: wrists, ankles, elbows, knees, shoulders and hips, fingers where the hands have them apart. A figure on a base gets a Root that keeps the base where it is. A joint placed by a figure's proportions rather than read from the shape shows in amber, so you know which ones to check.
+
+- **Fix what it got wrong.** Drag a joint and it settles in the middle of the limb under the pointer, from any view. Its mirror image follows. Add chains of your own for tails, hair, skirts and props, or build a whole skeleton by hand for a creature or a machine.
+- **Weights, worked out and yours to paint.** Each joint's weight spreads over the surface from the parts nearest it, smooth across the joints. Paint them with Add, Subtract, Set and Smooth brushes, lock the joints you're happy with, and copy one side onto the other.
+- **See it move.** Turn any joint, or play a walk, a squat, arms up and down or a twist, and watch how the mesh bends before you export.
+- **Ready for your engine.** FBX and GLB carry the skeleton and weights, with Mixamo's joint names that Unity's Humanoid, Godot and Blender map on their own, or Unreal's.
+- **Already rigged?** A rigged FBX or GLB keeps its own skeleton and weights on the light model, names and orientations as they were, so the animations made for it still fit.
+
 ## And the rest of your workflow
 
 - **Mirror symmetry.** Work on one half and the other mirrors it exactly.
@@ -87,7 +98,7 @@ The same tool runs without the page, from a terminal:
 node cli/poly-budget.mjs character.fbx --quads auto --json
 ```
 
-It uses the app's own code and defaults. `--quads auto` takes the budget from the zones, paint comes as rules (by part, material or a box around an area), and the report says what came out: the face counts, how far the result lies from the original, and the budget zones. Textures aren't baked there yet, so a remesh comes with new UVs but no textures; Triangles mode keeps the original UVs and textures while they fit. See the [command line](docs/DEVELOPMENT.md#command-line).
+It uses the app's own code and defaults. `--quads auto` takes the budget from the zones, paint comes as rules (by part, material or a box around an area), `--rig humanoid` rigs the result (`--rig original` keeps a rigged file's own skeleton), and the report says what came out: the face counts, how far the result lies from the original, the budget zones and the skeleton. Textures aren't baked there yet, so a remesh comes with new UVs but no textures; Triangles mode keeps the original UVs and textures while they fit. See the [command line](docs/DEVELOPMENT.md#command-line).
 
 ## Private by design
 
@@ -95,7 +106,8 @@ Everything happens on your own computer, inside the browser tab. Your models and
 
 ## Good to know
 
-- Bones and animations aren't carried over: you get the model in its rest pose.
+- A rigged model's skeleton and weights come along, but its animations don't.
+- Finding the skeleton works for standing two-legged figures with their arms away from the body. For anything else, or where it misplaces joints, drag them into place or build the skeleton by hand.
 - Each model keeps one texture layout.
 - Very large models want a desktop computer. A phone may run out of memory.
 - Poly Budget needs an internet connection to start.
@@ -118,6 +130,11 @@ Everything happens on your own computer, inside the browser tab. Your models and
 | `[` / `]` | Smaller / larger brush |
 | ⌘Z / Ctrl+Z | Undo paint |
 | ⇧⌘Z / Ctrl+Y | Redo paint |
+| R | Shape or Rig |
+| V, J, P | Rig: move joints, add joints, pose |
+| D, S, G, H | Rig: add, subtract, set or smooth weights |
+| Space | Rig: play or stop the test motion |
+| Delete | Rig: delete the selected joint |
 
 </details>
 

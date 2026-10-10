@@ -13,6 +13,9 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import * as core from '../src/core.js';
 import { collectScene } from '../src/collect.js';
+import * as RIG from '../src/rig.js';
+import * as SKIN from '../src/skin.js';
+import { bonesOf, meshOf } from '../src/glb.js';
 import { computeVisibility } from '../src/visibility.js';
 import { formDensity } from '../src/quad.js';
 import { openModel, MAP_SLOTS } from './load.mjs';
@@ -35,6 +38,7 @@ export const DEFAULTS = {
   normals: 'original', creaseAngle: 60, hardAngle: 30, mergeDistance: 1e-6,
   uvMode: 'auto', uvStyle: 'compact', bakeSize: 1024,
   format: 'fbx', units: 'auto', name: null, zip: false, measure: true, textures: [],
+  rig: 'none', fingers: 'auto', boneNames: 'mixamo',
 };
 
 // A mistake in the options, as opposed to a model that can't be processed.
@@ -70,6 +74,9 @@ export function settingsOf(opt = {}) {
   o.bakeSize = oneOf('bakeSize', Number(o.bakeSize), [512, 1024, 2048]);
   oneOf('format', o.format, ['fbx', 'obj', 'glb']);
   oneOf('units', o.units, ['auto', 'm', 'cm']);
+  oneOf('rig', o.rig, ['none', 'humanoid', 'original']);
+  oneOf('fingers', o.fingers, ['auto', 'full', 'none']);
+  oneOf('boneNames', o.boneNames, ['mixamo', 'unreal']);
   if (o.budget !== 'auto' && parseBudget(o.budget, 1e6) === null) throw usage(`budget takes a count (12500), a short count (12.5k), a share of the original triangles (5%) or auto: not ${JSON.stringify(o.budget)}`);
   if (o.budget === 'auto' && o.topology !== 'quads') throw usage('an auto budget needs Quads: it comes from the budget zones, which only a remesh measures');
   o.mirror = mirrorSpec(o.mirror);
@@ -289,9 +296,11 @@ function materialInfos(mats, names, res) {
 }
 
 // GLB through the three.js exporter, as glbBytes in src/glb.js; the materials go without their maps, which aren't
-// decoded here.
-async function glbBytes(objects, scale) {
+// decoded here. skeleton: rig.js exportSkeleton(rig, scale), for a rigged result.
+async function glbBytes(objects, scale, skeleton = null) {
   const scene = new THREE.Scene();
+  const rig = skeleton && skeleton.length ? bonesOf(skeleton) : null;
+  if (rig) scene.add(...rig.roots);
   for (const o of objects) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(o.positions, v => v * scale), 3));
@@ -318,7 +327,7 @@ async function glbBytes(objects, scale) {
       }
       return new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...mi.color, THREE.SRGBColorSpace) });
     });
-    const mesh = new THREE.Mesh(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial());
+    const mesh = meshOf(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial(), o, rig);
     mesh.name = o.name;
     scene.add(mesh);
   }
@@ -472,17 +481,53 @@ export async function run(file, opt = {}, progress = null) {
     lap('measure');
   }
 
+  // Rigging, as the app's Rig workspace does it: a humanoid skeleton found on the result with weights by bone heat, or
+  // the file's own skeleton with its weights carried over by position.
+  let rig = null, rigReport = null, skin = null;
+  if (o.rig !== 'none') {
+    say('rig', o.rig === 'original' ? "Carrying the file's skeleton over" : 'Finding the skeleton');
+    let W, groups, how, notes = [];
+    if (o.rig === 'original') {
+      if (!collected.skin) throw usage("--rig original: the file has no skeleton to carry over (--rig humanoid finds one from the shape)");
+      rig = RIG.rigFromSkeleton(collected.skin.bones);
+      ({ W, groups } = SKIN.fileWeights(collected, rig, res));
+      how = 'from the file';
+    } else {
+      const placed = RIG.placeHumanoid(res, { fingers: o.fingers, naming: o.boneNames, plane: symmetry });
+      rig = placed.rig;
+      notes = placed.report.notes;
+      if (!placed.report.found) warnings.push(`The skeleton was laid out by a figure's proportions, not read from the shape: ${notes.join(' ')} Check it in the app's Rig workspace.`);
+      ({ W, groups } = SKIN.boneHeat(res, rig));
+      how = 'bone heat';
+    }
+    RIG.uniqueNames(rig);
+    const limited = SKIN.limitWeights(W, groups.count, rig.joints.length);
+    skin = SKIN.vertexSkin(groups.group, limited);
+    const estimated = rig.joints.filter(j => j.placed === 'estimated').map(j => j.name);
+    rigReport = {
+      skeleton: o.rig === 'original' ? 'file' : 'humanoid', joints: rig.joints.length, deforming: rig.joints.filter(j => j.deform).length,
+      names: o.rig === 'original' ? 'file' : o.boneNames, fingers: !!rig.fingers, base: rig.base !== undefined && rig.base !== null,
+      ...(o.rig === 'original' ? {} : { estimated }), notes,
+      weights: { method: how, maxInfluences: SKIN.MAX_INFLUENCES, unweighted: limited.unweighted },
+      bones: rig.joints.map(j => ({ name: j.name, parent: j.parent >= 0 ? rig.joints[j.parent].name : null, position: r3(j.pos), ...(j.placed === 'estimated' ? { estimated: true } : {}) })),
+    };
+    if (o.format === 'obj') warnings.push('OBJ holds no skeleton: --format fbx or glb carry the rig.');
+    lap('rig');
+  }
+
   // The export, as the app's Export builds its zip.
   say('export', 'Writing files');
   const unitScale = o.units === 'm' ? 100 : o.units === 'cm' ? 1 : model.meta.unitScale || 100;
   const base = sanitize(o.name || model.meta.name.replace(/\.[^.]+$/, ''));
   const stem = o.name ? base : res.quad ? `${base}_${countQuads(res)}quads` : `${base}_${res.triCount}`;
   const infos = materialInfos(mats, names, res);
-  const objects = core.exportObjects(res, collected.parts, infos, collected.parts.length === 1, base);
+  const rigged = rig && o.format !== 'obj';
+  const objects = core.exportObjects(res, collected.parts, infos, collected.parts.length === 1, base, rigged ? skin : null);
   const out = new Map();
   const add = (name, bytes, note) => { if (!out.has(name)) out.set(name, { name, bytes, note }); };
-  if (o.format === 'fbx') add(`${stem}.fbx`, core.writeFBX(objects, { unitScale, fileName: `${stem}.fbx` }, FBX_TEMPLATE), 'model');
-  else if (o.format === 'glb') add(`${stem}.glb`, await glbBytes(objects, unitScale / 100), 'model');
+  const modelNote = rigged ? `model, rigged: ${rig.joints.length} joints and their weights` : 'model';
+  if (o.format === 'fbx') add(`${stem}.fbx`, core.writeFBX(objects, { unitScale, fileName: `${stem}.fbx`, skeleton: rigged ? RIG.exportSkeleton(rig, 1) : null }, FBX_TEMPLATE), modelNote);
+  else if (o.format === 'glb') add(`${stem}.glb`, await glbBytes(objects, unitScale / 100, rigged ? RIG.exportSkeleton(rig, unitScale / 100) : null), modelNote);
   else {
     const { obj, mtl } = core.writeOBJ(objects, { scale: unitScale / 100, mtlName: `${stem}.mtl` });
     add(`${stem}.obj`, strToU8(obj), 'model');
@@ -511,7 +556,8 @@ export async function run(file, opt = {}, progress = null) {
   if (o.format === 'glb' && carried.length) warnings.push("GLB from the command line doesn't carry textures yet: FBX and OBJ link the original files, which are written beside them.");
   if (budget.why) warnings.push(budget.why);
   if (info.symmetry && info.symmetry.paired !== info.symmetry.total) warnings.push(`${fmt(info.symmetry.total - info.symmetry.paired)} of ${fmt(info.symmetry.total)} vertices have no mirror partner.`);
-  if (collected.parts.some(p => p.skinned)) warnings.push("Bones and animations aren't carried over: skinned meshes come out in their rest pose.");
+  if (collected.parts.some(p => p.skinned) && o.rig !== 'original') warnings.push(`Skinned meshes come out in their rest pose${collected.skin ? ", without the file's skeleton unless --rig original carries it over" : ''}; animations aren't carried over.`);
+  else if (o.rig === 'original') warnings.push("Animations aren't carried over: the skeleton and weights are, so the file's animations still fit the result.");
   if (o.uvMode === 'keep' && res.uvLayout === 'original' && info.uvFit && info.uvFit.misplaced > core.AUTO_UV_LIMIT) warnings.push(`With the original UVs, ${round(100 * info.uvFit.misplaced, 0)}% of the texture lands in the wrong place at this budget: Auto or new UVs avoid that.`);
 
   const report = {
@@ -531,6 +577,7 @@ export async function run(file, opt = {}, progress = null) {
       ...(measured || {}),
       normals: o.normals,
     },
+    ...(rigReport ? { rig: rigReport } : {}),
     textures: {
       carried: o.format === 'glb' ? [] : carried.map(c => ({ file: c.file, map: c.map, material: c.material })),
       baked: false,

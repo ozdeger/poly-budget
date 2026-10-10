@@ -608,3 +608,91 @@ export function mirrorSide(W, B, positions, G, partners, rig, from) {
   }
   return changed;
 }
+
+// Weights carried from one surface's points onto another's by position: each destination point takes the weights of
+// the three source points nearest it, by inverse distance. src: positions (n·3), with K joints and weights per point
+// (index, weight); the result is dense, G × B, summing to 1 where the sources had any weight.
+export function transferWeights(srcP, srcIndex, srcWeight, K, B, dstP, G) {
+  const n = srcP.length / 3;
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], srcP[i * 3 + k]); hi[k] = Math.max(hi[k], srcP[i * 3 + k]); }
+  const size = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1, h = size / Math.max(8, Math.cbrt(n) * 1.5);
+  const key = (x, y, z) => `${Math.floor((x - lo[0]) / h)},${Math.floor((y - lo[1]) / h)},${Math.floor((z - lo[2]) / h)}`;
+  const cells = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = key(srcP[i * 3], srcP[i * 3 + 1], srcP[i * 3 + 2]);
+    let c = cells.get(k);
+    if (!c) cells.set(k, (c = []));
+    c.push(i);
+  }
+  const W = new Float32Array(G * B), best = [[Infinity, -1], [Infinity, -1], [Infinity, -1]];
+  for (let g = 0; g < G; g++) {
+    const x = dstP[g * 3], y = dstP[g * 3 + 1], z = dstP[g * 3 + 2];
+    const cx = Math.floor((x - lo[0]) / h), cy = Math.floor((y - lo[1]) / h), cz = Math.floor((z - lo[2]) / h);
+    for (const b of best) { b[0] = Infinity; b[1] = -1; }
+    // Rings of cells outward until three points are found and no nearer one can lie further out.
+    for (let r = 0; r < 64; r++) {
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== r) continue;
+        for (const i of cells.get(`${cx + dx},${cy + dy},${cz + dz}`) || []) {
+          const d = (srcP[i * 3] - x) ** 2 + (srcP[i * 3 + 1] - y) ** 2 + (srcP[i * 3 + 2] - z) ** 2;
+          if (d < best[2][0]) { best[2][0] = d; best[2][1] = i; best.sort((a, b) => a[0] - b[0]); }
+        }
+      }
+      if (best[2][1] >= 0 && Math.sqrt(best[2][0]) <= r * h) break;
+    }
+    let total = 0;
+    for (const [d, i] of best) {
+      if (i < 0) continue;
+      const f = 1 / (Math.sqrt(d) + 1e-9 * size);
+      for (let k = 0; k < K; k++) { const w = srcWeight[i * K + k]; if (w > 0) { W[g * B + srcIndex[i * K + k]] += f * w; total += f * w; } }
+    }
+    if (total > 0) for (let b = 0; b < B; b++) W[g * B + b] /= total;
+  }
+  return W;
+}
+
+// Dense weights kept compact: each group's K largest (index, weight), for storing.
+export function sparseWeights(W, B, G, K = 8) {
+  const index = new Uint16Array(G * K), weight = new Float32Array(G * K), order = [...Array(B).keys()];
+  for (let g = 0; g < G; g++) {
+    order.sort((a, b) => W[g * B + b] - W[g * B + a]);
+    for (let k = 0; k < Math.min(K, B); k++) { index[g * K + k] = order[k]; weight[g * K + k] = W[g * B + order[k]]; }
+  }
+  return { index, weight, K };
+}
+
+// The file's bone indices (collect.js skin.bones) as the rig's joints, matched by name; a bone the rig no longer has
+// (deleted or renamed) gives its weight to its nearest ancestor that it does have, or the first joint.
+export function fileBoneMap(bones, rig) {
+  const byName = new Map(rig.joints.map((j, i) => [j.name, i]));
+  return Uint16Array.from(bones, (b, i) => {
+    for (let k = i, n = 0; k >= 0 && n < bones.length; k = bones[k].parent, n++) if (byName.has(bones[k].name)) return byName.get(bones[k].name);
+    return 0;
+  });
+}
+
+// Positions left without any weight (a part the file didn't skin) go wholly to the nearest bone. How many there were.
+export function fillEmptyWeights(W, B, groups, rig) {
+  const segs = boneSegments(rig);
+  let filled = 0;
+  for (let g = 0; g < groups.count; g++) {
+    let t = 0;
+    for (let b = 0; b < B; b++) t += W[g * B + b];
+    if (t > 1e-6) continue;
+    const p = [groups.positions[g * 3], groups.positions[g * 3 + 1], groups.positions[g * 3 + 2]];
+    let best = 0, bd = Infinity;
+    segs.forEach((sg, b) => { if (sg) { const d = segmentDistance(p, sg); if (d < bd) { bd = d; best = b; } } });
+    W[g * B + best] = 1;
+    filled++;
+  }
+  return filled;
+}
+
+// The file's own weights (collect.js skin) on a result, by position: { W, groups }.
+export function fileWeights(collected, rig, res) {
+  const groups = skinGroups(res), B = rig.joints.length, map = fileBoneMap(collected.skin.bones, rig);
+  const W = transferWeights(collected.positions, collected.skin.index.map(i => map[i]), collected.skin.weight, 4, B, groups.positions, groups.count);
+  fillEmptyWeights(W, B, groups, rig);
+  return { W, groups };
+}

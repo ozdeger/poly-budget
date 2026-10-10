@@ -5,7 +5,7 @@ The technical notes behind [Poly Budget](https://ozdeger.github.io/poly-budget/)
 > [!NOTE]
 > **Written by AI, not maintained by hand.** Everything in this repository, the code, the tests and these notes, is written and revised by an AI coding assistant (Claude, working in Claude Code) from its owner's requests. None of it is written or kept up to date by hand. Treat it as generated code: check what it produces before you rely on it, and read the code before you reuse it.
 
-Poly Budget is for models that are far too dense for real-time use: scans, sculpts and AI-generated meshes that arrive with a million or more triangles, split vertices and thousands of UV islands. Set a budget, paint where the detail matters (surface no one can see gets less on its own), and the model is rebuilt as quads whose edges follow its shape, ready for editing, subdivision and rigging, with its textures baked onto the new surface. Switch the budget to **Triangles** to reduce the model's own triangles instead, which can keep its original UVs.
+Poly Budget is for models that are far too dense for real-time use: scans, sculpts and AI-generated meshes that arrive with a million or more triangles, split vertices and thousands of UV islands. Set a budget, paint where the detail matters (surface no one can see gets less on its own), and the model is rebuilt as quads whose edges follow its shape, ready for editing, subdivision and rigging, with its textures baked onto the new surface. Switch the budget to **Triangles** to reduce the model's own triangles instead, which can keep its original UVs. The **Rig** workspace then gives the result a skeleton and skin weights, found from its shape and editable by hand, and the export carries them.
 
 Everything runs in your browser. Models and textures are never uploaded.
 
@@ -169,6 +169,30 @@ The palette at the right of the view picks how the models show: **Textured**, **
 
 Each tab holds its own model, paint, mirror plane, budget, view and bakes. A model you open goes into a new tab, unless the current one is empty or shows the sample. Your tabs, with the files they were opened from, reopen as you left them on your next visit. They are kept in this browser's storage only; clearing the site's data removes them.
 
+### Rig for animation
+
+**Rig** at the top of the sidebar (R) turns the page to rigging the result: the reduced model alone, its skeleton drawn over it (faint where the model hides it), and the Skeleton, Bones, Weights and Pose sections. The rig goes with the tab and comes back with it.
+
+- **Find the skeleton** reads a humanoid skeleton from the shape of a standing figure, in a T or an A pose or relaxed, with its limbs free of the body, saved Y up or Z up. It takes about a second.
+  - The joints are Mixamo's: Hips, Spine, Spine1, Spine2, Neck and Head, and per side the Shoulder, Arm, ForeArm and Hand, the UpLeg, Leg, Foot and ToeBase, with end joints on the head and toes. **Fingers** get three joints each (thumb included) where the hands have them apart (Auto), always (laid out by a hand's proportions where they can't be read), or never.
+  - **Joint names**: Mixamo's, which Unity's Humanoid, Godot's humanoid profile and Blender map on their own, or Unreal's mannequin names (`pelvis`, `spine_01`, `upperarm_l`, …).
+  - Each joint's +Y points along its bone and +X is its hinge, the axis elbows, knees, the spine and fingers bend about; left and right are mirrored, so a turn about X bends both alike. The rest pose is the pose the model stands in.
+  - A joint placed by a figure's proportions rather than read from the shape (an elbow on a straight arm, hips hidden by a skirt) shows in amber; the status line counts them.
+  - A figure joined to a base gets a Root joint on the floor that carries the base, so the figure moves on it while the base stays put. Legs hidden in a skirt get their hips from the shoulders' height. Hair down the back doesn't pull the spine into it.
+  - Where the head, hands and feet can't be told apart, the skeleton is laid out by a figure's proportions in the model's bounds, every joint amber.
+- **Build your own** starts from a Root on the floor, for creatures, machines and props.
+- **Move joints** (V): drag a joint and it settles halfway through the limb under the pointer, so it stays inside the body from any view; Alt keeps its depth instead, Shift brings everything below it along. With **Mirror**, its mirror image follows and joints on the mirror plane stay on it. A drag that starts off a joint orbits. Click a bone to select it.
+- **Add joints** (J): click the model to add a joint there, in the middle of the limb, chained from the selected one; off the mirror plane they come in pairs. Esc starts a new chain.
+- **Bones**: the joints as a tree. The selected joint can be renamed, given another parent or made a helper that doesn't move the mesh (end joints are); Delete removes it, and its children and weights go to its parent. Every edit can be undone (⌘Z).
+- **Weights** are worked out by bone heat when the skeleton is found, and again whenever it changes, until you paint them. The Weights section shows the selected joint's weights as heat (blue none, red all), every joint in its own colour, or the problems: vertices with more joints than an engine takes (magenta; the export keeps the largest four) or none (red).
+- **Painting weights**: Add (D), Subtract (S), Set to a value (G) and Smooth (H) paint the selected joint's weight, falling off smoothly to the brush's edge, with size (`[` `]`) and strength. **Connected** (on) keeps a stroke to the surface it starts on, so painting one thigh leaves the other alone; **Front faces** leaves the side turned away; with **Mirror** the joint's mirror image gets the same strokes on the other side. Dabs are a quarter of the brush apart along a stroke, and the weights under the pointer read out beside the brush.
+  - A position's weights always sum to 1: what one joint gains the others give up in proportion, and what it loses goes back to them, or to its parent when nothing else holds any. **Locked** joints (the padlock in the bone tree) keep their weights through painting and smoothing.
+  - **Smooth all**, **Clean** (weights under 5% dropped, at most four joints a vertex) and **Mirror L→R / R→L** work on the whole model. The mirror gives every position on one side the weights of the position nearest its mirror image, joints swapped, so a result that wasn't remeshed mirrored gets them too.
+  - The weights live on the result's distinct positions, so the copies of a vertex along UV seams and hard edges always move together.
+- **Pose** (P): click a joint and turn it with the gizmo in its own axes (red bends, green twists along the bone, blue turns about Z). **Test motions** loop until stopped (Space): Walk, Arms (up over the head and down, elbows and fingers bending), Squat (the feet stay where they stand, the hips going down and back as far as the bent legs take them), Twist, and Each, which bends every joint in turn and is the one a non-humanoid skeleton gets. The view is posed by linear blend skinning, as the engines do it; weights can be painted on the posed model; the pose never reaches the export.
+- **A rigged file** brings its own skeleton: every bone, names and rest orientations kept, so animations made for it still fit, and its weights carried onto the result by position. Mixamo, Unreal and Left/Right, `_l`/`_r`, `.L`/`.R` names are recognised, so it gets the humanoid test motions and mirror editing. **Find the skeleton** replaces it with one read from the shape; **Use the file's skeleton** and **Use the file's weights** bring it back.
+- **A new budget** keeps the rig: weights move to a result whose positions are the same (as when its UVs arrive), are worked out again for a new remesh, carried from the file again, or, where painted by hand, carried over from the last result by position and flagged for a look.
+
 ### Export
 
 **Export** at the top right lists every file the zip will hold before you download it.
@@ -176,6 +200,7 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 - FBX, GLB or OBJ with MTL, in the source file's units, metres or centimetres.
 - The textures the model uses: the original files, or the baked maps when it has new UVs. FBX and OBJ materials link the base colour and normal map, and the other maps sit beside them in the zip. GLB carries its materials and textures inside, with roughness and metalness merged into glTF's one texture (roughness in green, metalness in blue).
 - With new UVs, the UV layout as an image per material (`…_uvlayout.png`, at the bake size): black lines on a clear sheet, chart borders heavier than the quads' edges, to paint over.
+- A rigged result carries its skeleton and weights, at most four joints per vertex. FBX gets a LimbNode per joint, a skin with a cluster per joint that moves vertices of that part, and a bind pose; GLB a skinned mesh through three.js's exporter. OBJ can't hold them, and the panel says so.
 
 ## Keyboard
 
@@ -192,6 +217,13 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 | `[` / `]` | Smaller / larger brush |
 | ⌘Z / Ctrl+Z | Undo paint |
 | ⇧⌘Z / Ctrl+Y | Redo paint |
+| R | Shape or Rig workspace |
+| O, V, J, P | Rig: orbit, move joints, add joints, pose |
+| D, S, G, H | Rig: add, subtract, set or smooth weights |
+| Space | Rig: play or stop the test motion |
+| Delete, Esc | Rig: delete the selected joint; deselect, end a chain or stop the motion |
+
+In the Rig workspace ⌘Z / Ctrl+Z undoes the rig's edits, poses and weight strokes.
 
 ## Command line
 
@@ -230,6 +262,7 @@ Textures come along as when they are dropped with the model: the ones it names a
 | `--uvs <auto, original, new>`, `--uv-layout <compact, paintable>`, `--texture-size`, `--cross-seams`, `--protect-texture` | Texture | auto, compact, 1024, off, 1 |
 | `--normals <original, smooth, creased>`, `--crease-angle` | Normals | original, 60° |
 | `--hard-edge-angle`, `--merge-distance` | Welding | 30°, 0.0001% |
+| `--rig <humanoid, original, none>`, `--fingers <auto, full, none>`, `--bone-names <mixamo, unreal>` | Rig: Find the skeleton with bone heat weights, or the file's own skeleton and weights | none, auto, mixamo |
 | `-f`, `--format <fbx, obj, glb>`, `--units <auto, m, cm>`, `--zip` | Export | fbx, auto |
 | `-o`, `--out`, `--name`, `--json`, `--info`, `--no-measure`, `-q` | The command line's own: where the files go and what it prints | |
 
@@ -284,6 +317,7 @@ The command prints a summary, or with `--json` a report. This is the one for the
 
 - `deviation` is how far the original's surface lies from the result: 60,000 points spread over the original, as percentages of its diagonal. It is the bench's measure, the one in [Examples](#examples) and the one the budget zones were checked against. The app's Deviation measures from the result to the original, at 4,000 points, against the largest dimension, so the two differ.
 - `zones` are in quads, and `null` where no budget reaches a limit. `regions` counts the result's triangles by what set their density.
+- `rig`, with `--rig`: the skeleton (`humanoid` or `file`), its joints and how many deform, the names, whether it has fingers and a Root for a base, the joints placed by proportion (`estimated`, to check), how the weights were made, and every bone's name, parent and position.
 - `warnings` has what the app's result card and Texture section would point out, and what the command line left out.
 - It exits with 0 when done, 1 when the model couldn't be processed, and 2 when the options or files are wrong. With `--json`, an error is also printed as `{"error": "…"}`.
 
@@ -299,6 +333,7 @@ const { report, files } = await run('model.fbx', { topology: 'quads', budget: '1
 - **The bake.** Textures aren't carried onto new UVs, and no normal map is made from the original: both run on the GPU in the page. Quads always get new UVs, so they come without textures, with the UV layout sheet to paint over. Triangles mode keeps the original UVs and their texture files while they fit, or always with `--uvs original`.
 - **Textures in GLB.** A GLB comes with its materials but without textures, since they aren't decoded here. FBX and OBJ link the copied files.
 - **Colour in the paintable layout.** Without the texture's pixels, the paintable layout places its seams by visibility, folds and sharp edges, but not where the colour changes.
+- **Fixing the rig by hand.** `--rig humanoid` gives the skeleton and weights as Find the skeleton makes them; moving joints and painting weights takes the app.
 
 ## How it works
 
@@ -328,13 +363,35 @@ Quads mode replaces step 4 with a remesher (`src/quad.js`) that follows [Instant
 
 The Instant Meshes code is under a BSD licence, whose notice is kept at the top of `src/quad.js`.
 
+### Rigging
+
+The skeleton and weights are made on the result (`src/rig.js`, `src/skin.js`; the workspace is `src/rigui.js`), in a worker, over the result's distinct positions joined into one surface graph.
+
+1. **The body plan.** The mirror plane is the app's when Symmetry is on, otherwise the axis plane the result is most nearly mirror-symmetric about (nearest-point distances of its mirrored samples, the offset found by golden-section search). Up is the longer of the two axes along it (Y when they are about as long, as three.js, glTF and most exporters have it); a model whose hands lie below its middle is upside down. The body is the largest piece. Geodesic distance (Dijkstra along edges) from the body vertex nearest its centroid peaks at the ends of the limbs; a peak's persistence is how far its region reaches before it meets a higher peak's. The hands are the long-lived peaks farthest out from the plane on each side, the feet the lowest ones, and the head the top of the body on the plane. Front is where the toes point from the legs, or +Z (Blender's −Y with Z up) when they don't say.
+2. **A base.** Where the bottom of the shape is one piece across the plane and higher up it narrows by a third to legs standing apart, one to each side, the base is cut away a little above, so a raised rim goes with it. The feet then end where they meet it, a Root joint on the floor carries it, and its weights go wholly to the Root.
+3. **Limbs.** Each limb is traced from its tip by rings of equal geodesic distance: the level set's segments joined into loops through the edges they share, the loop around the limb chosen by the shortest path back to the body. The rings' centroids run down the middle of the limb and their length is its girth. Where a ring suddenly grows (1.8 times the median of those before) the limb has met the trunk; a leg's search starts above the lowest fifth of the figure, as rings across a heel grow too. The tip is taken again as the point farthest from a ring partway down, as the first peak can sit on the side of a toe cap.
+4. **Joints.** The ankle is the sharpest turn of a leg's centreline low down, from along the foot to up the leg; the toe joints lie along the foot. The wrist is the narrowest ring past the widest one of the hand (the palm, or where the thumb joins), the nearest to the hand of rings about as narrow. Elbows and knees are where the centreline bends by over 20° in the middle half of the limb, else at a person's proportions (thigh and shin even, upper arm and forearm 0.56 to 0.44). The hip and shoulder joints lie on the thigh's and upper arm's axes where they meet the trunk; with the arms lowered the armpit closes before the axis reaches the shoulder joint, which carries on inward until the top of the shoulder is about an arm's radius above it. A leg whose girth doubles within a tenth of the height has gone into a skirt or shorts, and its hip goes where the torso, from hips to shoulders 0.29 of the figure's height in a person and in a big-headed stylised character alike, puts it. The neck is the narrowest ring below the head, the neck joint where it has flared by a third into the shoulders, or just above the shoulders where no neck shows. The hips sit just above the hip joints, centred front to back; the spine runs from them to the shoulder joints' line in even steps.
+5. **Fingers.** The hand is what lies past a plane across the wrist; its fingertips are the long-lived peaks of the distance from the wrist ring. The thumb is the one that branches off nearest the wrist, the others are ordered across the hand from it. Each finger is traced like a limb; its knuckle lies past where it meets the palm, its joints at 0.45 and 0.75 of its length (the thumb's at 0.4 and 0.73, its base deep in the palm).
+6. **Symmetry and orientation.** On a symmetric model each pair of joints is averaged with its mirror image, or takes the side that was read rather than estimated, and the middle joints go onto the plane. Each joint's +Y points to its main child (Spine from the hips, Neck from Spine2, the middle finger from the hand); X is `cross(Y, front)`, or `cross(Y, ±up)` for a bone running front to back, which mirrors correctly by itself.
+7. **Weights by bone heat** (Baran and Popović, *Automatic Rigging and Animation of 3D Characters*, SIGGRAPH 2007, the method behind Blender's automatic weights). Each joint's weight solves −Δw + Hw = Hp, with H = 1/d² for a vertex at distance d from the nearest bone it can see (the straight line to it crosses no triangle, tested on a BVH) and p 1 where that bone is the joint's. Edges are weighted by a third of their triangles' area over their length squared: the cotangent weight on even triangles, never negative on the long thin ones a reduction leaves, where clamped cotangents had made the weights spread three times too far (a hand held 65% of its own weight on average, 87% now). One sparse L D Lᵀ factorisation (after Davis's LDL), ordered by nested dissection (halves by position, the vertices along each cut last), serves every joint. Pieces that see no bone (eyes inside the head) and pieces under 1% of the surface move rigidly with the bone nearest their middle. A mirrored result's weights are averaged with their partners', left and right joints swapped.
+8. **Export.** Each position keeps its four largest weights over 1%, summed to 1. FBX: a LimbNode Model and NodeAttribute per joint with its rest transform under its parent (Euler angles in FBX's XYZ order), a Skin deformer per part with a Cluster per joint (Indexes, Weights, Transform as the inverse of TransformLink, the joint's rest matrix), and a BindPose. GLB: a SkinnedMesh bound at rest to a Skeleton of three.js bones, which GLTFExporter writes as joints and inverse bind matrices. Positions and bones are scaled alike.
+9. **A file's skeleton.** `collect.js` reads every bone of a skinned file, its rest matrix in the same space as the collected positions (the mesh's world matrix times its bind matrix's inverse times the bone's bind matrix), bones no skin uses included, and four joints and weights per collected vertex; meshes that aren't skinned follow the bone they hang from. The rig keeps each bone's rest place and orientation. Weights reach the result from the three nearest collected vertices, by inverse distance; a position left without any goes to the nearest bone.
+
+**Checked** (`test/test_rig.js`, on generated figures: a smooth union of capsules meshed by marching tetrahedra into one closed surface, 1.77 m tall, with known joints):
+
+- Placement: in a T and an A pose, with separate fingers and with mitten hands, every joint lands within 3% of the height of where the figure was built on it (1.0 to 2.3 cm on average), and on a base within 5%, with a Root. A figure saved Z up comes out Z up. It takes 0.6 to 1.1 seconds in Node on an Apple M5 Pro. By eye it also holds on an AI-generated character in a skirt with long hair, standing on a base; on the striding Artemision bronze; and on a body scan saved Z up in an A pose, whose fingers it finds at 40,000 quads.
+- Weights: between 0 and 1 and summing to 1; along the middle of the forearm, upper arm, shin, thigh and head their own bone holds 85 to 98%; the elbow is shared about evenly, with one bone over 85% ten centimetres to either side; copies of a vertex along creases are weighted alike; a mirrored result's are exact mirror images; eyes inside the head move with it; a base goes to the Root. 48,000 positions with 65 joints take 0.8 seconds.
+- Export: read back by three.js (FBX and GLB) and Assimp (FBX), the skin leaves the mesh where it is at rest, and posed by its bones it matches the app's own skinning to within 0.1 mm. A rigged file opened again gives the same joints, within 10 µm and 0.001°, and the same weights.
+- Editing: weights painted up and down still sum to 1 with a locked joint untouched; smoothing and Clean leave at most four joints a vertex; Mirror L→R gives the right forearm the left one's total weight within 1%. The squat keeps the feet within 3 cm of where they stood.
+
 ## Browser support
 
 A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new UVs also needs float render targets (`EXT_color_buffer_float`), which current desktop browsers have; without them, keep the original UVs. The page loads its libraries from jsDelivr, so it needs a connection to start.
 
 ## Limits
 
-- Skinned meshes are reduced in their bind pose and exported without bones. Animations are not kept.
+- Skinned meshes are reduced in their bind pose; their skeleton and weights come along in the Rig workspace (or with `--rig original`), but their animations don't.
+- Finding the skeleton reads standing two-legged figures with their arms free of the body. Arms fused to the sides, legs joined together, crouching or lying figures, quadrupeds and other creatures need their joints placed by hand (or built with Build your own). Bone heat weights are smooth but don't know cloth from skin: a skirt follows the thighs, which hand painting fixes.
 - One UV set per model.
 - Memory is the browser's: a model of 1.5 million triangles with 4K textures works on a desktop, phones may run out.
 - Quads mode doesn't reach the quality of dedicated retopology tools on every model. Expect some poles: about one vertex in nine with even quads, and one in five following the shape on organic models. Parts much thinner than a quad edge come out rough where Keep thin parts can't afford them: at game budgets strands of hair, spokes and cables are too many to save and break up. A few folded quads from the grid can still leave one or two non-manifold edges on some models.
@@ -352,6 +409,9 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 | `src/quad.js` | The quad remesher: working surface, field hierarchy, extraction, the all-quad pass, pole moves and relaxation, and the budget zones |
 | `src/paint.js` | The paintable UV layout: seam costs, charts, joins checked by flattening them, upright charts and the packing |
 | `src/visibility.js` | How visible each vertex is from all sides, for hidden areas and the bake |
+| `src/rig.js` | Skeletons: the humanoid template and joint names, rest orientations, finding the skeleton on the result, a file's own skeleton, and the test motions |
+| `src/skin.js` | Skin weights: bone heat, limiting, painting, smoothing, cleaning and mirroring them, carrying them between surfaces, and posing by linear blend skinning |
+| `src/rigui.js` | The Rig workspace: the skeleton overlay, editing joints, the weight brushes, posing and the test motions, the rig's history and what the export and the saved tab take from it |
 | `src/collect.js` | Flattens a three.js scene into one mesh |
 | `src/glb.js` | The GLB writer, through three.js's exporter |
 | `src/worker.js` | Reductions, unwraps and the visibility pass, off the main thread |
@@ -371,7 +431,7 @@ Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with
 
 - `npm install` installs the packages the tests and the command line use.
 - `npm run serve` previews the built page at http://127.0.0.1:8731.
-- `npm test` runs the checks on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry, new UVs, paintable UVs, UV layout edges, normals, quad remeshing, the budget zones, the bake's reach, ambient occlusion, the GLB writer and the command line.
+- `npm test` runs the checks on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry, new UVs, paintable UVs, UV layout edges, normals, quad remeshing, the budget zones, the bake's reach, ambient occlusion, the GLB writer, rigging (on figures from `test/figure.js`) and the command line.
 - To add a real model to a check, pass its path: `node test/test_unwrap.js path/to/model.fbx`. The same works for `test_core.js` and `test_symmetry.js`.
 - `test/models/manifest.json` lists free models of 500k vertices and more for real-world testing, each with its source, licence, credit and what it tests: scans, characters and figures, textured photogrammetry with fragmented atlases, a PBR set with a normal map, hard-surface parts, scenes and stress cases. The files aren't in the repo:
   - `node test/models/fetch.mjs --tier=core` downloads the 14 core models (0.86 GB) into `testdata/models/`; `--tier=extended` and `--tier=stress` add 13 more, `--list` shows them all and `--check` asks the servers whether the files are still there. Models inside a large archive are read out of it in pieces, so only their own bytes are downloaded.
