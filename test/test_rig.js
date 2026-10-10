@@ -50,6 +50,46 @@ const rig = R.humanoidRig(tJoints, { fingers: false });
   check(fing.fingers && fing.joints.length === 65 && R.boneName('LeftHandIndex2', 'unreal') === 'index_02_l', `with fingers: ${fing.joints.length} joints`);
 }
 
+console.log('== finding the skeleton');
+// Figures in a T and an A pose, with mitten hands and with fingers apart, and one on a base, remeshed to triangles as
+// the app's result: every joint near where the figure was built on, and the fingers found only where they are apart.
+for (const [pose, fingers, base] of [['T', false, false], ['A', false, false], ['T', true, false], ['A', true, false], ['A', false, true]]) {
+  const f = figure({ pose, fingers, base, step: fingers ? 0.006 : 0.01 });
+  const fw = core.smartWeld(sceneOf(f.geometry, 'Figure'), { keepUV: false, hardAngle: 30 });
+  const r = reduceTo(fw, { targetTris: 24000 });
+  const t = Date.now();
+  const { rig: placed, report } = R.placeHumanoid(r, { fingers: 'auto' });
+  const ms = Date.now() - t, H = 1.77;
+  let worst = 0, at = '';
+  for (const j of placed.joints) {
+    if (!f.joints[j.slot]) continue;
+    const e = R.dist(j.pos, f.joints[j.slot]);
+    if (e > worst) { worst = e; at = j.slot; }
+  }
+  const label = `${pose} pose${fingers ? ', fingers' : ', mittens'}${base ? ', on a base' : ''}`;
+  const want = (fingers ? 65 : 25) + (base ? 1 : 0);
+  check(report.found && placed.joints.length === want && placed.fingers === fingers && (!base || placed.joints[0].slot === 'Root'),
+    `${label}: ${placed.joints.length} joints${base ? ', a Root carrying the base' : ''} (${ms} ms)`);
+  check(worst < (base ? 0.05 : 0.03) * H, `${label}: every joint within ${base ? 5 : 3}% of the height of the truth (worst ${(worst * 100).toFixed(1)} cm, ${at})`);
+  let sym = 0;
+  for (const j of placed.joints) if (j.mirror >= 0) { const m = placed.joints[j.mirror].pos; sym = Math.max(sym, Math.hypot(j.pos[0] + m[0], j.pos[1] - m[1], j.pos[2] - m[2])); }
+  check(sym < 1e-3 && R.dot(placed.frame.up, [0, 1, 0]) > 0.999 && R.dot(placed.frame.front, [0, 0, 1]) > 0.999, `${label}: symmetric, facing +Z with Y up`);
+}
+{
+  // Asked for fingers on mittens, the hands get them by a hand's proportions, marked for checking.
+  const f = figure({ pose: 'T', fingers: false, step: 0.01 });
+  const r = reduceTo(core.smartWeld(sceneOf(f.geometry, 'Figure'), { keepUV: false, hardAngle: 30 }), { targetTris: 24000 });
+  const { rig: placed, report } = R.placeHumanoid(r, { fingers: 'full' });
+  const est = placed.joints.filter(j => /Hand(Thumb|Index|Middle|Ring|Pinky)/.test(j.slot));
+  check(est.length === 40 && est.every(j => j.placed === 'estimated') && report.notes.length === 1, `mittens with fingers asked for: ${est.length} finger joints laid out and marked estimated`);
+  // The same figure lying along Z, as a scan saved Z up: up and front come out turned with it.
+  const geo = f.geometry.clone().rotateX(Math.PI / 2);
+  const rz = reduceTo(core.smartWeld(sceneOf(geo, 'Figure'), { keepUV: false, hardAngle: 30 }), { targetTris: 24000 });
+  const { rig: pz } = R.placeHumanoid(rz, { fingers: 'none' });
+  const head = pz.joints.find(j => j.slot === 'Head').pos;
+  check(R.dot(pz.frame.up, [0, 0, 1]) > 0.999 && Math.abs(head[2] - 1.56) < 0.05, `a Z-up figure: up is +Z and the head at its height (${head[2].toFixed(2)} m)`);
+}
+
 console.log('== weights and posing');
 const fig = figure({ pose: 'T', fingers: false, step: 0.01 });
 const w = core.smartWeld(sceneOf(fig.geometry, 'Figure'), { keepUV: false, hardAngle: 30 });
