@@ -1,16 +1,25 @@
 {
   "name": "poly-budget",
+  "version": "1.0.0",
   "private": true,
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "poly-budget": "cli/poly-budget.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "node build.js",
     "serve": "node serve.mjs",
-    "test": "node test/test_core.js && node test/test_symmetry.js && node test/test_unwrap.js && node test/test_uvedges.js && node test/test_normals.js && node test/test_quads.js && node test/test_hidden.js && node test/test_tangents.js && node test/test_bake.js && node test/test_paint.js && node test/test_zones.js && node test/test_occlusion.js"
+    "test": "node test/test_core.js && node test/test_symmetry.js && node test/test_unwrap.js && node test/test_uvedges.js && node test/test_normals.js && node test/test_quads.js && node test/test_hidden.js && node test/test_tangents.js && node test/test_bake.js && node test/test_paint.js && node test/test_zones.js && node test/test_occlusion.js && node test/test_cli.js"
   },
-  "devDependencies": {
-    "assimpjs": "0.0.10",
+  "dependencies": {
     "meshoptimizer": "1.2.0",
     "three": "0.186.0"
+  },
+  "devDependencies": {
+    "assimpjs": "0.0.10"
   }
 }

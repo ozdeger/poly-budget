@@ -13,101 +13,7 @@ import path from 'path';
 import { core, collectScene, S, settings, context } from '../helpers.js';
 import { pick, modelPath, manifest } from './fetch.mjs';
 import { load } from './load.mjs';
-
-// Area-weighted points on a triangle mesh (deterministic).
-function samples(P, I, K) {
-  const T = I.length / 3, cum = new Float64Array(T);
-  let acc = 0;
-  for (let t = 0; t < T; t++) {
-    const a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, c = I[t * 3 + 2] * 3;
-    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
-    acc += Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
-    cum[t] = acc;
-  }
-  let s = 12345;
-  const rnd = () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  const out = new Float64Array(K * 3);
-  for (let k = 0; k < K; k++) {
-    const x = rnd() * acc;
-    let lo = 0, hi = T - 1;
-    while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < x) lo = m + 1; else hi = m; }
-    let u = rnd(), v = rnd();
-    if (u + v > 1) { u = 1 - u; v = 1 - v; }
-    for (let d = 0; d < 3; d++) out[k * 3 + d] = P[I[lo * 3] * 3 + d] * (1 - u - v) + P[I[lo * 3 + 1] * 3 + d] * u + P[I[lo * 3 + 2] * 3 + d] * v;
-  }
-  return out;
-}
-
-// Squared distance from p to segment ab.
-function segDist2(px, py, pz, ax, ay, az, bx, by, bz) {
-  const dx = bx - ax, dy = by - ay, dz = bz - az, l = dx * dx + dy * dy + dz * dz;
-  const t = l > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy + (pz - az) * dz) / l)) : 0;
-  return (px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2 + (pz - az - t * dz) ** 2;
-}
-
-// Squared distance from p to triangle abc (Ericson, Real-Time Collision Detection 5.1.5); a triangle without area
-// (two corners together, or all three on a line) counts as its edges.
-function triDist2(px, py, pz, P, ia, ib, ic) {
-  const ax = P[ia * 3], ay = P[ia * 3 + 1], az = P[ia * 3 + 2];
-  const abx = P[ib * 3] - ax, aby = P[ib * 3 + 1] - ay, abz = P[ib * 3 + 2] - az, acx = P[ic * 3] - ax, acy = P[ic * 3 + 1] - ay, acz = P[ic * 3 + 2] - az;
-  const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
-  if (!(nx * nx + ny * ny + nz * nz > 1e-24 * (abx * abx + aby * aby + abz * abz) * (acx * acx + acy * acy + acz * acz))) {
-    const bx = ax + abx, by = ay + aby, bz = az + abz, cx = ax + acx, cy = ay + acy, cz = az + acz;
-    return Math.min(segDist2(px, py, pz, ax, ay, az, bx, by, bz), segDist2(px, py, pz, bx, by, bz, cx, cy, cz), segDist2(px, py, pz, ax, ay, az, cx, cy, cz));
-  }
-  const apx = px - ax, apy = py - ay, apz = pz - az, d1 = abx * apx + aby * apy + abz * apz, d2 = acx * apx + acy * apy + acz * apz;
-  const q = (x, y, z) => (px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2;
-  if (d1 <= 0 && d2 <= 0) return q(ax, ay, az);
-  const bpx = px - ax - abx, bpy = py - ay - aby, bpz = pz - az - abz, d3 = abx * bpx + aby * bpy + abz * bpz, d4 = acx * bpx + acy * bpy + acz * bpz;
-  if (d3 >= 0 && d4 <= d3) return q(ax + abx, ay + aby, az + abz);
-  const vc = d1 * d4 - d3 * d2;
-  if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3); return q(ax + v * abx, ay + v * aby, az + v * abz); }
-  const cpx = px - ax - acx, cpy = py - ay - acy, cpz = pz - az - acz, d5 = abx * cpx + aby * cpy + abz * cpz, d6 = acx * cpx + acy * cpy + acz * cpz;
-  if (d6 >= 0 && d5 <= d6) return q(ax + acx, ay + acy, az + acz);
-  const vb = d5 * d2 - d1 * d6;
-  if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6); return q(ax + w * acx, ay + w * acy, az + w * acz); }
-  const va = d3 * d6 - d5 * d4;
-  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { const w = (d4 - d3) / (d4 - d3 + d5 - d6); return q(ax + abx + w * (acx - abx), ay + aby + w * (acy - aby), az + abz + w * (acz - abz)); }
-  const den = 1 / (va + vb + vc), v = vb * den, w = vc * den;
-  return q(ax + abx * v + acx * w, ay + aby * v + acy * w, az + abz * v + acz * w);
-}
-
-// Distances from points to the nearest point of a triangle mesh, through a uniform grid of its triangles, built once.
-// The search stops at `cap` (a point farther off than that gets cap): without a cap, points out in empty space
-// would scan the whole grid.
-function surface(P, I, cap = Infinity) {
-  const b = core.bounds(P), cell = b.diag / 80, inv = 1 / cell, n = [0, 1, 2].map(k => Math.max(1, Math.ceil(b.size[k] * inv) + 1));
-  const key = (i, j, k) => (i * n[1] + j) * n[2] + k, cells = new Map();
-  for (let t = 0; t < I.length / 3; t++) {
-    const lo = [0, 1, 2].map(k => Math.floor((Math.min(P[I[t * 3] * 3 + k], P[I[t * 3 + 1] * 3 + k], P[I[t * 3 + 2] * 3 + k]) - b.min[k]) * inv));
-    const hi = [0, 1, 2].map(k => Math.floor((Math.max(P[I[t * 3] * 3 + k], P[I[t * 3 + 1] * 3 + k], P[I[t * 3 + 2] * 3 + k]) - b.min[k]) * inv));
-    for (let i = lo[0]; i <= hi[0]; i++) for (let j = lo[1]; j <= hi[1]; j++) for (let k = lo[2]; k <= hi[2]; k++) {
-      const kk = key(i, j, k), l = cells.get(kk);
-      if (l) l.push(t); else cells.set(kk, [t]);
-    }
-  }
-  return pts => {
-    const out = new Float64Array(pts.length / 3);
-    for (let s = 0; s < out.length; s++) {
-      const px = pts[s * 3], py = pts[s * 3 + 1], pz = pts[s * 3 + 2];
-      const c = [0, 1, 2].map(k => Math.min(n[k] - 1, Math.max(0, Math.floor((pts[s * 3 + k] - b.min[k]) * inv))));
-      let best = cap * cap;
-      // Rings of cells outward, until the nearest unsearched cell is farther than the best hit (or the cap).
-      for (let r = 0; r <= Math.max(...n); r++) {
-        if (best <= ((r - 1) * cell) ** 2) break;
-        for (let i = c[0] - r; i <= c[0] + r; i++) for (let j = c[1] - r; j <= c[1] + r; j++) for (let k = c[2] - r; k <= c[2] + r; k++) {
-          if (Math.max(Math.abs(i - c[0]), Math.abs(j - c[1]), Math.abs(k - c[2])) !== r) continue;
-          const l = cells.get(key(i, j, k));
-          if (l) for (const t of l) best = Math.min(best, triDist2(px, py, pz, P, I[t * 3], I[t * 3 + 1], I[t * 3 + 2]));
-        }
-      }
-      out[s] = Math.sqrt(best);
-    }
-    return out;
-  };
-}
-// Past a quarter of the diagonal a point stands for a lost part anyway.
-const distances = (P, I, pts) => surface(P, I, 0.25 * core.bounds(P).diag)(pts);
+import { samples, distances, pct, edgeCounts, degenerate } from '../../cli/measure.mjs';
 
 // Distances from points to the nearest of a set of points, capped (a dense sample stands in for a dense surface, where
 // a grid of millions of triangles would be slow to search).
@@ -166,47 +72,6 @@ function mirrorPlane(pts, b) {
   return { axis: best.axis, offset: Number(best.offset.toPrecision(6)), error: (100 * best.err) / b.diag };
 }
 
-// Open and non-manifold edges, with vertices at the same position counted as one (sorted keys, so millions of triangles
-// stay cheap).
-function edgeCounts(P, I) {
-  const V = P.length / 3, bits = new Uint32Array(new Float32Array(P).buffer), id = new Int32Array(V);
-  let cap = 16;
-  while (cap < V * 2) cap <<= 1;
-  const table = new Int32Array(cap).fill(-1);
-  let G = 0;
-  for (let v = 0; v < V; v++) {
-    let h = (Math.imul(bits[v * 3], 73856093) ^ Math.imul(bits[v * 3 + 1], 19349663) ^ Math.imul(bits[v * 3 + 2], 83492791)) & (cap - 1);
-    for (;;) {
-      const u = table[h];
-      if (u < 0) { table[h] = v; id[v] = G++; break; }
-      if (bits[u * 3] === bits[v * 3] && bits[u * 3 + 1] === bits[v * 3 + 1] && bits[u * 3 + 2] === bits[v * 3 + 2]) { id[v] = id[u]; break; }
-      h = (h + 1) & (cap - 1);
-    }
-  }
-  const keys = new Float64Array(I.length);
-  let m = 0;
-  for (let t = 0; t < I.length; t += 3) for (let k = 0; k < 3; k++) {
-    const a = id[I[t + k]], b = id[I[t + (k + 1) % 3]];
-    if (a !== b) keys[m++] = a < b ? a * G + b : b * G + a;
-  }
-  const sorted = keys.subarray(0, m).sort();
-  let open = 0, nonManifold = 0;
-  for (let i = 0; i < m;) { let j = i + 1; while (j < m && sorted[j] === sorted[i]) j++; if (j - i === 1) open++; else if (j - i > 2) nonManifold++; i = j; }
-  return { open, nonManifold, positions: G };
-}
-
-// Triangles without area: two corners at one position, or all three on a line.
-function degenerate(P, I) {
-  let n = 0;
-  for (let t = 0; t < I.length; t += 3) {
-    const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
-    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
-    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    if (!(nx * nx + ny * ny + nz * nz > 1e-24 * (ux * ux + uy * uy + uz * uz) * (vx * vx + vy * vy + vz * vz))) n++;
-  }
-  return n;
-}
-
 // A result as OBJ text: corners at one position become one vertex, a quad's two triangles one face.
 function resultObj(r, note) {
   const P = r.positions, id = new Map(), g = new Int32Array(r.vertexCount), out = [`# ${note}`];
@@ -228,7 +93,6 @@ function keptHalf(pts, plane) {
   return Float64Array.from(out);
 }
 
-const pct = (d, diag) => { const s = Float64Array.from(d).sort(); let m = 0; for (const x of s) m += x; return { mean: (100 * m) / s.length / diag, p99: (100 * s[Math.floor(s.length * 0.99)]) / diag, max: (100 * s[s.length - 1]) / diag }; };
 const arg = (name, dflt) => { const a = process.argv.find(x => x.startsWith(`--${name}=`)); return a ? a.slice(name.length + 3) : dflt; };
 
 const trisBudgets = arg('tris', '20000,60000').split(',').map(Number).filter(Boolean);

@@ -186,6 +186,113 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 | ⌘Z / Ctrl+Z | Undo paint |
 | ⇧⌘Z / Ctrl+Y | Redo paint |
 
+## Command line
+
+`cli/poly-budget.mjs` runs the app's work without the page, for scripts, build pipelines and coding agents. It opens and welds the model, finds hidden areas, applies paint rules and the mirror plane, reduces or remeshes, makes new UVs, writes the files Export would, and reports what came out. It runs the page's own modules (`src/core.js`, `quad.js`, `paint.js`, `visibility.js`, `collect.js`) with the app's defaults, so a result is the one the app makes with the same settings and paint.
+
+```bash
+npm install
+node cli/poly-budget.mjs model.fbx --quads 10k -o out
+```
+
+`npm install -g .` in the repository adds a `poly-budget` command. It needs Node 20 or later. Dense models can need more memory than Node gives by default, so the command starts itself again with up to 16 GB (three quarters of the machine's memory, if that is less), unless `--max-old-space-size` is set.
+
+```bash
+poly-budget scan.obj --quads auto --json                        # a budget from the zones, the report as JSON
+poly-budget statue.stl --quads 20k --mirror auto -f glb
+poly-budget character.fbx body_color.png body_normal.png --tris 20k --uvs original --zip
+poly-budget character.fbx --quads 12k --paint '[{"more": 4, "part": "Head"}]'
+poly-budget model.glb --info                                    # counts, parts, materials, bounds, mirror plane
+```
+
+Textures come along as when they are dropped with the model: the ones it names are found among the files given or next to it, and other images given are placed by their names, as in [Open a model](#open-a-model). On the princess scan in [Examples](#examples) (2 million triangles), `--quads auto --mirror auto` with a paint rule took 20 s. That was 4.4 s for the zones, 5.5 s for the remesh, 3.1 s for hidden areas and 2.1 s for the mirror plane, in Node on an Apple M5 Pro. The 7.2-million-triangle Asian dragon took 33 s to 20,000 quads.
+
+### Options
+
+`poly-budget --help` lists them all. Each is a setting of the app, with the app's default:
+
+| Options | In the app | Default |
+| --- | --- | --- |
+| `--quads <n>`, `--tris <n>` | Triangles or quads, and the budget: `12500`, `12.5k`, or `5%` of the original triangles | Quads, 10% |
+| `--quads auto` | The middle of the green budget zone | |
+| `--paint <rules>` | Painting, as rules (below) | none |
+| `--hidden <off, gentle, medium, strong>`, `--delete-unseen` | Hidden areas, and Delete faces nothing can see | medium, off |
+| `--mirror <auto, x, y, z, x=0.25>`, `--mirror-side <+, ->` | Symmetry: Detect (on every axis, or along one), or a plane; the half to keep | off, + |
+| `--follow-shape <0-100>`, `--no-sharp-edges`, `--no-thin-parts`, `--remove-tiny-parts` | Remeshing | 75, on, on, off |
+| `--stop-at-error <0.5%>`, `--triangle-shape <any, even, very-even>`, `--protect-shading`, `--lock-borders`, `--no-optimize` | Reduction options | no limit, even, 0.5, off, on |
+| `--uvs <auto, original, new>`, `--uv-layout <compact, paintable>`, `--texture-size`, `--cross-seams`, `--protect-texture` | Texture | auto, compact, 1024, off, 1 |
+| `--normals <original, smooth, creased>`, `--crease-angle` | Normals | original, 60° |
+| `--hard-edge-angle`, `--merge-distance` | Welding | 30°, 0.0001% |
+| `-f`, `--format <fbx, obj, glb>`, `--units <auto, m, cm>`, `--zip` | Export | fbx, auto |
+| `-o`, `--out`, `--name`, `--json`, `--info`, `--no-measure`, `-q` | The command line's own: where the files go and what it prints | |
+
+`--quads auto` takes the middle of the green zone as the app's slider draws it: the geometric mean of where red ends and gray starts. The zones don't depend on the budget, so a remesh at 1,000 quads measures them first. With `--uvs new`, a model without UVs gets them too, which the app doesn't do.
+
+### Paint rules
+
+`--paint` takes a JSON list of rules, or a file holding one, and can be given more than once. Each rule gives the vertices it selects one kind of detail, as a brush in the app does, and later rules paint over earlier ones:
+
+```json
+[
+  { "more": 4, "part": "Head" },
+  { "keep": true, "material": ["Eyes", "Teeth"] },
+  { "less": 8, "box": [0, 0, 0, 1, 0.05, 1], "relative": true },
+  { "normal": true, "sphere": [0, 1.62, 0.08, 0.1] },
+  { "erase": true, "part": "/^Hair/i" }
+]
+```
+
+- `more` and `less` take 2, 4 or 8, the brush's ×2, ×4 and ×8; `keep`, `normal` (Normal detail) and `erase` take `true`.
+- A rule selects by `part` (a mesh's name in the file), `material`, `box` ([x0, y0, z0, x1, y1, z1]) or `sphere` ([x, y, z, radius]). A vertex must match every selector a rule gives. Names match in any case, or as `/pattern/flags`; `--info` lists them.
+- Boxes and spheres are in the model's units, or, with `"relative": true`, in shares of its bounds (0 to 1 along each axis; a radius as a share of the diagonal). Under mirror symmetry they also paint their mirror image, as the brush does. Parts and materials paint only themselves, so name both sides of a mirrored pair.
+- A rule that selects nothing is reported.
+
+### What comes out
+
+The files are the ones the app's Export puts in its zip, written to `--out` (or as that zip, with `--zip`). They are the model, the original texture files while the original UVs are kept (FBX and OBJ link the base colour and normal map), and a UV layout sheet per material when the UVs are new.
+
+The command prints a summary, or with `--json` a report. This is the one for the princess scan above, shortened:
+
+```json
+{
+  "input": { "format": "obj", "triangles": 1984088, "vertices": 1000183, "uvs": true, "uvIslands": 33,
+    "materials": [{ "name": "tete-egypte", "textures": { "map": "tete-egypte.png" } }], "missingTextures": [],
+    "bounds": { "min": [-0.375382, -0.477437, -5.849113], "max": [0.412683, 0.259501, -4.617326], "diagonal": 1.637505 } },
+  "mirror": { "axis": "x", "offset": 0.021334, "keep": "+", "found": true, "fit": { "mean": 2.0837, "max": 15.546, "unit": "% of largest dimension" } },
+  "result": {
+    "mode": "quads", "budget": { "asked": "auto", "quads": 26899, "triangles": 53798, "status": "on budget" },
+    "quads": 27748, "triangles": 55496, "vertices": 32414, "poles": { "count": 4472, "percent": 16.1 },
+    "zones": { "red": 12922, "gray": 55996, "by": "shape", "auto": 26899,
+      "note": "Holds the shape from about 13k quads; past 56k, more quads change little you can see." },
+    "regions": { "keep": 0, "more": 33636, "less": 0, "hidden": 0, "rest": 21860 },
+    "uvs": "new", "uvCharts": 158, "symmetry": { "paired": 32414, "total": 32414 },
+    "deviation": { "mean": 0.0294, "p99": 0.1879, "max": 0.691, "unit": "% of diagonal" }, "openEdges": 0, "nonManifoldEdges": 0
+  },
+  "textures": { "carried": [], "baked": false, "notCarried": ["tete-egypte.png"] },
+  "files": [{ "name": "tete-egypte_27748quads.zip", "bytes": 2358198, "path": "out/tete-egypte_27748quads.zip" }],
+  "warnings": ["The textures aren't carried onto the new UVs: baking them takes the app, which bakes on the GPU. …"],
+  "seconds": { "open": 2.63, "weld": 1.2, "hidden": 3.12, "mirror": 2.09, "zones": 4.35, "reduce": 5.51, "unwrap": 0.61, "total": 20.05 }
+}
+```
+
+- `deviation` is how far the original's surface lies from the result: 60,000 points spread over the original, as percentages of its diagonal. It is the bench's measure, the one in [Examples](#examples) and the one the budget zones were checked against. The app's Deviation measures from the result to the original, at 4,000 points, against the largest dimension, so the two differ.
+- `zones` are in quads, and `null` where no budget reaches a limit. `regions` counts the result's triangles by what set their density.
+- `warnings` has what the app's result card and Texture section would point out, and what the command line left out.
+- It exits with 0 when done, 1 when the model couldn't be processed, and 2 when the options or files are wrong. With `--json`, an error is also printed as `{"error": "…"}`.
+
+From Node, `cli/pipeline.mjs` gives the same without the command. `run(file, options, progress)` returns `{ report, files }`, with the files as `{ name, bytes }` in memory, and `inspect(file)` is `--info`. The options take the app's setting names (`DEFAULTS` there):
+
+```js
+import { run } from './cli/pipeline.mjs';
+const { report, files } = await run('model.fbx', { topology: 'quads', budget: '10k', mirror: 'auto', paint: [{ more: 4, part: 'Head' }] });
+```
+
+### What it leaves to the app
+
+- **The bake.** Textures aren't carried onto new UVs, and no normal map is made from the original: both run on the GPU in the page. Quads always get new UVs, so they come without textures, with the UV layout sheet to paint over. Triangles mode keeps the original UVs and their texture files while they fit, or always with `--uvs original`.
+- **Textures in GLB.** A GLB comes with its materials but without textures, since they aren't decoded here. FBX and OBJ link the copied files.
+- **Colour in the paintable layout.** Without the texture's pixels, the paintable layout places its seams by visibility, folds and sharp edges, but not where the colour changes.
+
 ## How it works
 
 1. **Collect.** Every mesh in the file is flattened into one world-space triangle list with part and material ids (`src/collect.js`).
@@ -241,17 +348,22 @@ A current Chrome, Edge, Firefox or Safari with WebGL 2. Baking textures onto new
 | `src/collect.js` | Flattens a three.js scene into one mesh |
 | `src/worker.js` | Reductions, unwraps and the visibility pass, off the main thread |
 | `src/fbx_template.json` | The FBX header and definitions the writer starts from |
+| `cli/poly-budget.mjs` | The command line: its options, progress, summary and the files it writes |
+| `cli/pipeline.mjs` | The app's work from opening a model to its export, in Node, with the report; `run()` and `inspect()` for other scripts |
+| `cli/load.mjs` | Opens models in Node as the app does, with the textures they ask for; the bench and the renderer use it too |
+| `cli/measure.mjs` | How far the original lies from a result, open edges, and the app's mirror plane search on a small BVH; shared with the bench |
+| `cli/png.mjs` | A PNG writer, and the UV layout sheet drawn without a canvas |
 | `social-preview.jpg` | The picture link previews show: a scan of the Artemision bronze (Statens Museum for Kunst, CC0) beside its remesh into 10,000 quads, with More detail painted on the head |
 | `apple-touch-icon.png` | The icon for home screens and for link previews that can't use the page's inline one |
 | `LICENSE`, `THIRD_PARTY_NOTICES.md` | MIT for the code; the Instant Meshes notice, the runtime libraries and the pictures' own licences |
 
-Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with its loaders, exporter and fflate, meshoptimizer and three-mesh-bvh. The type is IBM Plex.
+Libraries, loaded at runtime from jsDelivr: [three.js](https://threejs.org) with its loaders, exporter and fflate, meshoptimizer and three-mesh-bvh. The command line uses the same versions of three.js and meshoptimizer from npm, the package's two dependencies. The type is IBM Plex.
 
 ## Develop
 
-- `npm install` installs the packages the tests use.
+- `npm install` installs the packages the tests and the command line use.
 - `npm run serve` previews the built page at http://127.0.0.1:8731.
-- `npm test` runs the checks on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry, new UVs, paintable UVs, UV layout edges, normals, quad remeshing, the budget zones, the bake's reach and ambient occlusion.
+- `npm test` runs the checks on generated shapes: welding, painted reduction, the FBX and OBJ writers, symmetry, new UVs, paintable UVs, UV layout edges, normals, quad remeshing, the budget zones, the bake's reach, ambient occlusion and the command line.
 - To add a real model to a check, pass its path: `node test/test_unwrap.js path/to/model.fbx`. The same works for `test_core.js` and `test_symmetry.js`.
 - `test/models/manifest.json` lists free models of 500k vertices and more for real-world testing, each with its source, licence, credit and what it tests: scans, characters and figures, textured photogrammetry with fragmented atlases, a PBR set with a normal map, hard-surface parts, scenes and stress cases. The files aren't in the repo:
   - `node test/models/fetch.mjs --tier=core` downloads the 14 core models (0.86 GB) into `testdata/models/`; `--tier=extended` and `--tier=stress` add 13 more, `--list` shows them all and `--check` asks the servers whether the files are still there. Models inside a large archive are read out of it in pieces, so only their own bytes are downloaded.

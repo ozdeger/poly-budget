@@ -29,7 +29,7 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Libraries loaded when the page opens
 
-[three.js](https://github.com/mrdoob/three.js) with its loaders, exporter and fflate, [meshoptimizer](https://github.com/zeux/meshoptimizer) and [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) load from jsDelivr and are not part of this repository. All of them are MIT licensed. The page's type is [IBM Plex](https://github.com/IBM/plex), under the SIL Open Font License, loaded from Google Fonts.
+[three.js](https://github.com/mrdoob/three.js) with its loaders, exporter and fflate, [meshoptimizer](https://github.com/zeux/meshoptimizer) and [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) load from jsDelivr and are not part of this repository. All of them are MIT licensed. The command line (`cli/`) uses the same versions of three.js and meshoptimizer, installed from npm. The page's type is [IBM Plex](https://github.com/IBM/plex), under the SIL Open Font License, loaded from Google Fonts.
 
 ## Pictures
 

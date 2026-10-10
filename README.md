@@ -79,6 +79,16 @@ Poly Budget opens **FBX**, **glTF/GLB**, **OBJ**, **STL** and **PLY** files, wit
 2. **Shape** it: set the budget and paint where you want detail.
 3. **Export** the zip and bring it into your engine.
 
+## From a script, a pipeline or an agent
+
+The same tool runs without the page, from a terminal:
+
+```bash
+node cli/poly-budget.mjs character.fbx --quads auto --json
+```
+
+It uses the app's own code and defaults. `--quads auto` takes the budget from the zones, paint comes as rules (by part, material or a box around an area), and the report says what came out: the face counts, how far the result lies from the original, and the budget zones. Textures aren't baked there yet, so a remesh comes with new UVs but no textures; Triangles mode keeps the original UVs and textures while they fit. See the [command line](docs/DEVELOPMENT.md#command-line).
+
 ## Private by design
 
 Everything happens on your own computer, inside the browser tab. Your models and textures are never uploaded anywhere, and your open tabs are kept in your browser for next time.
