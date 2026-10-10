@@ -48,6 +48,7 @@ const DEFAULTS = {
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
   space: 'shape', rigTool: 'select', rigFingers: 'auto', rigNaming: 'mixamo', rigCentre: true, rigMirror: true, rigShowWeights: true, rigShowBones: true, rigMotion: 'walk',
+  rigBrush: 5, rigStrength: 0.5, rigValue: 1, rigConnected: true, rigFront: false, rigWeightView: 'heat',
 };
 const settings = { ...DEFAULTS };
 // Only settings the tool still has are read back, so options removed since they were saved drop out. Settings saved while
@@ -4733,7 +4734,7 @@ window.__polyBudget = {
 rigUI = initRig({
   $, settings, sceneR, viewport, camera, controls, canvas, MeshBVH,
   state: () => state, doc: () => doc, display: () => display.R, symPlane: () => symPlane,
-  rects, workerSource, requestRender, saveSettings, saveSessionSoon, showError, boundsOf,
+  rects, workerSource, requestRender, saveSettings, saveSessionSoon, showError, boundsOf, undoKey: UNDO_KEY,
   setHint: hint => { if ($('hint').textContent !== hint) { $('hint').textContent = hint; flashHint(); } },
   updateUndo: () => { $('rigUndo').disabled = !rigUI.canUndo(); $('rigRedo').disabled = !rigUI.canRedo(); },
   updateExport: () => updateExportPanel(),

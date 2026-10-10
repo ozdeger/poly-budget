@@ -736,6 +736,19 @@ details.more[open] > summary { margin-bottom: 8px; }
 .bone-props { display: flex; flex-direction: column; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); }
 .bone-props .row { justify-content: space-between; }
 .note.warn { color: var(--warn); }
+.swatch.wadd { background: #ff6a3d; }
+.swatch.wsub { background: #3d8bff; }
+.swatch.wset { background: #c9c2b6; }
+.opt-name[data-tool="wadd"]::before { background: #ff6a3d; }
+.opt-name[data-tool="wsub"]::before { background: #3d8bff; }
+.opt-name[data-tool="wset"]::before { background: #c9c2b6; }
+.toolopts .opt-size input { width: 110px; }
+.toolopts .under { font: 11px/1.3 var(--font-num); color: var(--muted); }
+.toolopts .under:empty { display: none; }
+.jlock { margin-left: auto; width: 20px !important; height: 20px !important; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--faint); cursor: pointer; opacity: 0; }
+.bone-tree li:hover .jlock, .jlock.on { opacity: 1; }
+.jlock.on { color: var(--accent); }
+.jlock svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .toolopts .check { align-items: center; white-space: nowrap; font-size: 12px; color: var(--muted); }
 .toolopts .check input { margin: 0; }
 
@@ -1011,7 +1024,18 @@ details.more[open] > summary { margin-bottom: 8px; }
     <section class="sec" id="secWeights" aria-labelledby="hWeights" data-space="rig" data-needs-model>
       <div class="sec-head"><h2 id="hWeights">Weights</h2><label class="switch" title="Show the weights on the model"><input type="checkbox" id="rigShowWeights" role="switch" aria-label="Show the weights on the model"><span></span></label></div>
       <div class="status-line" id="rigWStatus"><b id="rigWHead"></b><span id="rigWNote"></span></div>
-      <button type="button" class="btn wide" id="rigReweight" title="Bone heat: each joint's weight spreads over the surface from the parts that see it nearest">Work out the weights again</button>
+      <div class="field"><span>Show</span>
+        <div class="seg fill" role="group" aria-label="Weights to show" id="rigViewSeg">
+          <button type="button" data-wview="heat" title="The selected joint's weights, blue at none to red at all">Selected joint</button><button type="button" data-wview="all" title="Every joint in its own colour, blended by weight">All joints</button><button type="button" data-wview="limit" title="Vertices with more joints than an engine takes (magenta: the export keeps the largest four) or none (red)">Problems</button>
+        </div>
+      </div>
+      <div class="row">
+        <button type="button" class="btn small" id="rigSmoothAll" title="Smooth every vertex's weights with its neighbours' (locked joints stay)">Smooth all</button>
+        <button type="button" class="btn small" id="rigClean" title="Drop weights under 5% and keep at most four joints per vertex">Clean</button>
+        <button type="button" class="btn small" id="rigMirrorLR" title="Copy the left side's weights onto the right">Mirror L→R</button>
+        <button type="button" class="btn small" id="rigMirrorRL" title="Copy the right side's weights onto the left">R→L</button>
+      </div>
+      <button type="button" class="btn wide" id="rigReweight" title="Bone heat: each joint's weight spreads over the surface from the parts that see it nearest. Replaces painted weights">Work out the weights again</button>
     </section>
 
     <section class="sec" id="secPose" aria-labelledby="hPose" data-space="rig" data-needs-model>
@@ -1060,13 +1084,24 @@ details.more[open] > summary { margin-bottom: 8px; }
         <button type="button" class="tool" data-rigtool="add" title="Add joints (J)" aria-label="Add joints"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.5" cy="17.5" r="2.5"/><path d="M8.3 15.7 14 10"/><circle cx="15.5" cy="8.5" r="2"/><path d="M19 15v6M16 18h6"/></svg></button>
         <button type="button" class="tool" data-rigtool="pose" title="Pose: turn joints to see the mesh bend (P)" aria-label="Pose"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4.5" r="2"/><path d="M12 7v6l-4 7M12 13l4 7M6 9.5l6-1 5.5 3.5"/></svg></button>
         <span class="pal-sep" aria-hidden="true"></span>
+        <button type="button" class="tool" data-rigtool="wadd" title="Add weight to the selected joint (D)" aria-label="Add weight"><span class="swatch wadd" aria-hidden="true">+</span></button>
+        <button type="button" class="tool" data-rigtool="wsub" title="Subtract weight from the selected joint (S)" aria-label="Subtract weight"><span class="swatch wsub" aria-hidden="true">−</span></button>
+        <button type="button" class="tool" data-rigtool="wset" title="Set the selected joint's weight to a value (G)" aria-label="Set weight"><span class="swatch wset" aria-hidden="true">=</span></button>
+        <button type="button" class="tool" data-rigtool="wsmooth" title="Smooth the weights (H)" aria-label="Smooth weights"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 15c3-5 5.5-5 8.5 0s5.5 5 8.5 0"/><path d="M3.5 9c3-3 5.5-3 8.5 0s5.5 3 8.5 0" opacity="0.5"/></svg></button>
+        <span class="pal-sep" aria-hidden="true"></span>
         <button type="button" class="palbtn" id="rigUndo" aria-label="Undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H12"/></svg></button>
         <button type="button" class="palbtn" id="rigRedo" aria-label="Redo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H12"/></svg></button>
       </div>
       <div class="toolopts" id="rigOpts" hidden>
         <span class="opt-name" id="rigOptName"></span>
         <label class="check" title="A dragged joint settles halfway through the limb under the pointer, so it stays inside the body from any view"><input type="checkbox" id="rigCentre"><span>Middle of the limb</span></label>
-        <label class="check" title="Joints on one side move their mirror image on the other, and joints on the mirror plane stay on it"><input type="checkbox" id="rigMirror"><span>Mirror</span></label>
+        <label class="opt-size" id="rigBrushField"><span>Size</span><input type="range" id="rigBrush" min="0.5" max="30" step="0.5" aria-label="Brush size"><output id="rigBrushOut"></output></label>
+        <label class="opt-size" id="rigStrengthField"><span>Strength</span><input type="range" id="rigStrength" min="0.05" max="1" step="0.05" aria-label="Brush strength"><output id="rigStrengthOut"></output></label>
+        <label class="opt-size" id="rigValueField"><span>Value</span><input type="range" id="rigValue" min="0" max="1" step="0.05" aria-label="Weight to set"><output id="rigValueOut"></output></label>
+        <label class="check" title="The brush spreads over the surface it starts on, so painting one thigh leaves the other alone"><input type="checkbox" id="rigConnected"><span>Connected</span></label>
+        <label class="check" title="Only the surface turned toward you"><input type="checkbox" id="rigFront"><span>Front faces</span></label>
+        <label class="check" title="Joints on one side move their mirror image on the other, joints on the mirror plane stay on it, and strokes paint both sides"><input type="checkbox" id="rigMirror"><span>Mirror</span></label>
+        <span class="under" id="rigUnder" title="The weights under the pointer"></span>
       </div>
       <div class="toolpal renderpal" id="renderPal" role="toolbar" aria-label="Display" aria-orientation="vertical">
         <div class="palgroup" role="group" aria-label="Shading" id="shadeSeg">

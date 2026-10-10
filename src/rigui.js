@@ -162,17 +162,21 @@ export function initRig(host) {
     return best;
   }
   // The result's surface for rays, built once per display (on its own index, as a BVH reorders the one it's given).
-  let bvh = null, bvhOf = null;
+  // It follows the view's positions: posed ones too (refitted when the pose changes).
+  let bvh = null, bvhOf = null, bvhPos = null, bvhStale = false;
   function surfaceTree() {
     const d = host.display();
     if (!d) return null;
-    if (bvhOf !== d.geo) {
+    const pos = d.geo.attributes.position;
+    if (bvhOf !== d.geo || bvhPos !== pos) {
       const g = new THREE.BufferGeometry();
-      g.setAttribute('position', d.geo.attributes.position);
+      g.setAttribute('position', pos);
       g.setIndex(new THREE.BufferAttribute(d.geo.index.array.slice(), 1));
       bvh = new host.MeshBVH(g);
       bvhOf = d.geo;
-    }
+      bvhPos = pos;
+      bvhStale = false;
+    } else if (bvhStale) { bvh.refit(); bvhStale = false; }
     return bvh;
   }
   // Where the line under the pointer passes through the middle of the solid it first enters: halfway between that
@@ -235,6 +239,16 @@ export function initRig(host) {
     const from = redo ? s.redo : s.undo, to = redo ? s.undo : s.redo;
     if (!from.length) return;
     const entry = from.pop();
+    if (entry.kind === 'weights') {
+      const w = s.weights;
+      if (w && w.W === entry.value.W) {
+        const rows = redo ? entry.value.after : entry.value.before;
+        for (const [g, row] of rows) w.W.set(row, g * w.joints);
+        weightsEdited(true);
+      }
+      to.push(entry);
+      return;
+    }
     if (entry.kind === 'pose') {
       to.push({ kind: 'pose', value: poseCopy(s) });
       ({ pose: s.pose, rootOffset: s.rootOffset } = entry.value);
@@ -330,7 +344,7 @@ export function initRig(host) {
     updatePanels();
     try {
       const out = await engine.run(msg);
-      if (host.doc() !== d || st().result !== res) return;
+      if (host.doc() !== d) return;
       if (what === 'place') {
         commit(s.rig ? RIG.cloneRig(s.rig) : null);
         s.rig = out.rig;
@@ -341,6 +355,8 @@ export function initRig(host) {
       s.edited = false;
       s.stale = false;
       if (out.stats && out.stats.ms) s.weightMs = out.stats.ms;
+      // The result moved on while the job ran (its UVs came): the weights follow it by position, or are worked out again.
+      if (st().result !== res) carryWeights(st().result);
     } catch (err) {
       if (err && err.message === 'cancelled') return;
       console.error(err);
@@ -365,42 +381,54 @@ export function initRig(host) {
 
   // A new result (another budget, or the same one with its UVs): weights carry over where every position is still there
   // (UV seams only split vertices); otherwise they are worked out again, or marked out of date where painted by hand.
+  function carryWeights(res) {
+    const s = R(), w = s && s.weights;
+    if (!w || !res || w.res === res) return true;
+    const groups = SKIN.skinGroups(res);
+    const W = SKIN.remapWeights(w.W, s.rig.joints.length, w.groups.positions, groups);
+    if (W) { s.weights = { W, groups, res, joints: s.rig.joints.length }; return true; }
+    s.weights = null;
+    s.stale = true;
+    if (!s.edited && inRig()) scheduleWeights(0);
+    return false;
+  }
   function onResult(res) {
     bvhOf = null;
     const s = R();
     if (!s || !s.rig) { sync(); return; }
-    const w = s.weights;
-    if (w && w.res !== res) {
-      const groups = SKIN.skinGroups(res);
-      const W = SKIN.remapWeights(w.W, s.rig.joints.length, w.groups.positions, groups);
-      if (W) s.weights = { W, groups, res, joints: s.rig.joints.length };
-      else {
-        s.weights = null;
-        s.stale = true;
-        if (!s.edited && inRig()) scheduleWeights(0);
-      }
-    } else if (!w && inRig() && !s.busy) scheduleWeights(0);
+    if (s.weights) carryWeights(res);
+    else if (inRig() && !s.busy) scheduleWeights(0);
     sync();
   }
 
   // ---------- the weights on the model ----------
-  const showWeights = () => inRig() && settings.rigShowWeights !== false && !!(R() && R().weights && R().weights.res === st().result);
+  const weightTool = () => /^w/.test(settings.rigTool);
+  const showWeights = () => inRig() && (settings.rigShowWeights !== false || weightTool()) && !!(R() && R().weights && R().weights.res === st().result);
+  // The views: the selected joint's weights as heat, every joint in its own colour, or where a vertex has more joints
+  // than an engine takes (magenta, the export keeps the largest four) or none (red).
   function paintWeights() {
     const d = host.display(), s = R();
     if (!d) return;
     if (!showWeights()) { if (inRig()) d.paint.visible = false; host.requestRender(); return; }
     const { W, groups } = s.weights, B = s.rig.joints.length, sel = s.selected, C = d.colors, V = C.length / 4;
+    const view = settings.rigWeightView === 'limit' ? 'limit' : settings.rigWeightView === 'all' || sel < 0 ? 'all' : 'heat';
     const rgb = [0, 0, 0], hue = s.rig.joints.map((_, j) => { const c = [0, 0, 0]; jointHue(j, c); return c; });
     for (let v = 0; v < V; v++) {
       const g = groups.group[v], o = v * 4;
-      if (sel >= 0) {
+      if (view === 'heat') {
         heat(W[g * B + sel], C, o);
-      } else {
+        C[o + 3] = 215;
+      } else if (view === 'all') {
         rgb[0] = rgb[1] = rgb[2] = 0;
         for (let b = 0; b < B; b++) { const x = W[g * B + b]; if (x > 0) for (let k = 0; k < 3; k++) rgb[k] += x * hue[b][k]; }
         C[o] = rgb[0]; C[o + 1] = rgb[1]; C[o + 2] = rgb[2];
+        C[o + 3] = 150;
+      } else {
+        let n = 0, sum = 0;
+        for (let b = 0; b < B; b++) { const x = W[g * B + b]; sum += x; if (x >= SKIN.MIN_WEIGHT) n++; }
+        const bad = sum < 0.5 ? [235, 45, 45] : n > SKIN.MAX_INFLUENCES ? [230, 40, 210] : null;
+        if (bad) { C[o] = bad[0]; C[o + 1] = bad[1]; C[o + 2] = bad[2]; C[o + 3] = 230; } else { C[o] = C[o + 1] = C[o + 2] = 120; C[o + 3] = 60; }
       }
-      C[o + 3] = sel >= 0 ? 215 : 150;
     }
     d.paintGeo.attributes.color.clearUpdateRanges();
     d.paintGeo.attributes.color.needsUpdate = true;
@@ -413,11 +441,12 @@ export function initRig(host) {
   // its positions with the result, so posing gives it copies (the paint overlay and quad wireframe take them too); the
   // surface with tangents, when there is one, is a copy already and is posed in place from its rest values.
   let poser = null, posedWorld = null, playing = null;
-  const posing = () => inRig() && !!(R() && R().rig) && (settings.rigTool === 'pose' || !!playing);
+  const posing = () => inRig() && !!(R() && R().rig) && (settings.rigTool === 'pose' || !!playing || (/^w/.test(settings.rigTool) && !!(R().pose && R().pose.some(Boolean))));
   function ensurePoser() {
     const d = host.display(), s = R();
     if (!d || !s || !s.rig || !s.weights || s.weights.res !== st().result) return null;
     if (poser && poser.d === d && poser.W === s.weights.W && poser.B === s.rig.joints.length) return poser;
+    // (A poser whose W was cleared after painting keeps its geometry and takes the new weights.)
     if (poser && poser.d === d) restPose();
     const B = s.rig.joints.length, { W, groups } = s.weights, sk = SKIN.vertexSkin(groups.group, SKIN.limitWeights(W, groups.count, B));
     const geo = d.geo, restP = geo.attributes.position.array, restN = geo.attributes.normal.array;
@@ -445,6 +474,7 @@ export function initRig(host) {
     posedWorld = m.world;
     if (!p) return;
     SKIN.skinVertices(m.skin, p.sk.index, p.sk.weight, p.restP, p.restN, p.pos.array, p.nrm.array);
+    bvhStale = true;
     p.pos.needsUpdate = true;
     p.nrm.needsUpdate = true;
     if (p.surf) {
@@ -460,6 +490,7 @@ export function initRig(host) {
     const p = poser;
     if (!p) return;
     p.pos.array.set(p.restP); p.pos.needsUpdate = true;
+    bvhStale = true;
     p.nrm.array.set(p.restN); p.nrm.needsUpdate = true;
     if (p.surf) {
       const a = p.surf.sg.attributes;
@@ -558,6 +589,188 @@ export function initRig(host) {
     updatePanels();
   }
 
+  // ---------- painting weights ----------
+  // Brushes on the model as it shows (posed or not): Add, Subtract, Set (to a value) and Smooth, on the selected joint,
+  // falling off smoothly to the brush's edge. Connected keeps a stroke to the surface it started on, so painting one
+  // thigh leaves the other alone; Front faces leaves the side turned away. Dabs are a quarter of the brush apart along
+  // the stroke. With Mirror, the joint's mirror image gets the same strokes on the other side.
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.93, 1, 72), ringMat), ring2 = new THREE.Mesh(ring.geometry, ringMat);
+  ring.renderOrder = ring2.renderOrder = 40;
+  ring.visible = ring2.visible = false;
+  host.sceneR.add(ring, ring2);
+  const brushRadius = () => (st().diag || 1) * (settings.rigBrush || 5) / 100;
+  // The weights' surface graph, and the groups' positions and normals as the view shows them.
+  function graphOf(w) {
+    if (!w.graph) w.graph = RIG.meshGraph(w.res.positions, w.res.index);
+    return w.graph;
+  }
+  function shownGroups(w) {
+    const d = host.display(), G = w.groups.count, P = new Float32Array(G * 3), N = new Float32Array(G * 3);
+    const pa = d.geo.attributes.position.array, na = d.geo.attributes.normal.array, group = w.groups.group;
+    for (let v = 0; v < group.length; v++) { const g = group[v]; for (let k = 0; k < 3; k++) { P[g * 3 + k] = pa[v * 3 + k]; N[g * 3 + k] += na[v * 3 + k]; } }
+    return { P, N };
+  }
+  // The point of the shown surface under the pointer, or null.
+  function hitAt(e) {
+    const tree = surfaceTree();
+    if (!tree) return null;
+    const hit = tree.raycastFirst(rayAt(e), THREE.DoubleSide);
+    return hit ? { point: hit.point.toArray(), normal: hit.face ? hit.face.normal.toArray() : null } : null;
+  }
+  let stroke = null;
+  function dab(center, joint, w, shown, viewDir) {
+    const s = R(), B = s.rig.joints.length, W = w.W, G = w.groups.count, r = brushRadius(), r2 = r * r;
+    const { P, N } = shown, graph = graphOf(w), tool = settings.rigTool, strength = settings.rigStrength ?? 0.5;
+    const within = g => { const dx = P[g * 3] - center[0], dy = P[g * 3 + 1] - center[1], dz = P[g * 3 + 2] - center[2]; return dx * dx + dy * dy + dz * dz <= r2; };
+    const facing = g => !settings.rigFront || N[g * 3] * viewDir[0] + N[g * 3 + 1] * viewDir[1] + N[g * 3 + 2] * viewDir[2] < 0;
+    let list = [];
+    if (settings.rigConnected !== false) {
+      // From the group nearest the centre, over the surface while inside the brush.
+      let start = -1, bd = Infinity;
+      for (let g = 0; g < G; g++) { const d = (P[g * 3] - center[0]) ** 2 + (P[g * 3 + 1] - center[1]) ** 2 + (P[g * 3 + 2] - center[2]) ** 2; if (d < bd) { bd = d; start = g; } }
+      if (start < 0 || bd > r2) return;
+      const seen = new Uint8Array(G), stack = [start];
+      seen[start] = 1;
+      while (stack.length) {
+        const g = stack.pop();
+        list.push(g);
+        for (let e = graph.start[g]; e < graph.start[g + 1]; e++) { const u = graph.to[e]; if (!seen[u] && within(u)) { seen[u] = 1; stack.push(u); } }
+      }
+    } else for (let g = 0; g < G; g++) if (within(g)) list.push(g);
+    list = list.filter(facing);
+    if (!list.length) return;
+    const locked = s.locks && s.locks.length === B ? s.locks : null, parent = s.rig.joints[joint].parent;
+    for (const g of list) if (!stroke.before.has(g)) stroke.before.set(g, W.slice(g * B, g * B + B));
+    const fall = g => { const d = Math.sqrt((P[g * 3] - center[0]) ** 2 + (P[g * 3 + 1] - center[1]) ** 2 + (P[g * 3 + 2] - center[2]) ** 2) / r, t = 1 - d * d; return t * t; };
+    if (tool === 'wsmooth') {
+      // Smoothing in two passes of half the strength, each group by its own falloff.
+      for (let pass = 0; pass < 2; pass++) for (const g of list) SKIN.smoothWeights(W, B, graph, [g], 0.5 * strength * fall(g), locked);
+    } else {
+      for (const g of list) {
+        const f = fall(g), cur = W[g * B + joint];
+        const v = tool === 'wadd' ? cur + 0.25 * strength * f : tool === 'wsub' ? cur - 0.25 * strength * f : cur + ((settings.rigValue ?? 1) - cur) * Math.min(1, strength * f);
+        SKIN.setWeight(W, B, g, joint, v, locked, parent);
+      }
+    }
+    stroke.changed = true;
+  }
+  function paintAt(point) {
+    const s = R(), w = s.weights, sel = s.selected;
+    const shown = shownGroups(w), viewDir = host.camera.getWorldDirection(new THREE.Vector3()).toArray();
+    dab(point, sel, w, shown, viewDir);
+    const m = s.rig.joints[sel].mirror;
+    if (mirrorEdits() && s.rig.plane && m >= 0) dab(mirrorOf(s.rig, point), m, w, shown, viewDir);
+    weightsEdited(false);
+  }
+  // Weights changed by hand: the view and a posed model follow.
+  function weightsEdited(final) {
+    const s = R();
+    s.edited = true;
+    if (poser) poser.W = null;
+    if (posing()) applyPose();
+    paintWeights();
+    if (final) { updatePanels(); host.saveSessionSoon(); }
+  }
+  function startStroke(e) {
+    const s = R();
+    if (!s || !s.weights || s.weights.res !== st().result) { host.setHint('The weights are still being worked out.'); return false; }
+    if (s.selected < 0 || !s.rig.joints[s.selected].deform) { host.setHint('Select a joint that moves the mesh first: click it in the bone tree, or with Move joints (V).'); return false; }
+    const hit = hitAt(e);
+    if (!hit) return false;
+    stroke = { before: new Map(), changed: false, last: hit.point, id: e.pointerId };
+    host.controls.enabled = false;
+    try { host.canvas.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
+    paintAt(hit.point);
+    showRing(hit);
+    return true;
+  }
+  function strokeMove(e) {
+    const hit = hitAt(e);
+    showRing(hit);
+    if (!hit || !stroke) return;
+    // Dabs a quarter of the brush apart from the last one to here.
+    const step = brushRadius() / 4, d = RIG.dist(stroke.last, hit.point), n = Math.floor(d / step);
+    for (let k = 1; k <= n; k++) paintAt(RIG.lerp(stroke.last, hit.point, (k * step) / d));
+    if (n) stroke.last = RIG.lerp(stroke.last, hit.point, (n * step) / d);
+  }
+  function endStroke() {
+    const s = R(), k = stroke;
+    stroke = null;
+    host.controls.enabled = true;
+    if (!k || !k.changed || !s.weights) return;
+    const B = s.weights.joints, after = new Map();
+    for (const g of k.before.keys()) after.set(g, s.weights.W.slice(g * B, g * B + B));
+    s.undo.push({ kind: 'weights', value: { W: s.weights.W, before: k.before, after } });
+    if (s.undo.length > HISTORY) s.undo.shift();
+    s.redo.length = 0;
+    weightsEdited(true);
+  }
+  function showRing(hit) {
+    const on = !!hit && inRig() && weightTool();
+    ring.visible = on;
+    ring2.visible = false;
+    if (on) {
+      const r = brushRadius(), n = hit.normal || host.camera.getWorldDirection(new THREE.Vector3()).negate().toArray();
+      const place = (m, p, nn) => { m.position.set(p[0] + nn[0] * r * 0.02, p[1] + nn[1] * r * 0.02, p[2] + nn[2] * r * 0.02); m.scale.setScalar(r); m.lookAt(p[0] + nn[0], p[1] + nn[1], p[2] + nn[2]); };
+      place(ring, hit.point, n);
+      const s = R(), m = s && s.rig && s.selected >= 0 ? s.rig.joints[s.selected].mirror : -1;
+      if (mirrorEdits() && s && s.rig && s.rig.plane && m >= 0) {
+        const mn = [...n];
+        mn[s.rig.plane.axis] = -mn[s.rig.plane.axis];
+        place(ring2, mirrorOf(s.rig, hit.point), mn);
+        ring2.visible = true;
+      }
+    }
+    host.requestRender();
+  }
+  // What the group under the pointer is weighted to, its largest first.
+  let underQueued = null;
+  function readUnder(e) {
+    const s = R(), w = s && s.weights;
+    if (!w || w.res !== st().result || !showWeights()) { $('rigUnder').textContent = ''; return; }
+    const hit = hitAt(e);
+    if (!hit) { $('rigUnder').textContent = ''; return; }
+    const { P } = shownGroups(w), B = w.joints;
+    let best = -1, bd = Infinity;
+    for (let g = 0; g < w.groups.count; g++) { const d = (P[g * 3] - hit.point[0]) ** 2 + (P[g * 3 + 1] - hit.point[1]) ** 2 + (P[g * 3 + 2] - hit.point[2]) ** 2; if (d < bd) { bd = d; best = g; } }
+    const top = [...w.W.subarray(best * B, best * B + B)].map((x, b) => [b, x]).filter(a => a[1] >= 0.005).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    $('rigUnder').textContent = top.map(([b, x]) => `${s.rig.joints[b].name} ${Math.round(x * 100)}%`).join(' · ');
+  }
+
+  // Whole-model weight operations.
+  function wholeOp(fn) {
+    const s = R(), w = s && s.weights;
+    if (!w || w.res !== st().result) return;
+    const B = w.joints, before = new Map(), copy = w.W.slice();
+    fn(s, w, B);
+    const after = new Map();
+    for (let g = 0; g < w.groups.count; g++) {
+      let differs = false;
+      for (let k = 0; k < B; k++) if (copy[g * B + k] !== w.W[g * B + k]) { differs = true; break; }
+      if (differs) { before.set(g, copy.slice(g * B, g * B + B)); after.set(g, w.W.slice(g * B, g * B + B)); }
+    }
+    if (!before.size) { host.setHint('Nothing to change.'); return; }
+    s.undo.push({ kind: 'weights', value: { W: w.W, before, after } });
+    if (s.undo.length > HISTORY) s.undo.shift();
+    s.redo.length = 0;
+    weightsEdited(true);
+    host.setHint(`${before.size} positions changed.`);
+  }
+  const lockedOf = s => (s.locks && s.locks.length === s.rig.joints.length ? s.locks : null);
+  function smoothAll() {
+    wholeOp((s, w, B) => { const all = [...Array(w.groups.count).keys()]; for (let k = 0; k < 3; k++) SKIN.smoothWeights(w.W, B, graphOf(w), all, 0.5, lockedOf(s)); });
+  }
+  function cleanAll() { wholeOp((s, w, B) => SKIN.cleanWeights(w.W, B, w.groups.count, 0.05, SKIN.MAX_INFLUENCES, lockedOf(s))); }
+  function mirrorAll(from) {
+    wholeOp((s, w, B) => {
+      const rig = s.rig;
+      if (!rig.plane) { host.setHint('The skeleton has no mirror plane to copy across.'); return; }
+      const partners = SKIN.mirrorPartners(w.groups.positions, w.groups.count, rig.plane, 0.02 * (st().diag || 1));
+      SKIN.mirrorSide(w.W, B, w.groups.positions, w.groups.count, partners, rig, from);
+    });
+  }
+
   // ---------- panels ----------
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   function depthOf(rig, i) { let d = 0; for (let p = rig.joints[i].parent; p >= 0; p = rig.joints[p].parent) d++; return d; }
@@ -588,12 +801,15 @@ export function initRig(host) {
     if (!rig) { wHead.textContent = 'No weights'; wNote.textContent = 'They come with the skeleton.'; wRow.className = 'status-line'; }
     else if (s.busy) { wHead.textContent = 'Working out the weights'; wNote.textContent = 'Bone heat over the reduced surface…'; wRow.className = 'status-line busy'; }
     else if (!s.weights || s.stale) { wHead.textContent = 'Out of date'; wNote.textContent = s.edited ? 'The skeleton changed since the weights were painted. Work them out again to fit it, or keep painting.' : 'They follow the skeleton in a moment.'; wRow.className = 'status-line warn'; }
-    else { wHead.textContent = 'Bone heat'; wNote.textContent = `Up to ${SKIN.MAX_INFLUENCES} joints per vertex${s.weightMs ? ` · ${(s.weightMs / 1000).toFixed(1)} s` : ''}. ${s.selected >= 0 ? `Showing ${rig.joints[s.selected].name}'s weights.` : 'Select a joint to see its weights.'}`; wRow.className = 'status-line ok'; }
+    else { wHead.textContent = s.edited ? 'Painted' : 'Bone heat'; wNote.textContent = `Up to ${SKIN.MAX_INFLUENCES} joints per vertex in the export${s.weightMs && !s.edited ? ` · worked out in ${(s.weightMs / 1000).toFixed(1)} s` : ''}. ${s.selected >= 0 ? `Showing ${rig.joints[s.selected].name}'s weights: paint them with D, S, G and H.` : 'Select a joint to see and paint its weights.'}`; wRow.className = 'status-line ok'; }
+    const ready = !!(rig && s.weights && s.weights.res === res && !s.busy);
+    for (const id of ['rigSmoothAll', 'rigClean', 'rigMirrorLR', 'rigMirrorRL']) $(id).disabled = !ready || (/Mirror/.test(id) && !rig.plane);
     // Bone tree.
     const tree = $('rigTree');
     if (!rig) tree.innerHTML = '';
     else {
-      tree.innerHTML = rig.joints.map((j, i) => `<li data-j="${i}" class="${i === s.selected ? 'sel' : ''}${j.deform ? '' : ' end'}" style="--d:${depthOf(rig, i)}"><span class="jdot ${j.placed === 'estimated' ? 'est' : j.side}"></span><span class="jname">${esc(j.name)}</span></li>`).join('');
+      const locks = s.locks && s.locks.length === rig.joints.length ? s.locks : null;
+      tree.innerHTML = rig.joints.map((j, i) => `<li data-j="${i}" class="${i === s.selected ? 'sel' : ''}${j.deform ? '' : ' end'}" style="--d:${depthOf(rig, i)}"><span class="jdot ${j.placed === 'estimated' ? 'est' : j.side}"></span><span class="jname">${esc(j.name)}</span>${j.deform ? `<button type="button" class="jlock${locks && locks[i] ? ' on' : ''}" title="${locks && locks[i] ? 'Unlock its weights' : 'Lock its weights: painting and smoothing leave them as they are'}" aria-label="Lock ${esc(j.name)}'s weights" aria-pressed="${!!(locks && locks[i])}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="11" width="12" height="9" rx="1.5"/><path d="M9 11V8a3 3 0 0 1 ${locks && locks[i] ? '6 0v3' : '6 -1'}"/></svg></button>` : ''}</li>`).join('');
       const selEl = tree.querySelector('.sel');
       if (selEl && selEl.scrollIntoView && settings.space === 'rig') selEl.scrollIntoView({ block: 'nearest' });
     }
@@ -714,6 +930,7 @@ export function initRig(host) {
   function onPointerDown(e) {
     if (!inRig() || e.button !== 0 || !st() || !st().result) return false;
     const tool = settings.rigTool, s = ensure();
+    if (weightTool()) return startStroke(e);
     if (tool === 'select') {
       const j = pickJoint(e);
       if (j >= 0) {
@@ -732,6 +949,17 @@ export function initRig(host) {
   }
   function onPointerMove(e) {
     if (!inRig()) return;
+    if (weightTool() || (settings.rigTool === 'select' && !drag)) {
+      const first = !underQueued;
+      underQueued = e;
+      if (first) requestAnimationFrame(() => {
+        const ev = underQueued;
+        underQueued = null;
+        if (stroke) strokeMove(ev); else if (weightTool()) showRing(hitAt(ev));
+        readUnder(ev);
+      });
+      if (weightTool()) return;
+    }
     if (!drag) { hover(e); return; }
     const first = !moveQueued;
     moveQueued = e;
@@ -750,6 +978,7 @@ export function initRig(host) {
   }
   function onPointerUp(e) {
     if (!inRig()) return;
+    if (stroke) { endStroke(); return; }
     if (drag) {
       const d = drag;
       drag = null;
@@ -775,13 +1004,13 @@ export function initRig(host) {
   }
   let hovered = -1;
   function hover(e) {
-    if (settings.rigTool !== 'select') { host.canvas.style.cursor = settings.rigTool === 'add' ? 'copy' : settings.rigTool === 'orbit' ? 'grab' : 'crosshair'; return; }
+    if (settings.rigTool !== 'select') { host.canvas.style.cursor = settings.rigTool === 'add' ? 'copy' : settings.rigTool === 'orbit' ? 'grab' : settings.rigTool === 'pose' ? 'default' : 'crosshair'; return; }
     const j = pickJoint(e);
     if (j !== hovered) { hovered = j; host.canvas.style.cursor = j >= 0 ? 'move' : 'default'; }
   }
 
   // ---------- keys ----------
-  const TOOLS = { o: 'orbit', v: 'select', j: 'add', p: 'pose' };
+  const TOOLS = { o: 'orbit', v: 'select', j: 'add', p: 'pose', d: 'wadd', s: 'wsub', g: 'wset', h: 'wsmooth' };
   function onKey(e) {
     if (!inRig()) return false;
     const k = e.key.toLowerCase(), mod = e.metaKey || e.ctrlKey;
@@ -792,6 +1021,12 @@ export function initRig(host) {
     if (k === 'delete' || k === 'backspace') { const s = R(); if (s && s.selected >= 0) deleteJoint(s.selected); return true; }
     if (k === 'escape') { const s = R(); if (playing) play(false); else if (s) { s.selected = -1; drawSkeleton(); paintWeights(); updatePanels(); placeGizmo(); } return true; }
     if (k === ' ') { play(); return true; }
+    if ((k === '[' || k === ']') && weightTool()) {
+      settings.rigBrush = Math.min(30, Math.max(0.5, Math.round((settings.rigBrush || 5) * (k === ']' ? 1.2 : 1 / 1.2) * 10) / 10));
+      host.saveSettings();
+      sync();
+      return true;
+    }
     return false;
   }
 
@@ -806,13 +1041,14 @@ export function initRig(host) {
     if (!inRig()) return;
     const tool = settings.rigTool;
     // Select and Add leave a left drag that starts off a joint to orbiting; the other tools orbit with the right button.
-    const orbitLeft = tool === 'orbit' || tool === 'select' || tool === 'add' || tool === 'pose';
+    const orbitLeft = !weightTool();
     host.controls.mouseButtons = orbitLeft ? { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN } : { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
     host.controls.touches = orbitLeft ? { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN } : { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };
-    host.canvas.style.cursor = tool === 'orbit' ? 'grab' : tool === 'add' ? 'copy' : 'default';
+    host.canvas.style.cursor = tool === 'orbit' ? 'grab' : tool === 'add' ? 'copy' : weightTool() ? 'crosshair' : 'default';
     const hint = tool === 'orbit' ? 'Drag to orbit · right-drag to pan · scroll to zoom'
       : tool === 'select' ? 'Drag a joint to move it; it settles in the middle of the limb · Shift drags what hangs below too · Alt keeps its depth · click a bone to select it · drag elsewhere to orbit'
         : tool === 'pose' ? 'Click a joint and turn it with the rings: red bends it, green twists it along the bone · Space plays the test motion · drag elsewhere to orbit'
+          : weightTool() ? `Paint the selected joint's weight · right-drag to orbit · [ ] brush size · ${host.undoKey} undo`
           : 'Click the model to add a joint there, chained from the selected one · Esc to start a new chain';
     host.setHint(hint);
   }
@@ -825,8 +1061,22 @@ export function initRig(host) {
     for (const b of document.querySelectorAll('#rigFingerSeg button')) b.setAttribute('aria-pressed', String(b.dataset.fingers === settings.rigFingers));
     for (const b of document.querySelectorAll('#rigNameSeg button')) b.setAttribute('aria-pressed', String(b.dataset.naming === settings.rigNaming));
     $('rigOpts').hidden = !rig || !st() || !st().result;
-    $('rigOptName').textContent = { add: 'Add joint', select: 'Move joints', pose: 'Pose', orbit: 'Orbit' }[settings.rigTool] || '';
-    $('rigCentre').closest('label').hidden = settings.rigTool === 'pose';
+    $('rigOptName').textContent = { add: 'Add joint', select: 'Move joints', pose: 'Pose', orbit: 'Orbit', wadd: 'Add weight', wsub: 'Subtract weight', wset: 'Set weight', wsmooth: 'Smooth weights' }[settings.rigTool] || '';
+    $('rigOptName').dataset.tool = settings.rigTool;
+    const wt = weightTool();
+    $('rigCentre').closest('label').hidden = settings.rigTool === 'pose' || wt;
+    for (const id of ['rigBrushField', 'rigStrengthField', 'rigConnected', 'rigFront']) $(id).closest('label').hidden = !wt;
+    $('rigValueField').hidden = settings.rigTool !== 'wset';
+    if (document.activeElement !== $('rigBrush')) $('rigBrush').value = String(settings.rigBrush || 5);
+    $('rigBrushOut').textContent = `${settings.rigBrush || 5}%`;
+    if (document.activeElement !== $('rigStrength')) $('rigStrength').value = String(settings.rigStrength ?? 0.5);
+    $('rigStrengthOut').textContent = `${Math.round((settings.rigStrength ?? 0.5) * 100)}%`;
+    if (document.activeElement !== $('rigValue')) $('rigValue').value = String(settings.rigValue ?? 1);
+    $('rigValueOut').textContent = `${Math.round((settings.rigValue ?? 1) * 100)}%`;
+    $('rigConnected').checked = settings.rigConnected !== false;
+    $('rigFront').checked = !!settings.rigFront;
+    for (const b of document.querySelectorAll('#rigViewSeg button')) b.setAttribute('aria-pressed', String(b.dataset.wview === (settings.rigWeightView || 'heat')));
+    if (!wt) { ring.visible = ring2.visible = false; }
     for (const b of document.querySelectorAll('#rigMotionSeg button')) b.setAttribute('aria-pressed', String(b.dataset.motion === settings.rigMotion));
     if (rig) applyControls();
     if (!rig && playing) play(false);
@@ -914,6 +1164,29 @@ export function initRig(host) {
   });
   $('rigDelete').addEventListener('click', () => { const s = R(); if (s) deleteJoint(s.selected); });
   $('rigPlay').addEventListener('click', () => play());
+  const bindRange = (id, key, fmt) => {
+    $(id).addEventListener('input', e => { settings[key] = Number(e.target.value); $(`${id}Out`).textContent = fmt(settings[key]); });
+    $(id).addEventListener('change', () => { host.saveSettings(); sync(); });
+  };
+  bindRange('rigBrush', 'rigBrush', v => `${v}%`);
+  bindRange('rigStrength', 'rigStrength', v => `${Math.round(v * 100)}%`);
+  bindRange('rigValue', 'rigValue', v => `${Math.round(v * 100)}%`);
+  $('rigConnected').addEventListener('change', e => { settings.rigConnected = e.target.checked; host.saveSettings(); });
+  $('rigFront').addEventListener('change', e => { settings.rigFront = e.target.checked; host.saveSettings(); });
+  for (const b of document.querySelectorAll('#rigViewSeg button')) b.addEventListener('click', () => { settings.rigWeightView = b.dataset.wview; host.saveSettings(); sync(); });
+  $('rigSmoothAll').addEventListener('click', smoothAll);
+  $('rigClean').addEventListener('click', cleanAll);
+  $('rigMirrorLR').addEventListener('click', () => mirrorAll('L'));
+  $('rigMirrorRL').addEventListener('click', () => mirrorAll('R'));
+  $('rigTree').addEventListener('click', e => {
+    const lock = e.target.closest('.jlock');
+    if (!lock) return;
+    e.stopPropagation();
+    const s = R(), i = Number(lock.closest('li').dataset.j), B = s.rig.joints.length;
+    if (!s.locks || s.locks.length !== B) s.locks = new Uint8Array(B);
+    s.locks[i] = s.locks[i] ? 0 : 1;
+    updatePanels();
+  }, true);
   $('rigResetPose').addEventListener('click', () => resetPose(true));
   for (const b of document.querySelectorAll('#rigMotionSeg button')) b.addEventListener('click', () => {
     settings.rigMotion = b.dataset.motion;
@@ -926,6 +1199,7 @@ export function initRig(host) {
   host.canvas.addEventListener('pointermove', onPointerMove);
   host.canvas.addEventListener('pointerup', onPointerUp);
   host.canvas.addEventListener('pointercancel', onPointerUp);
+  host.canvas.addEventListener('pointerleave', () => { if (!stroke) { ring.visible = ring2.visible = false; $('rigUnder').textContent = ''; host.requestRender(); } });
 
   // ---------- what the page asks of the workspace ----------
   return {

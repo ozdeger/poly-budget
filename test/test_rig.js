@@ -214,6 +214,39 @@ console.log('== automatic weights');
   }
 }
 
+console.log('== editing weights');
+{
+  const f = figure({ pose: 'T', fingers: false, step: 0.01 });
+  const r = core.runReduction(S, context(core.smartWeld(sceneOf(f.geometry, 'Figure'), { keepUV: false, hardAngle: 30 })), null,
+    { ...settings, deferUV: false, bakeSize: 1024, symmetry: null, targetTris: 16000, topology: 'quads' }, { normals: 'smooth' }).result;
+  const bones = R.humanoidRig(f.joints, { fingers: false }), B = bones.joints.length, at = slot => bones.joints.findIndex(j => j.slot === slot);
+  const { W, groups } = K.boneHeat(r, bones), G = groups.count, graph = R.meshGraph(r.positions, r.index);
+  const sums = () => { let bad = 0; for (let g = 0; g < G; g++) { let t = 0; for (let b = 0; b < B; b++) t += W[g * B + b]; if (Math.abs(t - 1) > 1e-4) bad++; } return bad; };
+  // Painting a joint's weight up and down: the rest make room or take it back, locked joints untouched.
+  const fore = at('LeftForeArm'), arm = at('LeftArm'), locks = new Uint8Array(B);
+  locks[arm] = 1;
+  const armBefore = Array.from({ length: G }, (_, g) => W[g * B + arm]);
+  let moved = 0;
+  for (let g = 0; g < G; g++) if (W[g * B + fore] > 0.05) { K.setWeight(W, B, g, fore, W[g * B + fore] + 0.3, locks, arm); moved++; }
+  for (let g = 0; g < G; g++) if (g % 3 === 0) K.setWeight(W, B, g, fore, 0, null, arm);
+  const armKept = armBefore.every((x, g) => g % 3 === 0 || Math.abs(W[g * B + arm] - x) < 1e-6);
+  check(moved > 0 && sums() === 0 && armKept, `painting ${moved} positions up and a third of them to zero: every position still sums to 1, the locked upper arm unchanged`);
+  // Smoothing and cleaning.
+  const all = [...Array(G).keys()];
+  K.smoothWeights(W, B, graph, all, 0.5, null);
+  const cleaned = K.cleanWeights(W, B, G, 0.05, 4);
+  let over = 0;
+  for (let g = 0; g < G; g++) { let n = 0; for (let b = 0; b < B; b++) if (W[g * B + b] > 0) n++; if (n > 4) over++; }
+  check(sums() === 0 && over === 0 && cleaned > 0, `smoothed and cleaned (${cleaned} positions): at most 4 joints each, all summing to 1`);
+  // Mirroring one side onto the other on a result that wasn't mirrored: each right position takes the left one's.
+  for (let g = 0; g < G; g++) if (groups.positions[g * 3] > 0.3) K.setWeight(W, B, g, fore, 1, null, arm);
+  const partners = K.mirrorPartners(groups.positions, G, { axis: 0, offset: 0 }, 0.02 * 2.6);
+  const changed = K.mirrorSide(W, B, groups.positions, G, partners, bones, 'L');
+  const tot = j => { let t = 0; for (let g = 0; g < G; g++) t += W[g * B + j]; return t; };
+  const lf = tot(fore), rf = tot(at('RightForeArm'));
+  check(changed > G * 0.4 && Math.abs(lf - rf) / lf < 0.05 && sums() === 0, `Mirror L→R: ${changed} right positions take their left partners' weights (forearm ${lf.toFixed(0)} against ${rf.toFixed(0)})`);
+}
+
 // A pose: the left forearm bent 70° about its hinge, the right thigh raised 45° and the spine turned 20°.
 const POSE = { LeftForeArm: R.qaxis([1, 0, 0], (70 * Math.PI) / 180), RightUpLeg: R.qaxis([1, 0, 0], (-45 * Math.PI) / 180), Spine1: R.qaxis([0, 1, 0], (20 * Math.PI) / 180) };
 const poseOf = r => r.joints.map(j => POSE[j.slot] || null);

@@ -492,3 +492,119 @@ export function remapWeights(W, B, oldPositions, groups) {
   }
   return out;
 }
+
+// ---------- editing weights ----------
+//
+// A group's weights always sum to 1. Painting one joint's weight up takes it from the others in proportion to what they
+// hold; painting it down gives it back to them the same way, or to the joint's parent when nothing else holds any.
+// Locked joints keep their weight through both.
+
+// Sets joint b's weight at group g to value (clamped to what the locked joints leave), the others making room.
+export function setWeight(W, B, g, b, value, locked = null, parent = -1) {
+  const o = g * B;
+  let lockedSum = 0, others = 0;
+  for (let k = 0; k < B; k++) {
+    if (k === b) continue;
+    if (locked && locked[k]) lockedSum += W[o + k]; else others += W[o + k];
+  }
+  if (locked && locked[b]) return false;
+  const room = Math.max(0, 1 - lockedSum), v = Math.min(room, Math.max(0, value)), rest = room - v;
+  if (Math.abs(W[o + b] - v) < 1e-7) return false;
+  W[o + b] = v;
+  if (others > 1e-9) {
+    const f = rest / others;
+    for (let k = 0; k < B; k++) if (k !== b && !(locked && locked[k])) W[o + k] *= f;
+  } else if (rest > 1e-9) {
+    // Nothing else held weight here: it goes to the parent, or to the first joint free to take it.
+    let to = parent >= 0 && parent !== b && !(locked && locked[parent]) ? parent : -1;
+    for (let k = 0; to < 0 && k < B; k++) if (k !== b && !(locked && locked[k])) to = k;
+    if (to >= 0) W[o + to] = rest; else W[o + b] = room;
+  }
+  return true;
+}
+
+// Each listed group's weights moved toward its neighbours' average by `amount` (0–1), locked joints kept, then summed
+// to 1 again. graph: rig.js meshGraph (CSR over the same groups). Works on a copy of the rows it reads.
+export function smoothWeights(W, B, graph, list, amount, locked = null) {
+  const rows = new Float32Array(list.length * B), avg = new Float64Array(B);
+  list.forEach((g, n) => {
+    avg.fill(0);
+    let c = 0;
+    for (let e = graph.start[g]; e < graph.start[g + 1]; e++) { const u = graph.to[e]; for (let k = 0; k < B; k++) avg[k] += W[u * B + k]; c++; }
+    for (let k = 0; k < B; k++) rows[n * B + k] = c ? W[g * B + k] + (avg[k] / c - W[g * B + k]) * amount : W[g * B + k];
+  });
+  list.forEach((g, n) => {
+    let lockedSum = 0, free = 0;
+    for (let k = 0; k < B; k++) {
+      if (locked && locked[k]) { rows[n * B + k] = W[g * B + k]; lockedSum += rows[n * B + k]; } else free += rows[n * B + k];
+    }
+    const f = free > 1e-9 ? Math.max(0, 1 - lockedSum) / free : 0;
+    for (let k = 0; k < B; k++) W[g * B + k] = locked && locked[k] ? rows[n * B + k] : free > 1e-9 ? rows[n * B + k] * f : W[g * B + k];
+  });
+}
+
+// Weights under `min` dropped and at most `max` joints kept per group, the rest summed to 1 again (locked joints keep
+// theirs). How many groups changed.
+export function cleanWeights(W, B, G, min = MIN_WEIGHT, max = MAX_INFLUENCES, locked = null) {
+  let changed = 0;
+  const order = [...Array(B).keys()];
+  for (let g = 0; g < G; g++) {
+    const o = g * B;
+    order.sort((a, b) => W[o + b] - W[o + a]);
+    let touched = false;
+    order.forEach((k, rank) => { if (W[o + k] > 0 && !(locked && locked[k]) && (W[o + k] < min || rank >= max)) { W[o + k] = 0; touched = true; } });
+    if (!touched) continue;
+    changed++;
+    let lockedSum = 0, free = 0;
+    for (let k = 0; k < B; k++) (locked && locked[k] ? (lockedSum += W[o + k]) : (free += W[o + k]));
+    if (free > 1e-9) for (let k = 0; k < B; k++) if (!(locked && locked[k])) W[o + k] *= Math.max(0, 1 - lockedSum) / free;
+  }
+  return changed;
+}
+
+// Each group's mirror partner across an axis plane ({ axis, offset }): the group nearest its mirror image, within tol.
+// -1 where there is none (the model isn't symmetric there).
+export function mirrorPartners(positions, G, plane, tol) {
+  const h = tol * 4, cells = new Map(), key = (x, y, z) => `${Math.floor(x / h)},${Math.floor(y / h)},${Math.floor(z / h)}`;
+  for (let g = 0; g < G; g++) {
+    const k = key(positions[g * 3], positions[g * 3 + 1], positions[g * 3 + 2]);
+    if (!cells.has(k)) cells.set(k, []);
+    cells.get(k).push(g);
+  }
+  const out = new Int32Array(G).fill(-1);
+  for (let g = 0; g < G; g++) {
+    const p = [positions[g * 3], positions[g * 3 + 1], positions[g * 3 + 2]];
+    p[plane.axis] = 2 * plane.offset - p[plane.axis];
+    let best = -1, bd = tol;
+    const cx = Math.floor(p[0] / h), cy = Math.floor(p[1] / h), cz = Math.floor(p[2] / h);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      for (const u of cells.get(`${cx + dx},${cy + dy},${cz + dz}`) || []) {
+        const d = Math.hypot(positions[u * 3] - p[0], positions[u * 3 + 1] - p[1], positions[u * 3 + 2] - p[2]);
+        if (d < bd) { bd = d; best = u; }
+      }
+    }
+    out[g] = best;
+  }
+  return out;
+}
+
+// One side's weights copied onto the other, left and right joints swapped: from 'L' or 'R' (the figure's side, by the
+// frame's left). Each group on the other side takes the weights of its partner (the group nearest its mirror image),
+// so every one of them gets some even where the two sides' vertices don't pair up. How many groups changed.
+export function mirrorSide(W, B, positions, G, partners, rig, from) {
+  const swap = rig.joints.map((j, i) => (j.mirror >= 0 ? j.mirror : i));
+  const left = rig.frame.left, plane = rig.plane;
+  const sideOfG = g => {
+    const s = left[0] * positions[g * 3] + left[1] * positions[g * 3 + 1] + left[2] * positions[g * 3 + 2] - (plane ? plane.offset * left[plane.axis] : 0);
+    return s > 0 ? 'L' : s < 0 ? 'R' : 'C';
+  };
+  const src = W.slice();
+  let changed = 0;
+  for (let g = 0; g < G; g++) {
+    const m = partners[g], side = sideOfG(g);
+    if (m < 0 || side === from || side === 'C' || sideOfG(m) !== from) continue;
+    for (let b = 0; b < B; b++) W[g * B + swap[b]] = src[m * B + b];
+    changed++;
+  }
+  return changed;
+}
