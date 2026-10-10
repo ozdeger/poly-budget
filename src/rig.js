@@ -521,13 +521,13 @@ export function alongPolyline(pts, frac) {
   return pts[0];
 }
 
-// The bend along rings i0..i1: the ring where the centreline turns most, and by how much (degrees), measured over a
-// quarter of the span to either side.
-function bendOf(rings, i0, i1) {
-  const span = Math.abs(i1 - i0), w = Math.max(2, Math.round(span / 4)), lo = Math.min(i0, i1), hi = Math.max(i0, i1);
+// The bend among rings i0..i1 of a limb whose rings run from lo to hi: the ring where the centreline turns most, and by
+// how much (degrees), measured over an eighth of the limb to either side.
+function bendOf(rings, i0, i1, lo, hi) {
+  const w = Math.max(2, Math.round((hi - lo) / 8));
   let best = -1, angle = 0;
-  for (let i = lo + w; i <= hi - w; i++) {
-    const a = norm(sub(rings[i].c, rings[i - w].c)), b = norm(sub(rings[i + w].c, rings[i].c));
+  for (let i = Math.max(i0, lo + 1); i <= Math.min(i1, hi - 1); i++) {
+    const a = norm(sub(rings[i].c, rings[Math.max(lo, i - w)].c)), b = norm(sub(rings[Math.min(hi, i + w)].c, rings[i].c));
     const ang = (Math.acos(Math.max(-1, Math.min(1, dot(a, b)))) * 180) / Math.PI;
     if (ang > angle) { angle = ang; best = i; }
   }
@@ -734,7 +734,7 @@ export function placeHumanoid(mesh, opt = {}) {
   const fp = hidden ? null : footOn(1, hp), fn = hidden ? null : footOn(-1, hn);
   if (!hidden && (!fp || !fn)) return fallback('The hands and feet could not all be told apart.', { up });
   if (!hidden && (height(fp.p) > height(hp.p) - 0.15 * H0 || height(fn.p) > height(hn.p) - 0.15 * H0)) return fallback('The feet are not clearly below the hands: the pose is not a standing one.', { up });
-  if (hidden) notes.push('The legs are hidden by the clothes down to the floor, so they are laid out inside by a figure\'s proportions: check them.');
+  if (hidden) notes.push('The legs are hidden by the clothes down to the floor, so they are laid out inside by a figure\'s proportions (check them), and the clothes hang from the thighs.');
   // The head: the top of the body on the plane.
   let top = -1;
   for (let v = 0; v < g.n; v++) {
@@ -844,7 +844,8 @@ export function placeHumanoid(mesh, opt = {}) {
     out.Foot = R[ia].c;
     out.ToeBase = R[Math.max(1, Math.round(ia * 0.38))].c;
     out.Toe_End = R[Math.max(0, Math.round(ia * 0.06))].c;
-    const b = bendOf(R, Math.round(ia + (n - ia) * 0.25), Math.round(ia + (n - ia) * 0.75));
+    // The knee is looked for where one can be: from a third to over two thirds of the way from the ankle to the crotch.
+    const b = bendOf(R, Math.round(ia + (n - ia) * 0.35), Math.round(ia + (n - ia) * 0.7), ia, n);
     if (b.angle > 20 && !out.hipGuess) { out.Leg = R[b.i].c; out.kneeBent = true; }
     else out.Leg = alongPolyline([out.Foot, ...R.slice(ia, n + 1).map(r => r.c), out.UpLeg], 0.5);
     return out;
@@ -860,6 +861,10 @@ export function placeHumanoid(mesh, opt = {}) {
     if (iw < 0) { iw = Math.round(n * 0.27); out.wristGuess = true; }
     // Of rings about as narrow, the one nearest the hand: a forearm can stay that narrow for a while.
     else for (let i = palm + 1; i < iw; i++) if (R[i].perimeter <= 1.03 * R[iw].perimeter) { iw = i; break; }
+    // Where the arm keeps narrowing past it, or more than halfway from the fingertips to the trunk, it is a sleeve
+    // narrowing toward the elbow, not a wrist: a cuff or bracelet as wide as the hand hides that one.
+    const past = R.slice(iw + 1, Math.min(n, iw + Math.round(n * 0.15)) + 1);
+    if (!out.wristGuess && (iw > 0.5 * n || past.some(r => r.perimeter < 0.95 * R[iw].perimeter))) { iw = Math.round(n * 0.27); out.wristGuess = true; }
     out.iw = iw;
     out.Hand = R[iw].c;
     // The shoulder joint: on the upper arm's axis where the arm meets the trunk. With the arms lowered the armpit closes
@@ -873,7 +878,11 @@ export function placeHumanoid(mesh, opt = {}) {
       if (above === undefined || above <= 1.15 * r) break;
       out.Arm = add(out.Arm, scale(inward, 0.2 * r));
     }
-    const b = bendOf(R, Math.round(iw + (n - iw) * 0.25), Math.round(iw + (n - iw) * 0.75));
+    // The elbow is looked for where one can be: from 0.3 to 0.6 of the way from the wrist to the ring at the shoulder
+    // joint. Past that the rings widen into the armpit, and their middles swing toward the trunk.
+    let is = iw;
+    for (let i = iw; i <= n; i++) if (dist(R[i].c, out.Arm) < dist(R[is].c, out.Arm)) is = i;
+    const b = bendOf(R, Math.round(iw + (is - iw) * 0.3), Math.round(iw + (is - iw) * 0.6), iw, is);
     if (b.angle > 20) { out.ForeArm = R[b.i].c; out.elbowBent = true; }
     else out.ForeArm = alongPolyline([out.Hand, ...R.slice(iw, n + 1).map(r => r.c), out.Arm], 0.46);
     out.tip = L.e.p;
@@ -945,14 +954,17 @@ export function placeHumanoid(mesh, opt = {}) {
       put('Head', at(neckH + 0.15 * (topH - neckH)), 'estimated');
     }
   }
-  // Hips just above the hip joints, centred front to back in the trunk; the spine evenly up to the neck. Front to
-  // back the spine runs from the hips to the shoulder joints' line, as hair or a backpack on the back would pull a
-  // centring through the trunk behind it. The neck and head stand on that line too.
+  // Hips just above the hip joints; the spine evenly up to the neck. Front to back the hips are as deep as the hip
+  // joints, which sit in the middle of the thighs (the middle line itself runs through the crotch, where folds of
+  // shorts or a skirt would pull a centring off); with the legs hidden, centred in the trunk. The spine runs from there
+  // to the shoulder joints' line, as hair or a backpack on the back would pull a centring through the trunk behind it.
+  // The neck and head stand on that line too.
   const hipH = (height(J.LeftUpLeg) + height(J.RightUpLeg)) / 2 + (feet ? 0.3 * feet[S.L].rings[Math.max(0, feet[S.L].j - 2)].radius : 0.02 * H);
   const onAxis = h => toPlane(add(cen, scale(up, h - height(cen))));
-  const hips = toPlane(centreAlong(g, onAxis(hipH), front));
-  put('Hips', hips);
   const fwd = p => dot(p, front), shoulderF = (fwd(J.LeftArm) + fwd(J.RightArm)) / 2;
+  const legsF = (fwd(J.LeftUpLeg) + fwd(J.RightUpLeg)) / 2, centred = centreAlong(g, onAxis(hipH), front);
+  const hips = toPlane(hidden ? centred : add(centred, scale(front, legsF - fwd(centred))));
+  put('Hips', hips);
   const neckH = height(J.Neck), headH = height(J.Head), topH = height(J.HeadTop_End);
   const at = (h, f) => add(add(scale(up, h), scale(front, f)), scale(nrm, plane.offset));
   const lean = h => fwd(hips) + (shoulderF - fwd(hips)) * Math.min(1, (h - hipH) / Math.max(1e-9, neckH - hipH));
@@ -1011,6 +1023,8 @@ export function placeHumanoid(mesh, opt = {}) {
   const rig = humanoidRig(J, { fingers, naming: opt.naming, placed, frame: { up, front }, plane: { axis: plane.axis, offset: plane.offset } });
   // Below this height (along up) the surface is the base, which the Root carries.
   if (baseTop !== null) rig.base = baseTop - 0.012 * H0;
+  // Legs hidden by a dress: the weights hang it from the thighs.
+  if (hidden) rig.hiddenLegs = true;
   return { rig, report: { found: true, height: H, plane, symmetric, base: baseTop !== null, notes, ms: Date.now() - t0 } };
 }
 
@@ -1029,17 +1043,18 @@ function findBase(g, body, plane, up, floorH, H) {
     const wide = loops.some(l => l.min < -0.01 * H && l.max > 0.01 * H);
     const pos = loops.some(l => l.min > 0), neg = loops.some(l => l.max < 0);
     const extent = Math.max(...loops.map(l => l.max)) - Math.min(...loops.map(l => l.min));
+    extents[i] = extent;
     if (extent0 === null) {
       if (!wide) return null;
       extent0 = extent;
       continue;
     }
-    extents[i] = extent;
     // Narrowed by a third to legs apart, or by a fifth in a step: a base's top edge narrows within 3% of the height,
     // where a long dress's flared hem only narrows gradually.
     if (!wide && pos && neg && extent < 0.7 * extent0) return h + 0.012 * H;
     if (extent >= 0.8 * extent0) continue;
-    const back = extents[Math.max(1, i - Math.round((0.03 * H) / step))];
+    // (A base thinner than that: as far back as it goes.)
+    const back = extents[Math.max(extents.findIndex(x => x !== undefined), i - Math.round((0.03 * H) / step))];
     return back !== undefined && back >= 0.92 * extent0 ? h + 0.012 * H : null;
   }
   return null;
@@ -1226,9 +1241,13 @@ export function testPose(rig, name, t) {
     set('Spine2', qy(6 * deg * s));
     rootOffset = scale(rig.frame.up, -0.02 * legLength * Math.abs(c));
   } else if (name === 'arms') {
-    // Arms up over the head and down to the sides, the elbows bending on the way.
-    set('LeftShoulder', qz(12 * deg * s));
-    set('LeftArm', qz(70 * deg * s));
+    // Arms up over the head and down to the sides, the elbows bending on the way. Arms already lowered (an A-pose) have
+    // less far to go down before they reach the sides.
+    const arm = at.has('LeftArm') && at.has('LeftForeArm') ? norm(sub(rig.joints[at.get('LeftForeArm')].pos, rig.joints[at.get('LeftArm')].pos)) : null;
+    const lowered = arm ? Math.asin(Math.max(-1, Math.min(1, -dot(arm, rig.frame.up)))) / deg : 0;
+    const swing = (s >= 0 ? 70 : Math.max(0, Math.min(70, 80 - lowered))) * s;
+    set('LeftShoulder', qz((12 / 70) * swing * deg));
+    set('LeftArm', qz(swing * deg));
     set('LeftForeArm', qx(60 * deg * half));
     set('LeftHand', qx(30 * deg * s));
     for (const f of FINGERS) for (const k of [1, 2, 3]) set(`LeftHand${f}${k}`, qx((f === 'Thumb' ? 25 : 55) * deg * half));

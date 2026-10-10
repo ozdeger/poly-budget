@@ -82,16 +82,34 @@ for (const [pose, fingers, base] of [['T', false, false], ['A', false, false], [
 }
 {
   // In a floor-length gown on a base: upright, the base on a Root, the legs laid out inside the dress (marked to check),
-  // and the arms reaching the ends of the hands.
+  // and the arms reaching the ends of the hands, the elbows where they are. As triangles and as quads, whose base (4 cm
+  // thick, under 3% of the height) shows as a single step.
   const f = figure({ pose: 'A', fingers: false, base: true, gown: true, step: 0.01 });
-  const r = reduceTo(core.smartWeld(sceneOf(f.geometry, 'Figure'), { keepUV: false, hardAngle: 30 }), { targetTris: 24000 });
-  const { rig: g, report } = R.placeHumanoid(r, { fingers: 'auto' });
-  const at = slot => g.joints.find(j => j.slot === slot);
-  const legs = ['UpLeg', 'Leg', 'Foot'].flatMap(k => ['Left', 'Right'].map(sd => at(`${sd}${k}`)));
-  const hip = at('LeftUpLeg').pos, foot = at('LeftFoot').pos, end = at('LeftHand_End').pos, tip = f.joints.LeftHand.map((x, k) => x + [0.766, -0.643, 0][k] * 0.17);
-  check(R.dot(g.frame.up, [0, 1, 0]) > 0.999 && g.joints[0].slot === 'Root' && g.joints.length === 28 && legs.every(j => j.placed === 'estimated') && report.notes.some(n => /hidden/.test(n)),
-    `in a gown on a base: upright, a Root, ${g.joints.length} joints, the hidden legs laid out and marked to check`);
-  check(hip[1] > 0.7 && hip[1] < 1.05 && foot[1] < 0.2 && hip[0] > 0.02 && R.dist(end, tip) < 0.06, `the hips at ${hip[1].toFixed(2)} m, the feet at ${foot[1].toFixed(2)} m, the hand's end ${(R.dist(end, tip) * 100).toFixed(1)} cm from its tip`);
+  const fw = core.smartWeld(sceneOf(f.geometry, 'Figure'), { keepUV: false, hardAngle: 30 });
+  for (const [label, st] of [['triangles', { targetTris: 24000 }], ['quads', { targetTris: 16000, topology: 'quads' }]]) {
+    const r = reduceTo(fw, st);
+    const { rig: g, report } = R.placeHumanoid(r, { fingers: 'auto' });
+    const at = slot => g.joints.find(j => j.slot === slot);
+    const legs = ['UpLeg', 'Leg', 'Foot'].flatMap(k => ['Left', 'Right'].map(sd => at(`${sd}${k}`)));
+    const hip = at('LeftUpLeg').pos, foot = at('LeftFoot').pos, end = at('LeftHand_End').pos, tip = f.joints.LeftHand.map((x, k) => x + [0.766, -0.643, 0][k] * 0.17);
+    const elbow = R.dist(at('LeftForeArm').pos, f.joints.LeftForeArm);
+    check(R.dot(g.frame.up, [0, 1, 0]) > 0.999 && g.joints[0].slot === 'Root' && g.joints.length === 28 && legs.every(j => j.placed === 'estimated') && g.hiddenLegs && report.notes.some(n => /hidden/.test(n)),
+      `in a gown on a base (${label}): upright, a Root, ${g.joints.length} joints, the hidden legs laid out and marked to check`);
+    check(hip[1] > 0.7 && hip[1] < 1.05 && foot[1] < 0.2 && hip[0] > 0.02 && R.dist(end, tip) < 0.06 && elbow < 0.03 * 1.77,
+      `in a gown (${label}): the hips at ${hip[1].toFixed(2)} m, the feet at ${foot[1].toFixed(2)} m, the hand's end ${(R.dist(end, tip) * 100).toFixed(1)} cm from its tip, the elbow ${(elbow * 100).toFixed(1)} cm from its own`);
+  }
+}
+{
+  // The left arm in a bell sleeve, its cuff wider than the hand: the arm keeps narrowing up the sleeve past where a
+  // wrist would be, so that side's wrist is not taken from it, and the other side's is mirrored over.
+  const f = figure({ pose: 'A', fingers: false, sleeve: true, step: 0.01 });
+  const fw = core.smartWeld(sceneOf(f.geometry, 'Figure'), { keepUV: false, hardAngle: 30 });
+  for (const [label, st] of [['triangles', { targetTris: 24000 }], ['quads', { targetTris: 16000, topology: 'quads' }]]) {
+    const { rig: placed } = R.placeHumanoid(reduceTo(fw, st), { fingers: 'auto' });
+    const err = slot => R.dist(placed.joints.find(j => j.slot === slot).pos, f.joints[slot]);
+    check(err('LeftHand') < 0.03 * 1.77 && err('LeftForeArm') < 0.03 * 1.77,
+      `a bell sleeve (${label}): the wrist ${(err('LeftHand') * 100).toFixed(1)} cm and the elbow ${(err('LeftForeArm') * 100).toFixed(1)} cm from where they are`);
+  }
 }
 {
   // Asked for fingers on mittens, the hands get them by a hand's proportions, marked for checking.
@@ -165,6 +183,17 @@ console.log('== automatic weights');
     const sample = dx => { let best = 0, bd = Infinity; for (let g2 = 0; g2 < hg.count; g2++) { const d = Math.hypot(hg.positions[g2 * 3] - e[0] - dx, hg.positions[g2 * 3 + 1] - e[1] - 0.045, hg.positions[g2 * 3 + 2] - e[2]); if (d < bd) { bd = d; best = g2; } } return [HW[best * B + at('LeftArm')], HW[best * B + at('LeftForeArm')]]; };
     const [a0, f0] = sample(0), [a1] = sample(-0.1), [, f1] = sample(0.1);
     check(Math.abs(a0 - f0) < 0.35 && a1 > 0.85 && f1 > 0.85, `${label}: the elbow blends upper arm and forearm (${a0.toFixed(2)} / ${f0.toFixed(2)}), 10 cm to either side one holds (${a1.toFixed(2)}, ${f1.toFixed(2)})`);
+    // The front of the chest, far from the spine, stays the spine's: the arms and legs reach no further than about
+    // twice the distance to the nearest bone.
+    const limbs = ['LeftArm', 'LeftForeArm', 'RightArm', 'RightForeArm', 'LeftUpLeg', 'RightUpLeg', 'LeftLeg', 'RightLeg'].map(at);
+    let limb = 0, n = 0;
+    for (let g2 = 0; g2 < hg.count; g2++) {
+      const p = [hg.positions[g2 * 3], hg.positions[g2 * 3 + 1], hg.positions[g2 * 3 + 2]];
+      if (Math.abs(p[0]) > 0.06 || p[2] < 0.03 || p[1] < figT.joints.Spine1[1] || p[1] > figT.joints.Spine2[1]) continue;
+      for (const b of limbs) limb += HW[g2 * B + b];
+      n++;
+    }
+    check(n > 20 && limb / n < 0.05, `${label}: the middle of the chest takes ${(100 * limb / n).toFixed(1)}% from the arms and legs (${n} positions)`);
   }
   // Copies of a vertex along hard edges get the same weights: they are one position to the skin.
   {
@@ -221,6 +250,37 @@ console.log('== automatic weights');
       if (y > 0.25 && y < 0.35 && x > 0.05) { shinOwn += HW[g2 * PB + shin]; nShin++; }
     }
     check(base > 0 && onRoot === base && shinOwn / nShin > 0.8, `on a base: ${onRoot} of ${base} base positions on the Root (over 95%), the shin ${(shinOwn / nShin).toFixed(2)} its own`);
+  }
+  // A floor-length dress over hidden legs hangs from both thighs: the knees and feet move none of it, the front of
+  // the skirt is shared between the two thighs, and in the walk it holds together instead of tearing between the legs.
+  {
+    const f = figure({ pose: 'A', fingers: false, base: true, gown: true, step: 0.01 });
+    const r = remesh(f.geometry);
+    const { rig: placed } = R.placeHumanoid(r, { fingers: 'none' });
+    const { W: HW, groups: hg } = K.boneHeat(r, placed);
+    const PB = placed.joints.length, ix = slot => placed.joints.findIndex(j => j.slot === slot);
+    const lower = ['LeftLeg', 'LeftFoot', 'LeftToeBase', 'RightLeg', 'RightFoot', 'RightToeBase'].map(ix);
+    let below = 0, front = -1, fz = -Infinity;
+    for (let g2 = 0; g2 < hg.count; g2++) {
+      for (const b of lower) below += HW[g2 * PB + b];
+      const p = [hg.positions[g2 * 3], hg.positions[g2 * 3 + 1], hg.positions[g2 * 3 + 2]];
+      if (Math.abs(p[1] - 0.5) < 0.02 && Math.abs(p[0]) < 0.02 && p[2] > fz) { fz = p[2]; front = g2; }
+    }
+    const l = HW[front * PB + ix('LeftUpLeg')], rr = HW[front * PB + ix('RightUpLeg')];
+    const sk = K.vertexSkin(hg.group, K.limitWeights(HW, hg.count, PB));
+    const tp = R.testPose(placed, 'walk', 0.25), m = K.poseMatrices(placed, tp.pose, tp.rootOffset, tp.offsetJoint), Q = new Float32Array(r.positions.length);
+    K.skinVertices(m.skin, sk.index, sk.weight, r.positions, null, Q, null);
+    const hipsY = placed.joints[ix('Hips')].pos[1], P0 = r.positions, I = r.index, ratios = [];
+    for (let t = 0; t < I.length; t += 3) for (let k = 0; k < 3; k++) {
+      const a = I[t + k], b = I[t + (k + 1) % 3];
+      if (P0[a * 3 + 1] > hipsY || P0[a * 3 + 1] < 0.02) continue;
+      const l0 = Math.hypot(P0[a * 3] - P0[b * 3], P0[a * 3 + 1] - P0[b * 3 + 1], P0[a * 3 + 2] - P0[b * 3 + 2]), l1 = Math.hypot(Q[a * 3] - Q[b * 3], Q[a * 3 + 1] - Q[b * 3 + 1], Q[a * 3 + 2] - Q[b * 3 + 2]);
+      if (l0 > 0) ratios.push(Math.max(l1 / l0, l0 / l1));
+    }
+    ratios.sort((x, y) => x - y);
+    const p99 = ratios[Math.floor(ratios.length * 0.99)];
+    check(placed.hiddenLegs && below === 0 && l > 0.3 && rr > 0.3 && p99 < 1.6,
+      `a dress over hidden legs: nothing on the knees and feet, the front of the skirt ${l.toFixed(2)} / ${rr.toFixed(2)} on the two thighs, walking it stretches 1% of its edges past ${p99.toFixed(2)}×`);
   }
   // A dense result solves quickly.
   {
@@ -316,6 +376,10 @@ console.log('== test motions');
   const tp = R.testPose(r, 'arms', 0.25), m = K.poseMatrices(r, tp.pose);
   const l = world(r, m, 'LeftHand'), rr = world(r, m, 'RightHand');
   check(Math.abs(l[0] + rr[0]) < 1e-9 && Math.abs(l[1] - rr[1]) < 1e-9 && l[1] > 1.6, `Arms raises both hands alike, over the head (${l[1].toFixed(2)} m)`);
+  // Arms already lowered (an A-pose) go down to the sides, not on through the body.
+  const ra = R.humanoidRig(figureJoints({ pose: 'A', fingers: false }), { fingers: false });
+  const down = R.testPose(ra, 'arms', 0.75), md = K.poseMatrices(ra, down.pose), hand = world(ra, md, 'LeftHand'), shoulder = world(ra, md, 'LeftArm');
+  check(hand[0] > shoulder[0] && hand[1] < shoulder[1] - 0.4, `Arms on an A-pose lowers the hands to the sides (${(hand[0] * 100).toFixed(0)} cm out, the shoulder ${(shoulder[0] * 100).toFixed(0)} cm)`);
 }
 
 // Vertices of a loaded mesh (in the file's units, scale times the result's) matched to the result's by position.

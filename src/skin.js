@@ -330,6 +330,10 @@ function factorLDL(n, start, col, val, coords) {
   return { solve, nnz: Lp[n] };
 }
 
+// How far a bone's weight reaches, as a multiple of the distance to the nearest bone: whole up to the first, fading out
+// to none at the second.
+const REACH = [1.3, 2.2];
+
 // Bone heat weights for a mesh ({ positions, index, twin? }) and a rig: { W (dense, groups × joints), groups (skinGroups),
 // stats }. opt.joints: solve only these joints (indices), keeping `opt.W`'s weights for the rest.
 export function boneHeat(mesh, rig, opt = {}) {
@@ -361,21 +365,36 @@ export function boneHeat(mesh, rig, opt = {}) {
   let size = 0;
   for (let k = 0; k < 3; k++) { let lo = Infinity, hi = -Infinity; for (let v = 0; v < G; v++) { lo = Math.min(lo, P[v * 3 + k]); hi = Math.max(hi, P[v * 3 + k]); } size = Math.max(size, hi - lo); }
   const eps = 1e-4 * size;
-  const nearest = new Int32Array(G).fill(-1), seen = new Int32Array(G).fill(-1), heat = new Float64Array(G);
+  const nearest = new Int32Array(G).fill(-1), seen = new Int32Array(G).fill(-1), heat = new Float64Array(G), nearestD = new Float64Array(G);
   const root = rig.joints.findIndex(j => j.slot === 'Root');
   const up = rig.frame ? rig.frame.up : [0, 1, 0];
-  let invisible = 0;
+  // A skirt or a dress wraps both legs: from its inside the other leg is in sight as well as the near one (on a leg,
+  // the leg's own surface is in the way). Such a vertex is shared between the two legs by how near each is, so the
+  // cloth between them follows both instead of tearing down the middle when they part.
+  const otherLeg = rig.joints.map(j => (/^(Left|Right)(UpLeg|Leg|Foot|ToeBase)$/.test(j.slot) && j.mirror >= 0 && segs[j.mirror] ? j.mirror : -1));
+  // Legs hidden down to the floor by a dress (rig.hiddenLegs): nothing of them shows below the thighs, so the dress
+  // hangs from the thighs alone and the knees and feet move none of it.
+  const hiddenBelow = new Set(rig.hiddenLegs ? rig.joints.map((j, i) => (/^(Left|Right)(Leg|Foot|ToeBase)$/.test(j.slot) ? i : -1)).filter(i => i >= 0) : []);
+  const candidates = deforming.filter(b => b !== root && !hiddenBelow.has(b));
+  const other = new Int32Array(G).fill(-1), share = new Float64Array(G).fill(1);
+  let invisible = 0, shared = 0;
   for (let v = 0; v < G; v++) {
     const p = [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]];
     // The base a figure stands on belongs to its Root.
     if (root >= 0 && rig.base !== undefined && rig.base !== null && dot(p, up) < rig.base) { nearest[v] = seen[v] = root; heat[v] = 1 / (0.02 * size) ** 2; continue; }
-    const cand = deforming.filter(b => b !== root).map(b => [b, segmentDistance(p, segs[b])]).sort((a, b) => a[1] - b[1]);
+    const cand = candidates.map(b => [b, segmentDistance(p, segs[b])]).sort((a, b) => a[1] - b[1]);
     nearest[v] = cand.length ? cand[0][0] : 0;
+    nearestD[v] = cand.length ? cand[0][1] : 0;
     for (let k = 0; k < Math.min(8, cand.length); k++) {
       const [b, d] = cand[k], q = closestOnSegment(p, segs[b]), dir = sub(q, p), l = len(dir);
       if (l < eps || !blocked(tree, p, scale(dir, 1 / l), eps, l - eps)) { seen[v] = b; heat[v] = 1 / Math.max(d, eps) ** 2; break; }
     }
-    if (seen[v] < 0) invisible++;
+    if (seen[v] < 0) { invisible++; continue; }
+    const m = otherLeg[seen[v]];
+    if (m >= 0) {
+      const q = closestOnSegment(p, segs[m]), dir = sub(q, p), l = len(dir), d = segmentDistance(p, segs[seen[v]]);
+      if (l > eps && !blocked(tree, p, scale(dir, 1 / l), eps, l - eps)) { other[v] = m; share[v] = l / (l + d); shared++; }
+    }
   }
   // Pieces that see no bone at all (eyes inside the head, buttons sewn on) and small separate pieces move rigidly with
   // the bone nearest their middle.
@@ -397,7 +416,7 @@ export function boneHeat(mesh, rig, opt = {}) {
     if (any && (a > 0.01 * totalArea || pieces.length === 1)) continue;
     const mid = c.map(x => x / (a || 1));
     let best = -1, bd = Infinity;
-    for (const b of deforming) { if (b === root) continue; const d = segmentDistance(mid, segs[b]); if (d < bd) { bd = d; best = b; } }
+    for (const b of candidates) { const d = segmentDistance(mid, segs[b]); if (d < bd) { bd = d; best = b; } }
     if (best < 0) continue;
     for (const v of members) rigid[v] = best;
     rigidPieces++;
@@ -423,10 +442,22 @@ export function boneHeat(mesh, rig, opt = {}) {
   const rhs = new Float64Array(G), x = new Float64Array(G);
   for (const b of todo) {
     let any = false;
-    for (let v = 0; v < G; v++) { rhs[v] = target[v] === b ? pull[v] : 0; any = any || rhs[v] > 0; }
+    for (let v = 0; v < G; v++) { rhs[v] = (target[v] === b ? pull[v] * share[v] : 0) + (other[v] === b ? pull[v] * (1 - share[v]) : 0); any = any || rhs[v] > 0; }
     if (!any) { for (let v = 0; v < G; v++) W[v * B + b] = 0; continue; }
     factor.solve(rhs, x);
-    for (let v = 0; v < G; v++) W[v * B + b] = x[v] > 1e-6 ? x[v] : 0;
+    // A bone reaches no further than about twice as far as the nearest bone: over a deep chest or belly, far from the
+    // spine, the heat would otherwise carry the thighs and arms onto it. The legs go as a pair, each as near as the
+    // nearer of the two, so a dress keeps both.
+    const sg = segs[b], pair = otherLeg[b] >= 0 ? segs[otherLeg[b]] : null;
+    for (let v = 0; v < G; v++) {
+      let w = x[v] > 1e-6 ? x[v] : 0;
+      if (w > 0 && nearestD[v] > 0 && b !== root) {
+        const p = [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]], r = (pair ? Math.min(segmentDistance(p, sg), segmentDistance(p, pair)) : segmentDistance(p, sg)) / nearestD[v];
+        if (r >= REACH[1]) w = 0;
+        else if (r > REACH[0]) { const t = (r - REACH[0]) / (REACH[1] - REACH[0]); w *= 1 - t * t * (3 - 2 * t); }
+      }
+      W[v * B + b] = w;
+    }
   }
   // Re-solving some bones: the others make room for them in proportion.
   if (opt.joints) {
@@ -447,7 +478,7 @@ export function boneHeat(mesh, rig, opt = {}) {
     else { W.fill(0, v * B, v * B + B); W[v * B + nearest[v]] = 1; }
   }
   if (mesh.twin) mirrorWeights(W, groups, mesh, rig);
-  return { W, groups, stats: { invisible, rigidPieces, factor: factor.nnz, ms: Date.now() - t0 } };
+  return { W, groups, stats: { invisible, shared, rigidPieces, factor: factor.nnz, ms: Date.now() - t0 } };
 }
 
 // Weights made exactly symmetric through the result's mirror pairs (twin): each group averaged with its partner's,

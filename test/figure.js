@@ -92,8 +92,10 @@ const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; retu
 const TETS = [[0, 1, 3, 7], [0, 1, 5, 7], [0, 2, 3, 7], [0, 2, 6, 7], [0, 4, 5, 7], [0, 4, 6, 7]];
 // base: the figure stands on a round base 30 cm across and 4 cm thick, joined to its soles, as game pieces often do.
 // gown: a floor-length dress hides the legs, flaring from the waist to the floor.
-export function figure({ pose = 'T', fingers = true, step = 0.006, base = false, gown = false } = {}) {
+// sleeve: the left arm (only) in a bell sleeve, flaring from the elbow to a cuff wider than the hand at the wrist.
+export function figure({ pose = 'T', fingers = true, step = 0.006, base = false, gown = false, sleeve = false } = {}) {
   const J = figureJoints({ pose, fingers }), C = capsules(J, fingers);
+  if (sleeve) C.push([J.LeftForeArm, J.LeftHand, 0.046, 0, 0.085]);
   const sdf = p => {
     let body = Infinity, palm = Infinity, fing = Infinity;
     for (const c of C) {
