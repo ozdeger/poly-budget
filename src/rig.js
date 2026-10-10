@@ -488,10 +488,12 @@ function trace(g, tip, to, step, mask = null, tMax = Infinity) {
   return { rings: out, d, path };
 }
 
-// Where the rings suddenly grow: the limb has met the trunk. The index of the last ring before, or the last ring.
-function junction(rings, from = 0.35) {
+// Where the rings suddenly grow: the limb has met the trunk. The index of the last ring before, or the last ring. The
+// search starts a third of the way in, and no earlier than ring `first` (past a foot, whose rings across the heel grow
+// too).
+function junction(rings, from = 0.35, first = 0) {
   const n = rings.length;
-  for (let i = Math.max(3, Math.floor(n * from)); i < n; i++) {
+  for (let i = Math.max(3, first, Math.floor(n * from)); i < n; i++) {
     const before = rings.slice(Math.floor(i * 0.5), Math.max(Math.floor(i * 0.5) + 1, i - 1)).map(r => r.perimeter).sort((a, b) => a - b);
     const med = before[before.length >> 1];
     if (rings[i].perimeter > 1.8 * med) return i - 1;
@@ -740,9 +742,11 @@ export function placeHumanoid(mesh, opt = {}) {
 
   // Each limb's rings, from its tip toward the middle of the body. The peak found from the middle can sit off the very
   // end (on the side of a toe cap), so the tip is taken again as the point farthest from a ring partway down the limb.
-  const limb = e => {
+  const limb = (e, legFloor = null) => {
+    // A leg's junction is looked for only above the lowest fifth of the figure.
+    const above = R => (legFloor === null ? 0 : Math.max(0, R.findIndex(r => height(r.c) > legFloor + 0.2 * H)));
     let { rings, d } = trace(g, e.v, mid, step, body);
-    let j = junction(rings);
+    let j = junction(rings, 0.35, above(rings));
     if (j > 8) {
       // The part of the limb past a ring partway down it: all that is reached from the tip without crossing the ring
       // (or, where the ring doesn't close, all nearer the tip than it).
@@ -770,12 +774,13 @@ export function placeHumanoid(mesh, opt = {}) {
       if (tip !== e.v) {
         e = { ...e, v: tip, p: pointOf(g, tip) };
         ({ rings, d } = trace(g, tip, mid, step, body));
-        j = junction(rings);
+        j = junction(rings, 0.35, above(rings));
       }
     }
     return { e, rings, j, d };
   };
-  const feet = { pos: limb(sp.foot), neg: limb(sn.foot) }, hands = { pos: limb(sp.hand), neg: limb(sn.hand) }, head = limb(headEnd);
+  const lowest = Math.min(height(fp.p), height(fn.p));
+  const feet = { pos: limb(sp.foot, lowest), neg: limb(sn.foot, lowest) }, hands = { pos: limb(sp.hand), neg: limb(sn.hand) }, head = limb(headEnd);
   // Front: the way the toes point from the leg above them.
   // Front: the way the toes point from the leg above them, when they clearly do; otherwise the file's convention.
   const frontC = norm(cross(up, nrm));
@@ -962,6 +967,8 @@ export function placeHumanoid(mesh, opt = {}) {
   // On a base, a Root joint on the floor between the feet carries the base, so the figure moves on it.
   if (baseTop !== null) put('Root', toPlane(add(lerp(J.LeftFoot, J.RightFoot, 0.5), scale(up, floorH - height(J.LeftFoot)))));
   const rig = humanoidRig(J, { fingers, naming: opt.naming, placed, frame: { up, front }, plane: { axis: plane.axis, offset: plane.offset } });
+  // Below this height (along up) the surface is the base, which the Root carries.
+  if (baseTop !== null) rig.base = baseTop - 0.012 * H0;
   return { rig, report: { found: true, height: H, plane, symmetric, base: baseTop !== null, notes, ms: Date.now() - t0 } };
 }
 

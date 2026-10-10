@@ -9,6 +9,7 @@ import { figure, figureJoints } from './figure.js';
 import * as R from '../src/rig.js';
 import * as K from '../src/skin.js';
 import { glbBytes } from '../src/glb.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const template = JSON.parse(fs.readFileSync(new URL('../src/fbx_template.json', import.meta.url), 'utf8'));
 const ajs = await createRequire(import.meta.url)('assimpjs')();
@@ -111,6 +112,106 @@ const vskin = K.vertexSkin(groups.group, gskin);
   let maxId = 0;
   for (let i = 0; i < id.length; i++) maxId = Math.max(maxId, Math.abs(id[i] - (i % 16 % 5 === 0 ? 1 : 0)));
   check(maxId < 1e-9, 'at rest every joint\'s skinning matrix is the identity');
+}
+
+console.log('== automatic weights');
+{
+  const remesh = (geo, st = {}, fopt = { normals: 'smooth' }) => core.runReduction(S, context(core.smartWeld(sceneOf(geo, 'Figure'), { keepUV: false, hardAngle: 30 })), null,
+    { ...settings, deferUV: false, bakeSize: 1024, symmetry: null, targetTris: 16000, topology: 'quads', ...st }, fopt).result;
+  const figT = figure({ pose: 'T', fingers: false, step: 0.01 });
+  const bones = R.humanoidRig(figT.joints, { fingers: false }), B = bones.joints.length, at = slot => bones.joints.findIndex(j => j.slot === slot);
+  const segs = K.boneSegments(bones);
+  for (const [label, r] of [['quads', remesh(figT.geometry)], ['triangles', reduceTo(core.smartWeld(sceneOf(figT.geometry, 'Figure'), { keepUV: false, hardAngle: 30 }), { targetTris: 24000 })]]) {
+    const { W: HW, groups: hg, stats } = K.boneHeat(r, bones);
+    let bad = 0, lo = Infinity, hi = -Infinity;
+    for (let g2 = 0; g2 < hg.count; g2++) {
+      let sum = 0;
+      for (let b = 0; b < B; b++) { const x = HW[g2 * B + b]; sum += x; lo = Math.min(lo, x); hi = Math.max(hi, x); }
+      if (Math.abs(sum - 1) > 1e-4) bad++;
+    }
+    check(bad === 0 && lo >= 0 && hi <= 1 + 1e-6, `${label}: ${hg.count} positions, weights between 0 and 1 summing to 1 (${stats.ms} ms)`);
+    // Each limb mostly its own bone along its middle, and the elbow shared about evenly.
+    const own = slot => {
+      const b = at(slot);
+      let sum = 0, n = 0;
+      for (let g2 = 0; g2 < hg.count; g2++) {
+        const p = [hg.positions[g2 * 3], hg.positions[g2 * 3 + 1], hg.positions[g2 * 3 + 2]];
+        const s0 = segs[b], ab = R.sub(s0.b, s0.a), t = R.dot(R.sub(p, s0.a), ab) / R.dot(ab, ab);
+        if (t < 0.3 || t > 0.7 || K.segmentDistance(p, s0) > 0.1) continue;
+        sum += HW[g2 * B + b]; n++;
+      }
+      return sum / n;
+    };
+    const mids = ['LeftForeArm', 'LeftArm', 'LeftLeg', 'LeftUpLeg', 'Head'].map(sl => [sl, own(sl)]);
+    check(mids.every(([, x]) => x > 0.8), `${label}: along the middle of a limb its own bone holds over 80% (${mids.map(([sl, x]) => `${sl} ${x.toFixed(2)}`).join(', ')})`);
+    const e = bones.joints[at('LeftForeArm')].pos;
+    const sample = dx => { let best = 0, bd = Infinity; for (let g2 = 0; g2 < hg.count; g2++) { const d = Math.hypot(hg.positions[g2 * 3] - e[0] - dx, hg.positions[g2 * 3 + 1] - e[1] - 0.045, hg.positions[g2 * 3 + 2] - e[2]); if (d < bd) { bd = d; best = g2; } } return [HW[best * B + at('LeftArm')], HW[best * B + at('LeftForeArm')]]; };
+    const [a0, f0] = sample(0), [a1] = sample(-0.1), [, f1] = sample(0.1);
+    check(Math.abs(a0 - f0) < 0.35 && a1 > 0.85 && f1 > 0.85, `${label}: the elbow blends upper arm and forearm (${a0.toFixed(2)} / ${f0.toFixed(2)}), 10 cm to either side one holds (${a1.toFixed(2)}, ${f1.toFixed(2)})`);
+  }
+  // Copies of a vertex along hard edges get the same weights: they are one position to the skin.
+  {
+    const r = remesh(figT.geometry, {}, { normals: 'crease', creaseAngle: 25 });
+    const { W: HW, groups: hg } = K.boneHeat(r, bones), sk = K.vertexSkin(hg.group, K.limitWeights(HW, hg.count, B));
+    const firstAt = new Map();
+    let copies = 0, differ = 0;
+    for (let v = 0; v < r.vertexCount; v++) {
+      const k = `${r.positions[v * 3]},${r.positions[v * 3 + 1]},${r.positions[v * 3 + 2]}`, f0 = firstAt.get(k);
+      if (f0 === undefined) { firstAt.set(k, v); continue; }
+      copies++;
+      for (let q = 0; q < 4; q++) if (sk.index[v * 4 + q] !== sk.index[f0 * 4 + q] || sk.weight[v * 4 + q] !== sk.weight[f0 * 4 + q]) differ++;
+    }
+    check(copies > 0 && differ === 0, `${copies} vertex copies along creases carry the same weights as their originals`);
+  }
+  // Mirrored: every vertex's weights are its partner's with left and right swapped.
+  {
+    const r = remesh(figT.geometry, { symmetry: { axis: 0, offset: 0, keepPositive: true } });
+    const { W: HW, groups: hg } = K.boneHeat(r, bones);
+    let worst = 0;
+    for (let v = 0; v < r.vertexCount; v++) {
+      const a = hg.group[v], m = hg.group[r.twin[v]];
+      for (let b = 0; b < B; b++) worst = Math.max(worst, Math.abs(HW[a * B + b] - HW[m * B + (bones.joints[b].mirror >= 0 ? bones.joints[b].mirror : b)]));
+    }
+    check(worst === 0, `mirrored result: each vertex's weights are its mirror partner's, left and right swapped (worst ${worst})`);
+  }
+  // Eyes: separate spheres inside the head see no bone, so they move rigidly with the head.
+  {
+    const eye = x => { const e = new THREE.SphereGeometry(0.025, 16, 12).translate(x, 1.64, 0.05); e.deleteAttribute('uv'); return e; };
+    const geo = mergeGeometries([figT.geometry, eye(0.04), eye(-0.04)]);
+    const r = remesh(geo, { targetTris: 20000 });
+    const { W: HW, groups: hg, stats } = K.boneHeat(r, bones);
+    let inEyes = 0, onHead = 0;
+    for (let g2 = 0; g2 < hg.count; g2++) {
+      const p = [hg.positions[g2 * 3], hg.positions[g2 * 3 + 1], hg.positions[g2 * 3 + 2]];
+      if (Math.min(R.dist(p, [0.04, 1.64, 0.05]), R.dist(p, [-0.04, 1.64, 0.05])) > 0.027) continue;
+      inEyes++;
+      if (HW[g2 * B + at('Head')] === 1) onHead++;
+
+    }
+    check(stats.rigidPieces >= 2 && inEyes > 0 && onHead === inEyes, `eyes inside the head: ${stats.rigidPieces} rigid pieces, ${onHead} of their ${inEyes} positions wholly on the head`);
+  }
+  // A figure on a base: the base goes wholly to the Root, the legs stay their own.
+  {
+    const f = figure({ pose: 'A', fingers: false, base: true, step: 0.01 });
+    const r = remesh(f.geometry);
+    const { rig: placed } = R.placeHumanoid(r, { fingers: 'none' });
+    const { W: HW, groups: hg } = K.boneHeat(r, placed);
+    const PB = placed.joints.length, root = placed.joints.findIndex(j => j.slot === 'Root'), shin = placed.joints.findIndex(j => j.slot === 'LeftLeg');
+    let base = 0, onRoot = 0, shinOwn = 0, nShin = 0;
+    for (let g2 = 0; g2 < hg.count; g2++) {
+      const y = hg.positions[g2 * 3 + 1], x = hg.positions[g2 * 3];
+      if (y < -0.02) { base++; if (HW[g2 * PB + root] > 0.95) onRoot++; }
+      if (y > 0.25 && y < 0.35 && x > 0.05) { shinOwn += HW[g2 * PB + shin]; nShin++; }
+    }
+    check(base > 0 && onRoot === base && shinOwn / nShin > 0.8, `on a base: ${onRoot} of ${base} base positions on the Root (over 95%), the shin ${(shinOwn / nShin).toFixed(2)} its own`);
+  }
+  // A dense result solves quickly.
+  {
+    const r = reduceTo(core.smartWeld(sceneOf(figure({ pose: 'T', fingers: true, step: 0.006 }).geometry, 'Figure'), { keepUV: false, hardAngle: 30 }), { targetTris: 70000 });
+    const fr = R.humanoidRig(figureJoints({ pose: 'T', fingers: true }));
+    const { groups: hg, stats } = K.boneHeat(r, fr);
+    check(stats.ms < 3000, `${hg.count} positions and ${fr.joints.length} joints weighted in ${stats.ms} ms`);
+  }
 }
 
 // A pose: the left forearm bent 70° about its hinge, the right thigh raised 45° and the spine turned 20°.
