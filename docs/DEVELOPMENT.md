@@ -148,9 +148,14 @@ Off by default. **In base colour** or **Separate map** bakes the original's ambi
 - **In base colour.** The base colour darkens where the spot is occluded, and a little where the surface faces down, as if lit by a sky (directions from above count more); open tops lighten slightly. Shadows keep their colour: chroma falls more slowly than lightness (in OKLab), so a red dress darkens to deep red rather than brown and grey stays grey. The depth shows with any lighting, or none. A material without a base colour texture gets one holding the shading alone, which the engine multiplies with its colour.
 - **Separate map.** Each material gets an occlusion map, 1 where open and down to 1 − strength where nothing is open. GLB carries it as the material's occlusion texture; FBX and OBJ have no standard slot for it, so the zip holds `<model>_<material>_occlusion.png` to assign in the engine. When the original has an occlusion map of its own, the two are multiplied.
 - **Strength.** How dark the most occluded spots get; at 100% the deepest creases go black. The occlusion is kept until the result, its UVs or the bake size change, so moving the slider or switching between the base colour and the map re-applies it in a fraction of a second.
+- **Compare.** The Ambient occlusion button in the display palette (A) shows or hides it at once, in every shading, without a new bake: with it in the base colour, the bake also keeps the base colour as it was and white with the occlusion in it, which clay and facets show. What the view shows doesn't change the export.
 - **New UVs only.** Quads always get them. A result that keeps the original UVs (Triangles mode) gets no occlusion, and the section says so.
 - **Smooth without noise.** One fixed set of directions leaves straight streaks where an occluder's edge crosses them; random directions per texel leave grain. Each texel instead casts 64 directions from one of 16 turned and shifted copies of an even spread (a Fibonacci lattice), laid out so every 4 × 4 block of texels holds all 16, and the block is then averaged over the texels of the same surface: as smooth as 1,024 directions. On a floor beside a low wall, the steps where one set's directions cross the wall's edge shrink 7-fold.
 - **Checked.** Against known answers: the bottom of a hemispherical bowl sees exactly half the sky (0.4999 measured), a floor beside an endless wall too (0.501). On a two-material test model, the GPU's values match the JavaScript reference in `core.js` (`ambientOcclusion`) within 0.0007 over 120 texels, which is half-float precision. Time on an Apple M5 Pro in Chrome: 1.4 s for the 188,000-triangle sample at 1024 px, 6 s for a 2-million-triangle character with dense curls at 2048 px.
+
+### Display
+
+The palette at the right of the view picks how the models show: **Textured**, **Clay** (the shape alone) or **Facets** (every face flat), with the **Wireframe** (W) over any of them, and baked **Ambient occlusion** (A) shown or hidden on the result.
 
 ### See the texture and its UVs
 
@@ -179,6 +184,7 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 | 1 / 2 / 3 | Side by side / original / reduced |
 | Q | Triangles or quads |
 | W | Wireframe |
+| A | Show or hide the baked ambient occlusion |
 | U | Texture & UVs panel |
 | O, M, L, K, N, E | Orbit, More detail, Less detail, Keep original, Normal detail, Erase |
 | F | Brush or fill a part |

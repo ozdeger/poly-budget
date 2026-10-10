@@ -43,7 +43,7 @@ const DEFAULTS = {
   targetPct: 10, topology: 'quads', quadSharp: true, quadThin: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', uvStyle: 'compact', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, occlusion: 'off', occlusionStrength: 0.7, normalFormat: 'opengl',
-  view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
+  view: 'split', shading: 'textured', wire: false, showOcclusion: true, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
 };
@@ -2031,18 +2031,30 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
         mapMat.uniforms.srcSize.value.set(...(tex ? imageSize(tex.image) : [1, 1]));
         mapMat.uniforms.normalScale.value.copy(own && state.displayMats[job.mi].normalScale ? state.displayMats[job.mi].normalScale : new THREE.Vector2(1, 1));
         mapMat.uniforms.mode.value = slot === 'normalMap' ? 2 : (tex ? tex.colorSpace === THREE.SRGBColorSpace : slot === 'map') ? 1 : 0;
-        mapMat.uniforms.aoUse.value = ao && slot === aoSlot ? (slot === 'map' ? 1 : 2) : 0;
         mapMat.uniforms.aoTex.value = ao ? ao.texture : null;
         mapMat.uniforms.aoK.value.set(strength, strength * OCCLUSION.form, strength * OCCLUSION.lift);
-        bakePass(mapMat, bake.scratch, mesh);
         fillMat.uniforms.corr.value = bake.corr.texture;
         fillMat.uniforms.seeds.value = a.texture;
         fillMat.uniforms.img.value = bake.scratch.texture;
         fillMat.uniforms.padLimit.value = slot === 'normalMap' ? Math.max(2, Math.round((8 * size) / 1024)) : 0;
-        bakePass(fillMat, bake.out);
-        const data = await renderer.readRenderTargetPixelsAsync(bake.out, 0, 0, size, size, new Uint8Array(size * size * 4));
+        // One map: the pass, its gutters filled, read back.
+        const read = (aoUse, withSource = !!tex) => {
+          mapMat.uniforms.aoUse.value = aoUse;
+          mapMat.uniforms.hasSrcMap.value = withSource;
+          bakePass(mapMat, bake.scratch, mesh);
+          bakePass(fillMat, bake.out);
+          return renderer.readRenderTargetPixelsAsync(bake.out, 0, 0, size, size, new Uint8Array(size * size * 4));
+        };
+        const occluded = !!ao && slot === aoSlot;
+        const entry = { mi: job.mi, slot, data: await read(occluded ? (slot === 'map' ? 1 : 2) : 0), colorSpace: (own ? own.colorSpace === THREE.SRGBColorSpace : slot === 'map') ? THREE.SRGBColorSpace : THREE.NoColorSpace, detail: !own && !!tex, occlusion: occluded };
+        // With the occlusion in the base colour, the view shows it or hides it without a new bake: the base colour as it
+        // is, and white with the occlusion in it for clay.
+        if (occluded && slot === 'map') {
+          entry.plain = await read(0);
+          entry.shading = await read(1, false);
+        }
         if (!current()) return null;
-        out.maps.push({ mi: job.mi, slot, data, colorSpace: (own ? own.colorSpace === THREE.SRGBColorSpace : slot === 'map') ? THREE.SRGBColorSpace : THREE.NoColorSpace, detail: !own && !!tex, occlusion: !!ao && slot === aoSlot });
+        out.maps.push(entry);
       }
     } finally {
       geo.dispose();
@@ -2053,22 +2065,23 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
 
 // Display materials for a result with new UVs: the original materials with their maps swapped for the baked ones.
 // keepMaps: the result kept the original UVs, so the original maps stay and only a baked normal map replaces its own.
+function bakedTexture(data, size, colorSpace) {
+  const t = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.colorSpace = colorSpace;
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.anisotropy = 4;
+  t.userData.pbBaked = true;
+  t.needsUpdate = true;
+  return t;
+}
 function bakedMaterials(bk, keepMaps = false) {
   return state.displayMats.map((m, mi) => {
     const maps = bk ? bk.maps.filter(x => x.mi === mi) : [];
     const c = m.clone();
     if (!keepMaps) for (const slot of MAP_SLOTS) if (c[slot]) c[slot] = null;
-    for (const x of maps) {
-      const t = new THREE.DataTexture(x.data, bk.size, bk.size, THREE.RGBAFormat, THREE.UnsignedByteType);
-      t.colorSpace = x.colorSpace;
-      t.generateMipmaps = true;
-      t.minFilter = THREE.LinearMipmapLinearFilter;
-      t.magFilter = THREE.LinearFilter;
-      t.anisotropy = 4;
-      t.userData.pbBaked = true;
-      t.needsUpdate = true;
-      c[x.slot] = t;
-    }
+    for (const x of maps) c[x.slot] = bakedTexture(x.data, bk.size, x.colorSpace);
     // A baked normal map already carries the source's strength and green direction.
     if (c.normalScale && (!keepMaps || maps.length)) c.normalScale.set(1, 1);
     c.needsUpdate = true;
@@ -2076,12 +2089,44 @@ function bakedMaterials(bk, keepMaps = false) {
   });
 }
 function disposeBakedMaterials(s = state) {
+  if (s.occlusionViews) {
+    for (const t of s.occlusionViews.textures) t.dispose();
+    for (const m of s.occlusionViews.made) m.dispose();
+    s.occlusionViews = null;
+  }
   if (!s.bakedMats) return;
   for (const m of s.bakedMats) {
     for (const slot of MAP_SLOTS) if (m[slot] && m[slot].userData.pbBaked) m[slot].dispose();
     m.dispose();
   }
   s.bakedMats = null;
+}
+// What the view shows of baked ambient occlusion, so the display palette can show it or hide it at once: per material,
+// the material without it (the base colour as it is, or no occlusion map) and clay and facets with it (white with the
+// occlusion in it, or the occlusion map). The baked materials themselves stay as the export writes them. null when
+// nothing was baked with occlusion.
+function occlusionViews(bk, mats) {
+  const entries = bk ? bk.maps.filter(x => x.occlusion) : [];
+  if (!entries.length) return null;
+  const v = { without: mats.slice(), clay: mats.map(() => clayMat), facets: mats.map(() => facetMat), textures: [], made: [], clayed: [] };
+  for (const x of entries) {
+    const m = mats[x.mi], without = m.clone(), clay = clayMat.clone(), facets = facetMat.clone();
+    if (x.slot === 'map') {
+      const plain = bakedTexture(x.plain, bk.size, x.colorSpace), shading = bakedTexture(x.shading, bk.size, x.colorSpace);
+      without.map = plain;
+      clay.map = facets.map = shading;
+      v.textures.push(plain, shading);
+    } else {
+      without.aoMap = null;
+      clay.aoMap = facets.aoMap = m.aoMap;
+    }
+    v.without[x.mi] = without;
+    v.clay[x.mi] = clay;
+    v.facets[x.mi] = facets;
+    v.made.push(without, clay, facets);
+    v.clayed.push(clay, facets);
+  }
+  return v;
 }
 // The base colour under each vertex of a result (0–255 RGB), read from its material's texture at the original UV of the
 // vertex it came from; grey where there is none. The paintable UV layout keeps parts painted differently apart.
@@ -2180,6 +2225,7 @@ function startTextureJob(rebakeOnly = false) {
     state.info = info;
     state.bake = baked;
     state.bakedMats = bakedMaterials(baked, kept);
+    state.occlusionViews = occlusionViews(baked, state.bakedMats);
     buildReducedDisplay(res);
   })().catch(err => {
     if (err && err.message === 'cancelled') return;
@@ -2288,10 +2334,13 @@ function tangentSurface(res, geo) {
   return g;
 }
 
-// The reduced view shows the baked materials when its result has new UVs, and clay while they are on the way.
+// The reduced view shows the baked materials when its result has new UVs, and clay while they are on the way. Baked
+// ambient occlusion shows in every shading, unless the display palette hides it.
 function surfaceMaterials(side) {
+  const views = side === 'R' ? state.occlusionViews : null;
   if (settings.shading === 'textured' && side === 'R' && state.result && state.result.uvLayout === 'pending') return state.displayMats.map(() => clayMat);
-  if (settings.shading === 'textured') return side === 'R' && state.bakedMats ? state.bakedMats : state.displayMats;
+  if (settings.shading === 'textured') return side === 'R' && state.bakedMats ? (views && !settings.showOcclusion ? views.without : state.bakedMats) : state.displayMats;
+  if (views && settings.showOcclusion) return settings.shading === 'facets' ? views.facets : views.clay;
   const m = settings.shading === 'facets' ? facetMat : clayMat;
   return state.displayMats.map(() => m);
 }
@@ -2374,6 +2423,9 @@ function buildReducedDisplay(res) {
 
 function applyDisplaySettings() {
   const tint = symActive() && settings.tintMirror;
+  // Clay with occlusion follows the theme's clay colour.
+  if (state.occlusionViews) for (const m of state.occlusionViews.clayed) m.color.copy(clayMat.color);
+  syncRenderPal();
   for (const [d, side] of [[display.L, 'L'], [display.R, 'R']]) {
     if (!d) continue;
     d.surface.material = state.displayMats.length ? surfaceMaterials(side) : [clayMat];
@@ -4093,6 +4145,7 @@ function showEmptyState(on) {
   $('emptyBusy').hidden = !(loading === doc || doc.saved);
   $('emptyIdle').hidden = !$('emptyBusy').hidden;
   $('toolPal').hidden = on;
+  $('renderPal').hidden = on;
   $('toolOpts').hidden = on || settings.tool === 'orbit';
   for (const sec of document.querySelectorAll('[data-needs-model]')) sec.inert = on;
   $('stagebar').inert = on;
@@ -4210,9 +4263,19 @@ async function loadSample() {
 function pressSeg(id, key, value) {
   for (const b of $(id).querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset[key] === String(value)));
 }
+// The display palette: the shading, the wireframe, and baked ambient occlusion shown or hidden, once there is some.
+function syncRenderPal() {
+  pressSeg('shadeSeg', 'shade', settings.shading);
+  $('wireBtn').setAttribute('aria-pressed', String(settings.wire));
+  const b = $('aoBtn'), has = !!state.occlusionViews;
+  b.disabled = !has;
+  b.setAttribute('aria-pressed', String(has && settings.showOcclusion));
+  b.title = has ? `${settings.showOcclusion ? 'Hide' : 'Show'} the baked ambient occlusion (A)` : 'Ambient occlusion (A): bake it under Texture to compare it here';
+  $('renderPal').hidden = !state.welded;
+}
 function syncControls() {
   pressSeg('viewSeg', 'view', settings.view);
-  pressSeg('shadeSeg', 'shade', settings.shading);
+  syncRenderPal();
   pressSeg('modeSeg', 'mode', settings.mode);
   pressSeg('strengthSeg', 'strength', settings.strength);
   pressSeg('normalsSeg', 'normals', settings.normals);
@@ -4223,7 +4286,6 @@ function syncControls() {
   const labels = less ? ['½', '¼', '⅛'] : ['×2', '×4', '×8'];
   $('strengthSeg').querySelectorAll('button').forEach((b, i) => { b.textContent = labels[i]; });
   $('strengthSeg').hidden = !(settings.tool === 'more' || settings.tool === 'less');
-  $('wireBtn').setAttribute('aria-pressed', String(settings.wire));
   const paint = settings.tool !== 'orbit';
   $('showPaintBtn').setAttribute('aria-pressed', String(settings.showPaint));
   $('showPaintBtn').title = settings.showPaint ? 'Hide paint' : 'Show paint';
@@ -4374,6 +4436,7 @@ const bindRange = (id, key, apply) => {
 let weldTimer = 0;
 const reweld = () => { clearTimeout(weldTimer); weldTimer = setTimeout(() => rebuildWeld(false), 60); };
 $('wireBtn').addEventListener('click', () => { settings.wire = !settings.wire; syncControls(); saveSettings(); applyDisplaySettings(); });
+$('aoBtn').addEventListener('click', () => { settings.showOcclusion = !settings.showOcclusion; syncControls(); saveSettings(); applyDisplaySettings(); });
 $('showPaintBtn').addEventListener('click', () => { settings.showPaint = !settings.showPaint; syncControls(); saveSettings(); applyDisplaySettings(); });
 bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
 bindCheck('permissive', 'permissive', () => scheduleReduce());
@@ -4575,6 +4638,7 @@ window.addEventListener('keydown', e => {
   if (tools[k]) settings.tool = tools[k];
   else if (k === 'f') settings.mode = settings.mode === 'fill' ? 'brush' : 'fill';
   else if (k === 'w') { settings.wire = !settings.wire; applyDisplaySettings(); }
+  else if (k === 'a') { if (!state.occlusionViews) return; settings.showOcclusion = !settings.showOcclusion; applyDisplaySettings(); }
   else if (k === 'u') { setUVOpen(!settings.uvOpen); return; }
   else if (k === 'q') { setTopology(quadMode() ? 'tris' : 'quads'); return; }
   else if (k === '1' || k === '2' || k === '3') { settings.view = ['split', 'original', 'reduced'][Number(k) - 1]; requestRender(); }
