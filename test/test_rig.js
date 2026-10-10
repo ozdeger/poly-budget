@@ -71,13 +71,27 @@ for (const [pose, fingers, base] of [['T', false, false], ['A', false, false], [
     if (e > worst) { worst = e; at = j.slot; }
   }
   const label = `${pose} pose${fingers ? ', fingers' : ', mittens'}${base ? ', on a base' : ''}`;
-  const want = (fingers ? 65 : 25) + (base ? 1 : 0);
+  // Mittens get an end joint at the tip of each hand.
+  const want = (fingers ? 65 : 27) + (base ? 1 : 0);
   check(report.found && placed.joints.length === want && placed.fingers === fingers && (!base || placed.joints[0].slot === 'Root'),
     `${label}: ${placed.joints.length} joints${base ? ', a Root carrying the base' : ''} (${ms} ms)`);
   check(worst < (base ? 0.05 : 0.03) * H, `${label}: every joint within ${base ? 5 : 3}% of the height of the truth (worst ${(worst * 100).toFixed(1)} cm, ${at})`);
   let sym = 0;
   for (const j of placed.joints) if (j.mirror >= 0) { const m = placed.joints[j.mirror].pos; sym = Math.max(sym, Math.hypot(j.pos[0] + m[0], j.pos[1] - m[1], j.pos[2] - m[2])); }
   check(sym < 1e-3 && R.dot(placed.frame.up, [0, 1, 0]) > 0.999 && R.dot(placed.frame.front, [0, 0, 1]) > 0.999, `${label}: symmetric, facing +Z with Y up`);
+}
+{
+  // In a floor-length gown on a base: upright, the base on a Root, the legs laid out inside the dress (marked to check),
+  // and the arms reaching the ends of the hands.
+  const f = figure({ pose: 'A', fingers: false, base: true, gown: true, step: 0.01 });
+  const r = reduceTo(core.smartWeld(sceneOf(f.geometry, 'Figure'), { keepUV: false, hardAngle: 30 }), { targetTris: 24000 });
+  const { rig: g, report } = R.placeHumanoid(r, { fingers: 'auto' });
+  const at = slot => g.joints.find(j => j.slot === slot);
+  const legs = ['UpLeg', 'Leg', 'Foot'].flatMap(k => ['Left', 'Right'].map(sd => at(`${sd}${k}`)));
+  const hip = at('LeftUpLeg').pos, foot = at('LeftFoot').pos, end = at('LeftHand_End').pos, tip = f.joints.LeftHand.map((x, k) => x + [0.766, -0.643, 0][k] * 0.17);
+  check(R.dot(g.frame.up, [0, 1, 0]) > 0.999 && g.joints[0].slot === 'Root' && g.joints.length === 28 && legs.every(j => j.placed === 'estimated') && report.notes.some(n => /hidden/.test(n)),
+    `in a gown on a base: upright, a Root, ${g.joints.length} joints, the hidden legs laid out and marked to check`);
+  check(hip[1] > 0.7 && hip[1] < 1.05 && foot[1] < 0.2 && hip[0] > 0.02 && R.dist(end, tip) < 0.06, `the hips at ${hip[1].toFixed(2)} m, the feet at ${foot[1].toFixed(2)} m, the hand's end ${(R.dist(end, tip) * 100).toFixed(1)} cm from its tip`);
 }
 {
   // Asked for fingers on mittens, the hands get them by a hand's proportions, marked for checking.
@@ -432,7 +446,7 @@ console.log('== the command line');
   fs.writeFileSync(obj, lines.join('\n'));
   const a = await run(obj, { budget: '6k', rig: 'humanoid', format: 'glb', measure: false, hidden: false });
   const g1 = a.report.rig;
-  check(g1 && g1.skeleton === 'humanoid' && g1.joints === 25 && g1.weights.unweighted === 0 && /rigged: 25 joints/.test(a.files[0].note), `--rig humanoid: ${g1 && g1.joints} joints, weights by ${g1 && g1.weights.method}, the GLB rigged`);
+  check(g1 && g1.skeleton === 'humanoid' && g1.joints === 27 && g1.weights.unweighted === 0 && /rigged: 27 joints/.test(a.files[0].note), `--rig humanoid: ${g1 && g1.joints} joints, weights by ${g1 && g1.weights.method}, the GLB rigged`);
   const glbFile = path.join(dir, a.files[0].name);
   fs.writeFileSync(glbFile, a.files[0].bytes);
   const b = await run(glbFile, { budget: '3k', rig: 'original', format: 'fbx', measure: false, hidden: false });

@@ -91,7 +91,8 @@ const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; retu
 // within reach of the surface.
 const TETS = [[0, 1, 3, 7], [0, 1, 5, 7], [0, 2, 3, 7], [0, 2, 6, 7], [0, 4, 5, 7], [0, 4, 6, 7]];
 // base: the figure stands on a round base 30 cm across and 4 cm thick, joined to its soles, as game pieces often do.
-export function figure({ pose = 'T', fingers = true, step = 0.006, base = false } = {}) {
+// gown: a floor-length dress hides the legs, flaring from the waist to the floor.
+export function figure({ pose = 'T', fingers = true, step = 0.006, base = false, gown = false } = {}) {
   const J = figureJoints({ pose, fingers }), C = capsules(J, fingers);
   const sdf = p => {
     let body = Infinity, palm = Infinity, fing = Infinity;
@@ -102,11 +103,17 @@ export function figure({ pose = 'T', fingers = true, step = 0.006, base = false 
       else fing = Math.min(fing, d);
     }
     let d = smin(body, smin(palm, fing, 0.006), 0.015);
+    if (gown) {
+      // A cone from the waist (16 cm out from the middle) to the floor (21 cm), closed at both ends, inside the base.
+      const t = Math.min(1, Math.max(0, (1.05 - p[1]) / 1.05)), r = 0.16 + 0.05 * t;
+      d = smin(d, Math.max(Math.hypot(p[0], p[2]) - r, p[1] - 1.05, -p[1]), 0.03);
+    }
     if (base) d = smin(d, Math.max(Math.hypot(p[0], p[2] - 0.04) - 0.3, Math.abs(p[1] + 0.02) - 0.03), 0.02);
     return d;
   };
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (const [a, b, r, , rb] of C) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], a[k] - r, b[k] - rb); hi[k] = Math.max(hi[k], a[k] + r, b[k] + rb); }
+  if (gown) { lo[0] = Math.min(lo[0], -0.3); hi[0] = Math.max(hi[0], 0.3); lo[2] = Math.min(lo[2], -0.3); hi[2] = Math.max(hi[2], 0.3); lo[1] = Math.min(lo[1], -0.02); }
   if (base) { lo[0] = Math.min(lo[0], -0.3); hi[0] = Math.max(hi[0], 0.3); lo[1] = -0.05; lo[2] = Math.min(lo[2], -0.26); hi[2] = Math.max(hi[2], 0.34); }
   const B = 8, n = [0, 1, 2].map(k => Math.ceil((hi[k] - lo[k] + 4 * step) / step / B) * B);
   const o = [0, 1, 2].map(k => lo[k] - 2 * step);

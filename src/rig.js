@@ -121,6 +121,8 @@ export function humanoidSlots(fingers = true, root = false) {
   add('Neck', 'Spine2'); add('Head', 'Neck'); add('HeadTop_End', 'Head', 'C', false);
   for (const [S, side] of SIDES) {
     add(`${S}Shoulder`, 'Spine2', side); add(`${S}Arm`, `${S}Shoulder`, side); add(`${S}ForeArm`, `${S}Arm`, side); add(`${S}Hand`, `${S}ForeArm`, side);
+    // Without fingers, an end joint at the tip of the hand, so the hand's bone reaches its end.
+    if (!fingers) add(`${S}Hand_End`, `${S}Hand`, side, false);
     if (fingers) {
       for (const f of FINGERS) {
         add(`${S}Hand${f}1`, `${S}Hand`, side); add(`${S}Hand${f}2`, `${S}Hand${f}1`, side);
@@ -145,7 +147,7 @@ export const mirrorSlot = slot => (slot.startsWith('Left') ? `Right${slot.slice(
 // profile and Blender; Unreal's are its mannequin's.
 const UNREAL = {
   Root: 'root', Hips: 'pelvis', Spine: 'spine_01', Spine1: 'spine_02', Spine2: 'spine_03', Neck: 'neck_01', Head: 'head', HeadTop_End: 'head_end',
-  Shoulder: 'clavicle', Arm: 'upperarm', ForeArm: 'lowerarm', Hand: 'hand', UpLeg: 'thigh', Leg: 'calf', Foot: 'foot', ToeBase: 'ball', Toe_End: 'ball_end',
+  Shoulder: 'clavicle', Arm: 'upperarm', ForeArm: 'lowerarm', Hand: 'hand', Hand_End: 'hand_end', UpLeg: 'thigh', Leg: 'calf', Foot: 'foot', ToeBase: 'ball', Toe_End: 'ball_end',
 };
 export const NAMINGS = ['mixamo', 'unreal'];
 export function boneName(slot, naming = 'mixamo') {
@@ -705,11 +707,11 @@ export function placeHumanoid(mesh, opt = {}) {
   for (let v = 0; v < g.n; v++) if (body[v]) { const d = dist(pointOf(g, v), cen); if (d < md) { md = d; mid = v; } }
   const ends = () => peaks(g, dijkstra(g, [[mid, 0]], body).d, body).filter(p => p.persistence > 0.03 * H0).map(e => ({ ...e, p: pointOf(g, e.v) }));
   let all = ends();
-  // The hands: on each side, the peak farthest out from the plane. A model upside down has them below its middle.
+  // The hands: on each side, the peak farthest out from the plane. (Up is the file's own: a figure whose arms hang
+  // low under a big head has its hands below its middle, which once read as upside down.)
   const handOn = (list, sgn) => list.filter(e => Math.sign(side(e.p)) === sgn).sort((a, b) => Math.abs(side(b.p)) - Math.abs(side(a.p)))[0];
   const hp0 = handOn(all, 1), hn0 = handOn(all, -1);
   if (!hp0 || !hn0) return fallback('The hands could not be found on both sides of the mirror plane.', { up });
-  if ((hp0.p[upAxis] + hn0.p[upAxis]) / 2 < (lo[upAxis] + hi[upAxis]) / 2 - 0.1 * H0) up[upAxis] = -1;
   const height = p => dot(p, up);
   const floorH = up[upAxis] > 0 ? lo[upAxis] : -hi[upAxis];
   // A base the feet stand on is left out of the skeleton's shape: the feet end where they meet it.
@@ -721,11 +723,18 @@ export function placeHumanoid(mesh, opt = {}) {
     all = ends();
   }
   const hp = handOn(all, 1), hn = handOn(all, -1);
+  if (!hp || !hn) return fallback('The hands could not be found on both sides of the mirror plane.', { up });
+  // The legs, where they stand apart below the hands; a long dress or robe hides them down to the floor, and they are
+  // then laid out inside it by a figure's proportions.
+  let bottomH = Infinity;
+  for (let v = 0; v < g.n; v++) if (body[v]) bottomH = Math.min(bottomH, height(pointOf(g, v)));
+  const hidden = !legsApart(g, body, plane, up, bottomH, Math.min(height(hp.p), height(hn.p)), H0);
   // The feet: on each side, the lowest peak that isn't the hand.
   const footOn = (sgn, hand) => all.filter(e => Math.sign(side(e.p)) === sgn && e !== hand).sort((a, b) => height(a.p) - height(b.p))[0];
-  const fp = footOn(1, hp), fn = footOn(-1, hn);
-  if (!hp || !hn || !fp || !fn) return fallback('The hands and feet could not all be told apart.', { up });
-  if (height(fp.p) > height(hp.p) - 0.15 * H0 || height(fn.p) > height(hn.p) - 0.15 * H0) return fallback('The feet are not clearly below the hands: the pose is not a standing one.', { up });
+  const fp = hidden ? null : footOn(1, hp), fn = hidden ? null : footOn(-1, hn);
+  if (!hidden && (!fp || !fn)) return fallback('The hands and feet could not all be told apart.', { up });
+  if (!hidden && (height(fp.p) > height(hp.p) - 0.15 * H0 || height(fn.p) > height(hn.p) - 0.15 * H0)) return fallback('The feet are not clearly below the hands: the pose is not a standing one.', { up });
+  if (hidden) notes.push('The legs are hidden by the clothes down to the floor, so they are laid out inside by a figure\'s proportions: check them.');
   // The head: the top of the body on the plane.
   let top = -1;
   for (let v = 0; v < g.n; v++) {
@@ -735,7 +744,7 @@ export function placeHumanoid(mesh, opt = {}) {
   }
   const headEnd = { v: top, p: pointOf(g, top), persistence: Infinity };
   const sp = { hand: hp, foot: fp }, sn = { hand: hn, foot: fn };
-  const H = height(headEnd.p) - Math.min(height(fp.p), height(fn.p));
+  const H = height(headEnd.p) - (hidden ? bottomH : Math.min(height(fp.p), height(fn.p)));
   if (!(H > 0.2 * size)) return fallback('The shape is not tall enough for a standing figure.', { up });
   void frontAxis;
   const step = H / 160;
@@ -779,14 +788,13 @@ export function placeHumanoid(mesh, opt = {}) {
     }
     return { e, rings, j, d };
   };
-  const lowest = Math.min(height(fp.p), height(fn.p));
-  const feet = { pos: limb(sp.foot, lowest), neg: limb(sn.foot, lowest) }, hands = { pos: limb(sp.hand), neg: limb(sn.hand) }, head = limb(headEnd);
-  // Front: the way the toes point from the leg above them.
+  const lowest = hidden ? bottomH : Math.min(height(fp.p), height(fn.p));
+  const feet = hidden ? null : { pos: limb(sp.foot, lowest), neg: limb(sn.foot, lowest) }, hands = { pos: limb(sp.hand), neg: limb(sn.hand) }, head = limb(headEnd);
   // Front: the way the toes point from the leg above them, when they clearly do; otherwise the file's convention.
   const frontC = norm(cross(up, nrm));
   const conventional = upAxis === 2 ? -frontC[1] : frontC[2] || frontC[0];
   let fs = 0;
-  for (const L of [feet.pos, feet.neg]) {
+  if (feet) for (const L of [feet.pos, feet.neg]) {
     const i = Math.min(L.j, Math.round(L.j * 0.45));
     if (L.rings.length) fs += dot(sub(L.e.p, L.rings[i].c), frontC);
   }
@@ -869,16 +877,41 @@ export function placeHumanoid(mesh, opt = {}) {
     if (b.angle > 20) { out.ForeArm = R[b.i].c; out.elbowBent = true; }
     else out.ForeArm = alongPolyline([out.Hand, ...R.slice(iw, n + 1).map(r => r.c), out.Arm], 0.46);
     out.tip = L.e.p;
+    // The end of the hand: the middle of the rings at its very tip.
+    out.end = R[Math.max(0, Math.min(iw - 1, Math.round(n * 0.02)))].c;
+    return out;
+  };
+  // Legs hidden down to the floor: the hips where a figure's torso puts them (about 0.29 of its height below the
+  // shoulders), a quarter of the way out from the middle on either side of the trunk there, the feet just above the
+  // floor, the knees halfway, the toes forward.
+  const hiddenLegs = shoulderH => {
+    const hipH = Math.max(bottomH + 0.3 * H, shoulderH - 0.29 * H);
+    const centre = centreAlong(g, toPlane(add(cen, scale(up, hipH - height(cen)))), front);
+    const f = new Float64Array(g.n);
+    for (let v = 0; v < g.n; v++) f[v] = body[v] ? height(pointOf(g, v)) : -Infinity;
+    const loops = sliceLoops(g, f, triRange(g, f), hipH, plane).filter(l => l.min < 0 && l.max > 0);
+    const half = loops.length ? Math.min(...loops.map(l => Math.min(-l.min, l.max))) : 0.1 * H;
+    const out = {};
+    for (const [s, sgn] of [['L', leftSign], ['R', -leftSign]]) {
+      const across = scale(nrm, sgn * 0.5 * half);
+      const hip = add(centre, across), foot = add(add(toPlane(add(centre, scale(up, bottomH + 0.05 * H - hipH))), across), scale(front, 0.01 * H));
+      out[s] = {
+        UpLeg: hip, Leg: lerp(hip, foot, 0.5), Foot: foot,
+        ToeBase: add(add(foot, scale(front, 0.07 * H)), scale(up, -0.03 * H)), Toe_End: add(add(foot, scale(front, 0.11 * H)), scale(up, -0.035 * H)),
+      };
+    }
     return out;
   };
   const arms = { L: armOf(hands[S.L]), R: armOf(hands[S.R]) };
   const shoulderH = (height(arms.L.Arm) + height(arms.R.Arm)) / 2;
-  const legs = { L: legOf(feet[S.L], shoulderH), R: legOf(feet[S.R], shoulderH) };
+  const legs = hidden ? hiddenLegs(shoulderH) : { L: legOf(feet[S.L], shoulderH), R: legOf(feet[S.R], shoulderH) };
   for (const s of ['L', 'R']) {
     const pre = s === 'L' ? 'Left' : 'Right', leg = legs[s], arm = arms[s];
-    put(`${pre}UpLeg`, leg.UpLeg, leg.hipGuess ? 'estimated' : 'detected'); put(`${pre}Leg`, leg.Leg, leg.kneeBent ? 'detected' : 'estimated');
-    put(`${pre}Foot`, leg.Foot, leg.ankleGuess ? 'estimated' : 'detected'); put(`${pre}ToeBase`, leg.ToeBase); put(`${pre}Toe_End`, leg.Toe_End);
+    const legHow = hidden ? 'estimated' : 'detected';
+    put(`${pre}UpLeg`, leg.UpLeg, leg.hipGuess || hidden ? 'estimated' : 'detected'); put(`${pre}Leg`, leg.Leg, leg.kneeBent ? 'detected' : 'estimated');
+    put(`${pre}Foot`, leg.Foot, leg.ankleGuess || hidden ? 'estimated' : 'detected'); put(`${pre}ToeBase`, leg.ToeBase, legHow); put(`${pre}Toe_End`, leg.Toe_End, legHow);
     put(`${pre}Arm`, arm.Arm); put(`${pre}ForeArm`, arm.ForeArm, arm.elbowBent ? 'detected' : 'estimated'); put(`${pre}Hand`, arm.Hand, arm.wristGuess ? 'estimated' : 'detected');
+    put(`${pre}Hand_End`, arm.end);
   }
   // Head and neck: the neck at its narrowest, the head joint where the skull starts to widen above it, the neck joint
   // where the neck meets the shoulders.
@@ -886,16 +919,23 @@ export function placeHumanoid(mesh, opt = {}) {
     const R = head.rings, n = head.j;
     let widest = 0;
     for (let i = 0; i <= Math.round(n * 0.6); i++) if (R[i].perimeter > R[widest].perimeter) widest = i;
-    const ineck = narrowest(R, widest + 1, n);
     const shoulderH = (height(J.LeftArm) + height(J.RightArm)) / 2, topH = height(head.e.p);
+    // The neck is low between the shoulders and the top of the head, in a person and a big-headed character alike;
+    // narrowings higher up are hair (a bun, curls) or a hat.
+    const lowest = shoulderH + 0.45 * (topH - shoulderH);
+    let from = widest + 1;
+    while (from < n && height(R[from].c) > lowest) from++;
+    const ineck = narrowest(R, from, n);
     put('HeadTop_End', toPlane(head.e.p));
     if (ineck >= 0 && height(R[ineck].c) > shoulderH) {
-      const ih = Math.round(widest + 0.7 * (ineck - widest));
-      // The neck joint at the base of the neck, where it has flared by a third into the shoulders.
+      // The neck joint at the base of the neck, where it has flared by a third into the shoulders; the head joint where
+      // the skull starts to widen above the neck, at most 0.3 of the way from there to the top.
       let ib = ineck;
       while (ib < n && R[ib].perimeter < 1.3 * R[ineck].perimeter) ib++;
-      put('Head', toPlane(R[ih].c));
-      put('Neck', toPlane(height(R[ib].c) > shoulderH ? R[ib].c : add(R[ib].c, scale(up, shoulderH - height(R[ib].c)))));
+      const neck = height(R[ib].c) > shoulderH ? R[ib].c : add(R[ib].c, scale(up, shoulderH - height(R[ib].c)));
+      const ih = Math.round(widest + 0.7 * (ineck - widest)), cap = height(neck) + 0.3 * (topH - height(neck));
+      put('Head', toPlane(height(R[ih].c) > cap ? add(R[ih].c, scale(up, cap - height(R[ih].c))) : R[ih].c));
+      put('Neck', toPlane(neck));
     } else {
       // No neck to see (hair, a collar, a stylised head on the shoulders): the neck just above the shoulders, the head
       // joint a little above it, each centred front to back.
@@ -908,7 +948,7 @@ export function placeHumanoid(mesh, opt = {}) {
   // Hips just above the hip joints, centred front to back in the trunk; the spine evenly up to the neck. Front to
   // back the spine runs from the hips to the shoulder joints' line, as hair or a backpack on the back would pull a
   // centring through the trunk behind it. The neck and head stand on that line too.
-  const hipH = (height(J.LeftUpLeg) + height(J.RightUpLeg)) / 2 + 0.3 * feet[S.L].rings[Math.max(0, feet[S.L].j - 2)].radius;
+  const hipH = (height(J.LeftUpLeg) + height(J.RightUpLeg)) / 2 + (feet ? 0.3 * feet[S.L].rings[Math.max(0, feet[S.L].j - 2)].radius : 0.02 * H);
   const onAxis = h => toPlane(add(cen, scale(up, h - height(cen))));
   const hips = toPlane(centreAlong(g, onAxis(hipH), front));
   put('Hips', hips);
@@ -928,7 +968,7 @@ export function placeHumanoid(mesh, opt = {}) {
     // The shoulder joint sits midway through the arm front to back.
     J[`${pre}Arm`] = centreAlong(g, arm, front);
   }
-  // Fingers.
+  // Fingers (in place of the hands' end joints).
   const wantFingers = opt.fingers || 'auto';
   let fingers = false;
   if (wantFingers !== 'none') {
@@ -937,6 +977,7 @@ export function placeHumanoid(mesh, opt = {}) {
     if (found.L && found.R) {
       fingers = true;
       for (const s of ['L', 'R']) for (const [k, p] of Object.entries(found[s])) put(`${s === 'L' ? 'Left' : 'Right'}Hand${k}`, p);
+      delete J.LeftHand_End; delete J.RightHand_End;
     } else if (wantFingers === 'full') {
       fingers = true;
       for (const s of ['L', 'R']) {
@@ -946,6 +987,7 @@ export function placeHumanoid(mesh, opt = {}) {
         templateFingers(w, d, len(across) > 0.1 ? across : norm(cross(d, up)), dist(tip, w), 0.6 * dist(tip, w), '', out);
         for (const [k, p] of Object.entries(out)) put(`${pre}Hand${k}`, p, 'estimated');
       }
+      delete J.LeftHand_End; delete J.RightHand_End;
       notes.push('The fingers could not be told apart, so they are laid out by a hand\'s proportions: check them.');
     }
   }
@@ -979,7 +1021,7 @@ export function placeHumanoid(mesh, opt = {}) {
 function findBase(g, body, plane, up, floorH, H) {
   const f = new Float64Array(g.n);
   for (let v = 0; v < g.n; v++) f[v] = body[v] ? dot(pointOf(g, v), up) : -Infinity;
-  const lohi = triRange(g, f), step = H / 300;
+  const lohi = triRange(g, f), step = H / 300, extents = [];
   let extent0 = null;
   for (let i = 1; i < 120; i++) {
     const h = floorH + i * step, loops = sliceLoops(g, f, lohi, h, plane);
@@ -992,9 +1034,28 @@ function findBase(g, body, plane, up, floorH, H) {
       extent0 = extent;
       continue;
     }
+    extents[i] = extent;
+    // Narrowed by a third to legs apart, or by a fifth in a step: a base's top edge narrows within 3% of the height,
+    // where a long dress's flared hem only narrows gradually.
     if (!wide && pos && neg && extent < 0.7 * extent0) return h + 0.012 * H;
+    if (extent >= 0.8 * extent0) continue;
+    const back = extents[Math.max(1, i - Math.round((0.03 * H) / step))];
+    return back !== undefined && back >= 0.92 * extent0 ? h + 0.012 * H : null;
   }
   return null;
+}
+
+// Whether the legs stand apart anywhere between heights from and to: a cross-section with a piece on each side of the
+// mirror plane and none across it.
+function legsApart(g, body, plane, up, from, to, H) {
+  const f = new Float64Array(g.n);
+  for (let v = 0; v < g.n; v++) f[v] = body[v] ? dot(pointOf(g, v), up) : -Infinity;
+  const lohi = triRange(g, f);
+  for (let h = from + 0.02 * H; h < to; h += H / 100) {
+    const loops = sliceLoops(g, f, lohi, h, plane);
+    if (loops.some(l => l.min > 0) && loops.some(l => l.max < 0) && !loops.some(l => l.min < -0.01 * H && l.max > 0.01 * H)) return true;
+  }
+  return false;
 }
 
 // The loops of the cross-section where f = h, each with how far its points reach to either side of the mirror plane
@@ -1046,12 +1107,13 @@ function templateRig(g, body, lo, hi, plane, opt, notes, t0, known = {}) {
   base[upAxis] = up[upAxis] > 0 ? lo[upAxis] : hi[upAxis]; base[plane.axis] = plane.offset; base[frontAxis] = (lo[frontAxis] + hi[frontAxis]) / 2;
   const J = {};
   for (const [slot, [x, y, z]] of Object.entries(TEMPLATE)) J[slot] = add(base, add(scale(left, x * H), add(scale(up, y * H), scale(front, z * H))));
-  if (opt.fingers === 'full') {
-    for (const pre of ['Left', 'Right']) {
-      const w = J[`${pre}Hand`], d = norm(sub(w, J[`${pre}ForeArm`])), out = {};
+  for (const pre of ['Left', 'Right']) {
+    const w = J[`${pre}Hand`], d = norm(sub(w, J[`${pre}ForeArm`]));
+    if (opt.fingers === 'full') {
+      const out = {};
       templateFingers(w, d, front, HAND_TIP * H, 0.06 * H, '', out);
       for (const [k, p] of Object.entries(out)) J[`${pre}Hand${k}`] = p;
-    }
+    } else J[`${pre}Hand_End`] = add(w, scale(d, HAND_TIP * H));
   }
   const placed = Object.fromEntries(Object.keys(J).map(k => [k, 'estimated']));
   const rig = humanoidRig(J, { fingers: opt.fingers === 'full', naming: opt.naming, placed, frame: { up, front }, plane: { axis: plane.axis, offset: plane.offset } });
