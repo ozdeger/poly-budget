@@ -303,6 +303,22 @@ const seamValences = (r, axis, offset) => {
   check(rows.every(r => r.open >= 3 * Math.sqrt(r.faces)), `open sheet: the border stays open (${rows.map(r => `${r.open} open edges around ${r.faces} quads`).join(', ')})`);
 }
 
+// Slots narrower than a quad: the grid tears across them, and the repairs close the holes that leaves. A hole with an
+// odd number of edges closed with a triangle, after the all-quad pass had run: 2 to 8 lone triangles per budget here,
+// and half the remeshes of the bench's models had some.
+{
+  const g = new THREE.SphereGeometry(1, 300, 150), p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i), s = 1 - 0.18 * Math.max(0, Math.cos(14 * Math.atan2(z, x))) ** 40;
+    p.setXYZ(i, x * s, y * s, z * s);
+  }
+  g.computeVertexNormals();
+  const ws = core.smartWeld(sceneOf(g), { keepUV: false, hardAngle: 30 });
+  const rows = [800, 1800, 3500].map(target => { const { result: r, info } = run(ws, { targetTris: 2 * target, symmetry: null }); return { target, quads: info.quads, lone: loneOf(r) }; });
+  check(rows.every(r => r.lone === 0 && Math.abs(r.quads / r.target - 1) < 0.06),
+    `slotted sphere: all quads at three budgets (${rows.map(r => `${r.quads} quads, ${r.lone} lone triangles`).join('; ')})`);
+}
+
 // Following the shape: a thin ridge around a sphere's middle bends far more than the rest, so with the density following
 // curvature it gets a larger share of the same budget, and the ridge's worst gap to the original shrinks.
 {

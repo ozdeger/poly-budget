@@ -4338,7 +4338,12 @@ function remeshQuads(mesh, opt) {
     const keepOpen = v => open[v] === 1;
     const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
     const faces = repaired.dropped || repaired.filled ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
-    return { tidy, repaired, faces };
+    // A hole with an odd number of edges closes with a triangle, and holes the grid tore open can be odd, or turn odd
+    // when the all-quad pass pairs an odd face with a hole's edge as it would with an open border. With the holes
+    // closed, the faces left odd are paired once more, with each other or a real border, and cut into quads.
+    if (!faces.some(p => p.length & 1)) return { tidy, repaired, faces };
+    const again = evenFaces(faces, P, nv, even.cut);
+    return { tidy, repaired, faces: again.faces, even: { ...even, faces: again.faces, positions: again.positions, nv: again.nv, cut: again.cut, unpaired: again.unpaired, borderMid: [...(even.borderMid || []), ...again.borderMid] } };
   };
   // Up to four tries at the budget; the closest one is kept. Faces fall about as scale⁻² on a smooth surface; from the
   // second correction on, the exponent is measured from the last two tries, since pieces that vanish or appear as the
@@ -4378,7 +4383,8 @@ function remeshQuads(mesh, opt) {
     const done = finish(G, even), count = done.faces.length;
     if (progress) progress('extract', 1);
     const gap = count > 0 ? Math.abs(Math.log(count / target)) : Infinity, best = result && result.count > 0 ? Math.abs(Math.log(result.count / target)) : Infinity;
-    if (!result || gap < best) result = { G, even, ...done, count, scale };
+    // A last pairing pass (done.even) adds vertices, so its positions are the ones the rest works on.
+    if (!result || gap < best) result = { G, ...done, even: done.even || even, count, scale };
     attempts.push(count);
     mark(`extract${attempt}`);
     // Close enough to the budget, or out of tries: keep the closest. Otherwise resize the grid and solve positions again.
@@ -12226,7 +12232,12 @@ function remeshQuads(mesh, opt) {
     const keepOpen = v => open[v] === 1;
     const repaired = repairFaces(removeDoublets(tidy.faces, nv).faces, P, nv, keepOpen);
     const faces = repaired.dropped || repaired.filled ? removeDoublets(repaired.faces, nv).faces : repaired.faces;
-    return { tidy, repaired, faces };
+    // A hole with an odd number of edges closes with a triangle, and holes the grid tore open can be odd, or turn odd
+    // when the all-quad pass pairs an odd face with a hole's edge as it would with an open border. With the holes
+    // closed, the faces left odd are paired once more, with each other or a real border, and cut into quads.
+    if (!faces.some(p => p.length & 1)) return { tidy, repaired, faces };
+    const again = evenFaces(faces, P, nv, even.cut);
+    return { tidy, repaired, faces: again.faces, even: { ...even, faces: again.faces, positions: again.positions, nv: again.nv, cut: again.cut, unpaired: again.unpaired, borderMid: [...(even.borderMid || []), ...again.borderMid] } };
   };
   // Up to four tries at the budget; the closest one is kept. Faces fall about as scale⁻² on a smooth surface; from the
   // second correction on, the exponent is measured from the last two tries, since pieces that vanish or appear as the
@@ -12266,7 +12277,8 @@ function remeshQuads(mesh, opt) {
     const done = finish(G, even), count = done.faces.length;
     if (progress) progress('extract', 1);
     const gap = count > 0 ? Math.abs(Math.log(count / target)) : Infinity, best = result && result.count > 0 ? Math.abs(Math.log(result.count / target)) : Infinity;
-    if (!result || gap < best) result = { G, even, ...done, count, scale };
+    // A last pairing pass (done.even) adds vertices, so its positions are the ones the rest works on.
+    if (!result || gap < best) result = { G, ...done, even: done.even || even, count, scale };
     attempts.push(count);
     mark(`extract${attempt}`);
     // Close enough to the budget, or out of tries: keep the closest. Otherwise resize the grid and solve positions again.
