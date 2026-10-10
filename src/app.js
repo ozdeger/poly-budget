@@ -12,7 +12,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
-import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, hiddenLabels, cornerTangents, positionNormals, bakeReach, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
+import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, OCCLUSION, OCCLUSION_BAYER, hiddenLabels, cornerTangents, positionNormals, bakeReach, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
 import { computeVisibility } from './visibility.js';
 import { formDensity } from './quad.js';
@@ -20,6 +20,8 @@ import { formDensity } from './quad.js';
 const $ = id => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat('en-US');
 const fmt = n => numberFormat.format(Math.round(n));
+// Lets other work in, without waiting for a frame or a timer (which hidden pages slow down).
+const yieldTask = () => new Promise(resolve => { const c = new MessageChannel(); c.port1.onmessage = () => resolve(); c.port2.postMessage(0); });
 const nextFrame = () => new Promise(resolve => {
   let done = false;
   const go = () => { if (!done) { done = true; resolve(); } };
@@ -40,7 +42,7 @@ const STORE = 'poly-budget:settings:v1';
 const DEFAULTS = {
   targetPct: 10, topology: 'quads', quadSharp: true, quadThin: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
-  normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', uvStyle: 'compact', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, normalFormat: 'opengl',
+  normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', uvStyle: 'compact', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, occlusion: 'off', occlusionStrength: 0.7, normalFormat: 'opengl',
   view: 'split', shading: 'textured', wire: false, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
@@ -80,7 +82,7 @@ function saveSettings() {
 // Each tab is a document: its model, paint, mirror plane, results, camera and the model settings in DOC_KEYS. `state`,
 // `symPlane` and `session` always point at the active tab's; the other settings are shared preferences.
 const DOC_KEYS = ['targetPct', 'topology', 'quadSharp', 'quadThin', 'quadAdapt', 'maxError', 'hardAngle', 'weldTol', 'normals', 'creaseAngle', 'optimizePositions', 'regularize',
-  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'uvStyle', 'bakeSize', 'bakeNormals', 'colorDetail', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
+  'lockBorder', 'permissive', 'prune', 'normalWeight', 'uvWeight', 'uvMode', 'uvStyle', 'bakeSize', 'bakeNormals', 'colorDetail', 'occlusion', 'occlusionStrength', 'symmetry', 'symSide', 'hidden', 'hiddenLevel', 'hiddenCull'];
 const docSettings = () => Object.fromEntries(DOC_KEYS.map(k => [k, settings[k]]));
 let docSeq = 0;
 const newDocId = () => `t${Date.now().toString(36)}${(docSeq++).toString(36)}`;
@@ -1133,23 +1135,26 @@ function tile(i, slot, className, title, content) {
   return b;
 }
 // A material without a normal map of its own (or whose file is missing) gets one from the bake when Normal map from
-// the original is on: false where it doesn't, null while it is being made, else the baked texture.
-function madeNormal(i) {
+// the original is on, and an occlusion map when Ambient occlusion goes into a map of its own (new UVs only): false where
+// it doesn't, null while it is being made, else the baked texture.
+const MADE_SLOTS = ['normalMap', 'aoMap'];
+function madeMap(i, slot) {
   const m = state.displayMats[i];
-  if (!settings.bakeNormals || !m || !('normalMap' in m) || loadedMap(m, 'normalMap')) return false;
-  return (state.bakedMats && state.bakedMats[i] && loadedMap(state.bakedMats[i], 'normalMap')) || null;
+  const on = slot === 'normalMap' ? settings.bakeNormals : settings.occlusion === 'map' && !(state.result && state.result.uvLayout === 'original');
+  if (!on || !m || !(slot in m) || loadedMap(m, slot)) return false;
+  return (state.bakedMats && state.bakedMats[i] && loadedMap(state.bakedMats[i], slot)) || null;
 }
-const madeKey = () => state.displayMats.map((_, i) => { const t = madeNormal(i); return t === false ? '-' : t ? objId(t) : '…'; }).join(',');
+const madeKey = () => state.displayMats.map((_, i) => MADE_SLOTS.map(slot => { const t = madeMap(i, slot); return t === false ? '-' : t ? objId(t) : '…'; }).join('/')).join(',');
 // Its tile shows the baked map and opens it in Texture & UVs; until the bake is done it waits.
-function madeTile(i, m, t) {
-  const bk = t && state.bake && state.bake.maps.find(x => x.mi === i && x.slot === 'normalMap');
-  const missing = state.pendingMaps.find(p => p.material === m && p.slot === 'normalMap');
-  const from = `the original's surface${(bk ? bk.detail : settings.colorDetail > 0 && loadedMap(m, 'map')) ? ' and base colour' : ''}`;
+function madeTile(i, m, t, slot) {
+  const bk = t && state.bake && state.bake.maps.find(x => x.mi === i && x.slot === slot);
+  const missing = state.pendingMaps.find(p => p.material === m && p.slot === slot);
+  const from = slot === 'aoMap' ? "the original's shape" : `the original's surface${(bk ? bk.detail : settings.colorDetail > 0 && loadedMap(m, 'map')) ? ' and base colour' : ''}`;
   const instead = missing ? `\nIt stands in for the missing ${missing.file}` : '';
   const url = t ? thumbnail(t.image, true) : null;
   const b = t
-    ? tile(i, 'normalMap', 'made', `${SLOT_NAMES.normalMap}: made from ${from} · ${imageSize(t.image)[0]} px${instead}\nClick to see it in Texture & UVs`, el('span', { className: 'thumb' }, ...(url ? [el('img', { src: url, alt: '' })] : []), el('span', { className: 'badge', textContent: 'baked' })))
-    : tile(i, 'normalMap', 'made wait', `${SLOT_NAMES.normalMap}: being made from ${from}${instead}\nIt shows here once the bake is done`, el('span', { className: 'thumb' }, el('span', { className: 'busy-dot' })));
+    ? tile(i, slot, 'made', `${SLOT_NAMES[slot]}: made from ${from} · ${imageSize(t.image)[0]} px${instead}\nClick to see it in Texture & UVs`, el('span', { className: 'thumb' }, ...(url ? [el('img', { src: url, alt: '' })] : []), el('span', { className: 'badge', textContent: 'baked' })))
+    : tile(i, slot, 'made wait', `${SLOT_NAMES[slot]}: being made from ${from}${instead}\nIt shows here once the bake is done`, el('span', { className: 'thumb' }, el('span', { className: 'busy-dot' })));
   b.dataset.made = '1';
   return b;
 }
@@ -1171,8 +1176,10 @@ function updateTexturePanel() {
     const waiting = state.pendingMaps.filter(p => p.material === m);
     for (const p of waiting) tiles.push(tile(i, p.slot, 'missing', `${SLOT_NAMES[p.slot]}: ${p.file} is missing\nClick to pick the file, or drop it on the view`, el('span', { className: 'thumb', textContent: '!' })));
     if ('map' in m && !m.map && !waiting.some(p => p.slot === 'map')) tiles.push(tile(i, 'map', 'add', 'Add a base colour texture', el('span', { className: 'thumb', textContent: '+' })));
-    const made = madeNormal(i);
-    if (made !== false) tiles.push(madeTile(i, m, made));
+    for (const slot of MADE_SLOTS) {
+      const made = madeMap(i, slot);
+      if (made !== false) tiles.push(madeTile(i, m, made, slot));
+    }
     return el('li', {},el('span', { className: 'mat-name', textContent: m.name || `Material ${i + 1}`, title: m.name || '' }), el('div', { className: 'tiles' }, ...tiles));
   });
   list.replaceChildren(...rows);
@@ -1320,9 +1327,152 @@ void main() {
   gl_FragColor = vec4(bc.y, bc.z, texelArea * auv / max(a3, 1e-30), float(fi.w) + 1.0);
 }`;
 
+// ---------- ambient occlusion ----------
+// Per texel, at the original spot the correspondence pass matched: how much of the sky over it the model leaves open,
+// cosine-weighted, and the same weighted toward the sky above, from the texel's interleaved set of directions
+// (core.ambientOcclusion, whose numbers these are). The occluders are the whole model, every material. Output: AO, sky
+// and the normal used (octahedral), zero for empty texels; AO_MERGE_FS then merges the sets.
+const glf = x => (Number.isInteger(x) ? `${x}.0` : `${x}`);
+const OCT_GLSL = /* glsl */`
+vec2 octEncode(vec3 n) {
+  n /= abs(n.x) + abs(n.y) + abs(n.z);
+  return n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+}
+vec3 octDecode(vec2 e) {
+  vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+  if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+  return normalize(n);
+}`;
+const AO_FS = /* glsl */`${BAKE_GLSL}
+${OCT_GLSL}
+uniform sampler2D corr;
+uniform BVH occluders;
+uniform float reach;
+uniform float bias;
+const int BAYER[16] = int[16](${OCCLUSION_BAYER.join(', ')});
+
+// How far along d from o the nearest surface lies, up to far. Stops early once it is closer than half of far, where an
+// occluder counts in full anyway.
+float nearestHit(vec3 o, vec3 d, float far) {
+  int pointer = 0;
+  uint stack[BVH_STACK_DEPTH];
+  stack[0] = 0u;
+  float best = far;
+  while (pointer > -1 && pointer < BVH_STACK_DEPTH) {
+    uint node = stack[pointer];
+    pointer--;
+    float bd;
+    if (!intersectsBVHNodeBounds(o, d, occluders.bvhBounds, node, bd) || bd > best) continue;
+    uvec2 info = uTexelFetch1D(occluders.bvhContents, node).xy;
+    if (bool(info.x & 0xffff0000u)) {
+      uint end = info.y + (info.x & 0x0000ffffu);
+      for (uint i = info.y; i < end; i++) {
+        uvec3 ind = uTexelFetch1D(occluders.index, i).xyz;
+        vec3 bc, tn;
+        float t, sd;
+        if (intersectsTriangle(o, d, texelFetch1D(occluders.position, ind.x).xyz, texelFetch1D(occluders.position, ind.y).xyz, texelFetch1D(occluders.position, ind.z).xyz, bc, tn, t, sd) && t > 0.0 && t < best) best = t;
+      }
+      if (best < 0.5 * far) return best;
+    } else {
+      bool forward = d[info.x & 0x0000ffffu] >= 0.0;
+      uint left = node + 1u, right = node + info.y;
+      pointer++;
+      stack[pointer] = forward ? right : left;
+      pointer++;
+      stack[pointer] = forward ? left : right;
+    }
+  }
+  return best;
+}
+
+void main() {
+  vec4 c = texelFetch(corr, ivec2(gl_FragCoord.xy), 0);
+  if (c.a < 0.5) { gl_FragColor = vec4(0.0); return; }
+  uvec3 ind = uTexelFetch1D(bvh.index, uint(c.a - 0.5)).xyz;
+  vec3 bc = vec3(1.0 - c.x - c.y, c.x, c.y);
+  vec3 pa = texelFetch1D(bvh.position, ind.x).xyz, pb = texelFetch1D(bvh.position, ind.y).xyz, pc = texelFetch1D(bvh.position, ind.z).xyz;
+  vec3 p = bc.x * pa + bc.y * pb + bc.z * pc;
+  vec3 ns = normalize(bc.x * texelFetch1D(srcNormal, ind.x).xyz + bc.y * texelFetch1D(srcNormal, ind.y).xyz + bc.z * texelFetch1D(srcNormal, ind.z).xyz);
+  vec3 ng = cross(pb - pa, pc - pa);
+  ng = dot(ng, ng) > 0.0 ? normalize(ng) : ns;
+  if (dot(ng, ns) < 0.0) ng = -ng;
+  // The side the result shows, should the original face the other way there.
+  if (dot(ns, vRay) < 0.0) { ns = -ns; ng = -ng; }
+  vec3 o = p + ng * bias;
+  ivec2 q = ivec2(gl_FragCoord.xy) & 3;
+  float j = float(BAYER[q.y * 4 + q.x]), shift = (j + 0.5) / 16.0, turn = ${glf(2 * Math.PI)} * fract(0.6180339887 * j);
+  float open = 0.0, total = 0.0, sky = 0.0, skyUp = 0.0;
+  for (int i = 0; i < ${OCCLUSION.dirs}; i++) {
+    float k = float(i) + shift, y = 1.0 - 2.0 * k / ${glf(OCCLUSION.dirs)}, r = sqrt(max(0.0, 1.0 - y * y)), a = ${glf(Math.PI * (3 - Math.sqrt(5)))} * k + turn;
+    vec3 d = vec3(cos(a) * r, y, sin(a) * r);
+    float s = ${glf(OCCLUSION.skyFloor)} + ${glf(1 - OCCLUSION.skyFloor)} * pow(max(y, 0.0), ${glf(OCCLUSION.skyPower)});
+    skyUp += max(y, 0.0) * s;
+    float w = dot(ns, d);
+    if (w <= 0.0) continue;
+    total += w;
+    if (dot(ng, d) <= 0.0) continue;
+    float v = smoothstep(0.5 * reach, reach, nearestHit(o, d, reach));
+    open += w * v;
+    sky += w * v * s;
+  }
+  gl_FragColor = vec4(total > 0.0 ? open / total : 1.0, sky / skyUp, octEncode(ns));
+}`;
+// Merges the interleaved sets: each texel takes the average of the 4 × 4 texels around it (one of every set) that hold a
+// texel of the same surface, judged by their normals, so neighbouring charts don't mix.
+const AO_MERGE_FS = /* glsl */`
+${OCT_GLSL}
+uniform sampler2D ao;
+uniform sampler2D corr;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy), size = textureSize(ao, 0);
+  if (texelFetch(corr, p, 0).a < 0.5) { gl_FragColor = vec4(0.0); return; }
+  vec4 c = texelFetch(ao, p, 0);
+  vec3 n = octDecode(c.zw);
+  vec2 sum = vec2(0.0);
+  float count = 0.0;
+  for (int dy = -2; dy <= 1; dy++) for (int dx = -2; dx <= 1; dx++) {
+    ivec2 t = p + ivec2(dx, dy);
+    if (t.x < 0 || t.y < 0 || t.x >= size.x || t.y >= size.y || texelFetch(corr, t, 0).a < 0.5) continue;
+    vec4 s = texelFetch(ao, t, 0);
+    if (dot(octDecode(s.zw), n) < 0.5) continue;
+    sum += s.xy;
+    count += 1.0;
+  }
+  gl_FragColor = vec4(sum / count, c.zw);
+}`;
+// The base colour with the occlusion in it (core.shadeOcclusion): darker where occluded and where the surface faces down,
+// a little lighter on open tops, with shadows keeping more of their colour than lightness (OKLab). aoK: the strength, and
+// the strength times the facing-down and lightening amounts.
+const SHADE_GLSL = /* glsl */`
+uniform sampler2D aoTex;
+uniform int aoUse;
+uniform vec3 aoK;
+float occlusionOf(float ao) { return clamp((${glf(OCCLUSION.open)} - ao) / ${glf(OCCLUSION.span)}, 0.0, 1.0); }
+vec3 linearToOklab(vec3 c) {
+  vec3 lms = pow(max(mat3(0.4122214708, 0.2119034982, 0.0883024619, 0.5363325363, 0.6806995451, 0.2817188376, 0.0514459929, 0.1073969566, 0.6299787005) * c, 0.0), vec3(1.0 / 3.0));
+  return mat3(0.2104542553, 1.9779984951, 0.0259040371, 0.793617785, -2.428592205, 0.7827717662, -0.0040720468, 0.4505937099, -0.808675766) * lms;
+}
+vec3 oklabToLinear(vec3 c) {
+  vec3 lms = mat3(1.0, 1.0, 1.0, 0.3963377774, -0.1055613458, -0.0894841775, 0.2158037573, -0.0638541728, -1.291485548) * c;
+  return mat3(4.0767416621, -1.2684380046, -0.0041960863, -3.3077115913, 2.6097574011, -0.7034186147, 0.2309699292, -0.3413193965, 1.707614701) * (lms * lms * lms);
+}
+vec3 shadeOcclusion(vec3 rgb, float ao, float sky) {
+  float occ = occlusionOf(ao);
+  float dark = clamp(1.0 - sky / ${glf(OCCLUSION.dark)}, 0.0, 1.0);
+  float lit = clamp((sky - ${glf(OCCLUSION.lit[0])}) / ${glf(OCCLUSION.lit[1] - OCCLUSION.lit[0])}, 0.0, 1.0) * (1.0 - occ) * (1.0 - occ);
+  float m = (1.0 - aoK.x * occ) * (1.0 - aoK.y * dark) * (1.0 + aoK.z * lit);
+  if (m == 1.0) return rgb;
+  vec3 lab = linearToOklab(max(rgb, 0.0));
+  float r = pow(max(m, 1e-6), 1.0 / 3.0), k = pow(r, m < 1.0 ? ${glf(OCCLUSION.chroma[0])} : ${glf(OCCLUSION.chroma[1])});
+  return clamp(oklabToLinear(vec3(lab.x * r, lab.yz * k)), 0.0, 1.0);
+}`;
+
 // Samples one source map at the matched point. mode 0: data as is, 1: colour (stored sRGB), 2: the normal map: the
 // original's surface normal there, bent by its own normal map when it has one (hasSrcMap), in the result's tangent space.
+// Without a source map, colours and data read 1. aoUse 1: the base colour takes the occlusion in (shadeOcclusion);
+// 2: the occlusion map, the source's own occlusion (if any) times the baked one.
 const MAP_FS = /* glsl */`${BAKE_GLSL}
+${SHADE_GLSL}
 uniform sampler2D corr;
 uniform sampler2D srcMap;
 uniform mat3 srcMatrix;
@@ -1345,7 +1495,13 @@ void main() {
   vec3 bc = vec3(1.0 - c.x - c.y, c.x, c.y);
   vec2 ta = texelFetch1D(srcUV, ind.x).xy, tb = texelFetch1D(srcUV, ind.y).xy, tc = texelFetch1D(srcUV, ind.z).xy;
   vec2 uv = (srcMatrix * vec3(bc.x * ta + bc.y * tb + bc.z * tc, 1.0)).xy;
-  vec4 s = hasSrcMap ? textureLod(srcMap, uv, 0.5 * log2(max(c.z * srcSize.x * srcSize.y, 1.0))) : vec4(0.5, 0.5, 1.0, 1.0);
+  vec4 s = hasSrcMap ? textureLod(srcMap, uv, 0.5 * log2(max(c.z * srcSize.x * srcSize.y, 1.0))) : vec4(1.0);
+  if (aoUse == 1) {
+    vec2 o = texelFetch(aoTex, ivec2(gl_FragCoord.xy), 0).xy;
+    s.rgb = shadeOcclusion(s.rgb, o.x, o.y);
+  } else if (aoUse == 2) {
+    s = vec4(vec3(s.r * (1.0 - aoK.x * occlusionOf(texelFetch(aoTex, ivec2(gl_FragCoord.xy), 0).x))), 1.0);
+  }
   if (mode == 2) {
     vec3 no = normalize(bc.x * texelFetch1D(srcNormal, ind.x).xyz + bc.y * texelFetch1D(srcNormal, ind.y).xyz + bc.z * texelFetch1D(srcNormal, ind.z).xyz);
     vec3 n = no;
@@ -1539,8 +1695,12 @@ const corrMat = bakeMaterial(UV_SPACE_VS, CORR_FS, { bvh: { value: null }, srcUV
 const mapMat = bakeMaterial(UV_SPACE_VS, MAP_FS, {
   bvh: { value: null }, srcUV: { value: null }, srcNormal: { value: null }, corr: { value: null }, srcMap: { value: null },
   srcMatrix: { value: new THREE.Matrix3() }, srcSize: { value: new THREE.Vector2() }, normalScale: { value: new THREE.Vector2(1, 1) }, mode: { value: 0 },
-  hasSrcMap: { value: true }, hasTangents: { value: false },
+  hasSrcMap: { value: true }, hasTangents: { value: false }, aoTex: { value: null }, aoUse: { value: 0 }, aoK: { value: new THREE.Vector3() },
 });
+const aoMat = bakeMaterial(UV_SPACE_VS, AO_FS, {
+  bvh: { value: null }, srcNormal: { value: null }, corr: { value: null }, occluders: { value: null }, reach: { value: 1 }, bias: { value: 0 },
+});
+const aoMergeMat = bakeMaterial(QUAD_VS, AO_MERGE_FS, { ao: { value: null }, corr: { value: null } });
 // Bound to srcMap for a normal map baked from the surface alone.
 const flatNormalTex = new THREE.DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1);
 flatNormalTex.needsUpdate = true;
@@ -1555,7 +1715,7 @@ const fillMat = bakeMaterial(QUAD_VS, FILL_FS, { corr: { value: null }, seeds: {
 const quadGeo = new THREE.BufferGeometry();
 quadGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
 const bakeScene = new THREE.Scene(), bakeCam = new THREE.Camera();
-const bake = { size: 0, corr: null, seedA: null, seedB: null, scratch: null, out: null, sources: new Map(), uv: null, normal: null, vis: null, visFrom: null };
+const bake = { size: 0, corr: null, seedA: null, seedB: null, scratch: null, out: null, sources: new Map(), uv: null, normal: null, vis: null, visFrom: null, occluders: null, ao: new Map() };
 
 function bakeTarget(size, type) {
   return new THREE.WebGLRenderTarget(size, size, { type, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false, generateMipmaps: false });
@@ -1573,6 +1733,10 @@ function ensureBakeTargets(size) {
 function resetBakeSources() {
   for (const s of bake.sources.values()) { s.struct.dispose(); if (s.geometry) s.geometry.dispose(); }
   bake.sources.clear();
+  if (bake.occluders) bake.occluders.dispose();
+  bake.occluders = null;
+  for (const a of bake.ao.values()) a.target.dispose();
+  bake.ao.clear();
   if (bake.uv) { bake.uv.dispose(); bake.normal.dispose(); }
   if (bake.vis) bake.vis.dispose();
   bake.uv = bake.normal = bake.vis = bake.visFrom = null;
@@ -1613,6 +1777,53 @@ function bakeSource(mi) {
   bake.sources.set(mi, src);
   return src;
 }
+// The whole original packed for the shader, which ambient occlusion casts its rays against: every material shades every
+// other. The one material's source when there is only one.
+function bakeOccluders() {
+  if (state.displayMats.length <= 1) return bakeSource(0).struct;
+  if (!bake.occluders) {
+    bake.occluders = new MeshBVHUniformStruct();
+    bake.occluders.updateFrom(state.orig.bvh);
+  }
+  return bake.occluders;
+}
+// Ambient occlusion for material mi's texels of a result (AO_FS), into a target that is kept while the result, its UVs
+// and the size stay the same, so changing the strength or where the occlusion goes doesn't cast the rays again. Each pass
+// takes as many rows as fit in about 25 ms of GPU time (reading back one of its texels waits for the GPU to get through
+// it), so the view keeps rendering. null when current() turns false on the way.
+const AO_PASS_MS = 25;
+const aoProbe = new Uint16Array(4);
+async function occlusionTarget(res, mi, mesh, src, current) {
+  const size = bake.size, key = `${objId(res.index)}|${objId(res.uvs)}|${size}|${objId(state.orig.bvh)}`, had = bake.ao.get(mi);
+  if (had && had.key === key) return had.target;
+  if (had) { had.target.dispose(); bake.ao.delete(mi); }
+  const raw = bakeTarget(size, THREE.HalfFloatType);
+  aoMat.uniforms.bvh.value = src.struct;
+  aoMat.uniforms.srcNormal.value = bake.normal;
+  aoMat.uniforms.corr.value = bake.corr.texture;
+  aoMat.uniforms.occluders.value = bakeOccluders();
+  aoMat.uniforms.reach.value = OCCLUSION.reach * state.size;
+  aoMat.uniforms.bias.value = OCCLUSION.bias * state.size;
+  let rows = Math.max(2, Math.round((8 * 1024) / size));
+  for (let y = 0; y < size;) {
+    const n = Math.min(rows, size - y), t0 = performance.now();
+    bakePass(aoMat, raw, mesh, [y, n]);
+    renderer.readRenderTargetPixels(raw, 0, y, 1, 1, aoProbe);
+    const ms = Math.max(1, performance.now() - t0);
+    y += n;
+    rows = Math.max(1, Math.min(size, Math.round(n * Math.min(2, Math.max(0.5, AO_PASS_MS / ms)))));
+    // A hidden page draws nothing, so there is no frame to wait for (and its timers are slowed to one a second).
+    await (document.hidden ? yieldTask() : nextFrame());
+    if (!current()) { raw.dispose(); return null; }
+  }
+  const target = bakeTarget(size, THREE.HalfFloatType);
+  aoMergeMat.uniforms.ao.value = raw.texture;
+  aoMergeMat.uniforms.corr.value = bake.corr.texture;
+  bakePass(aoMergeMat, target);
+  raw.dispose();
+  bake.ao.set(mi, { key, target });
+  return target;
+}
 const clearColor = new THREE.Color();
 // One pass into a bake target; band = [first row, rows] limits it to part of the target so a heavy pass can be
 // spread over frames.
@@ -1636,9 +1847,13 @@ const imageSize = img => [img.naturalWidth || img.width || 1, img.naturalHeight 
 // What each material gets baked: its loaded maps, and a normal map from the original's surface when that's on (not for
 // unlit materials, which have no normal map). normalsOnly: a result that kept the original UVs keeps its maps and only
 // gets the normal map.
+// Ambient occlusion goes into the base colour (made for a material that has none) or into an occlusion map of its own,
+// for new UVs only.
 const bakeJobs = (normalsOnly = false) => state.displayMats.map((m, mi) => {
   const slots = normalsOnly ? [] : MAP_SLOTS.filter(slot => loadedMap(m, slot));
   if (settings.bakeNormals && 'normalMap' in m && !slots.includes('normalMap')) slots.push('normalMap');
+  const ao = normalsOnly ? null : { base: 'map', map: 'aoMap' }[settings.occlusion];
+  if (ao && ao in m && !slots.includes(ao)) slots.push(ao);
   return { mi, slots };
 }).filter(j => j.slots.length);
 function prewarmBakeSources() {
@@ -1798,6 +2013,10 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
         bakePass(jfaStepMat, b);
         [a, b] = [b, a];
       }
+      const aoSlot = normalsOnly ? null : { base: 'map', map: 'aoMap' }[settings.occlusion];
+      const ao = aoSlot && job.slots.includes(aoSlot) ? await occlusionTarget(res, job.mi, mesh, src, current) : null;
+      if (!current()) return null;
+      const strength = settings.occlusionStrength;
       for (const slot of job.slots) {
         // A material without a normal map of its own takes the one made from its base colour, if detail is on.
         const own = loadedMap(state.displayMats[job.mi], slot);
@@ -1811,7 +2030,10 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
         mapMat.uniforms.srcMatrix.value.copy(tex ? tex.matrix : new THREE.Matrix3());
         mapMat.uniforms.srcSize.value.set(...(tex ? imageSize(tex.image) : [1, 1]));
         mapMat.uniforms.normalScale.value.copy(own && state.displayMats[job.mi].normalScale ? state.displayMats[job.mi].normalScale : new THREE.Vector2(1, 1));
-        mapMat.uniforms.mode.value = slot === 'normalMap' ? 2 : tex.colorSpace === THREE.SRGBColorSpace ? 1 : 0;
+        mapMat.uniforms.mode.value = slot === 'normalMap' ? 2 : (tex ? tex.colorSpace === THREE.SRGBColorSpace : slot === 'map') ? 1 : 0;
+        mapMat.uniforms.aoUse.value = ao && slot === aoSlot ? (slot === 'map' ? 1 : 2) : 0;
+        mapMat.uniforms.aoTex.value = ao ? ao.texture : null;
+        mapMat.uniforms.aoK.value.set(strength, strength * OCCLUSION.form, strength * OCCLUSION.lift);
         bakePass(mapMat, bake.scratch, mesh);
         fillMat.uniforms.corr.value = bake.corr.texture;
         fillMat.uniforms.seeds.value = a.texture;
@@ -1820,7 +2042,7 @@ async function bakeResultAsync(res, info, current, normalsOnly = false) {
         bakePass(fillMat, bake.out);
         const data = await renderer.readRenderTargetPixelsAsync(bake.out, 0, 0, size, size, new Uint8Array(size * size * 4));
         if (!current()) return null;
-        out.maps.push({ mi: job.mi, slot, data, colorSpace: own && own.colorSpace === THREE.SRGBColorSpace ? THREE.SRGBColorSpace : THREE.NoColorSpace, detail: !own && !!tex });
+        out.maps.push({ mi: job.mi, slot, data, colorSpace: (own ? own.colorSpace === THREE.SRGBColorSpace : slot === 'map') ? THREE.SRGBColorSpace : THREE.NoColorSpace, detail: !own && !!tex, occlusion: !!ao && slot === aoSlot });
       }
     } finally {
       geo.dispose();
@@ -3009,7 +3231,8 @@ function textureSummary() {
   if (!r || !i) return ['', '—'];
   if (r.uvLayout === 'pending') return state.texturing ? ['busy', 'new UVs · baking…'] : ['warn', 'new UVs not made yet'];
   const textured = bakeJobs().length > 0, normal = state.bake && state.bake.maps.some(x => x.slot === 'normalMap');
-  if (r.uvLayout === 'new') return state.bake ? ['', `new UVs · baked at ${state.bake.size} px${normal ? ' · normal map' : ''}`] : textured ? ['warn', 'new UVs · not baked'] : ['', 'new UVs'];
+  const occlusion = state.bake && state.bake.maps.some(x => x.occlusion) ? ` · occlusion${settings.occlusion === 'base' ? ' in the colour' : ' map'}` : '';
+  if (r.uvLayout === 'new') return state.bake ? ['', `new UVs · baked at ${state.bake.size} px${normal ? ' · normal map' : ''}${occlusion}`] : textured ? ['warn', 'new UVs · not baked'] : ['', 'new UVs'];
   const fit = i.uvFit, bad = fit && fit.misplaced > AUTO_UV_LIMIT, nm = normal ? ' · normal map' : '';
   return bad ? ['warn', `original UVs · ${(fit.misplaced * 100).toFixed(0)}% misplaced${nm}`] : ['', `original UVs · fits${nm}`];
 }
@@ -3031,8 +3254,9 @@ function uvStatus() {
     const a = i.atlas;
     const normal = state.bake && state.bake.maps.some(x => x.slot === 'normalMap'), detail = state.bake && state.bake.maps.some(x => x.detail);
     const baked = state.bake ? `${normal ? `The textures and a normal map of the original's surface${detail ? ', with detail from the base colour,' : ''} are` : 'The texture is'} baked onto them from the original at ${state.bake.size} px.` : textured ? 'The texture could not be baked.' : 'There is no texture to bake.';
+    const occluded = state.bake && state.bake.maps.some(x => x.occlusion) ? (settings.occlusion === 'base' ? 'The ambient occlusion of the original is baked into the base colour.' : 'The ambient occlusion of the original is baked into an occlusion map.') : '';
     const paint = a.style === 'paint' ? 'Laid out for painting: large charts with seams where they show least, upright, the lowest parts of the model at the bottom of the sheet.' : '';
-    return [state.bake || !textured ? 'ok' : 'warn', `New UVs · ${a.style === 'paint' ? 'paintable · ' : ''}${fmt(a.charts)} charts · ${pct(a.coverage)} of the sheet`, [why, paint, baked].filter(Boolean).join(' ')];
+    return [state.bake || !textured ? 'ok' : 'warn', `New UVs · ${a.style === 'paint' ? 'paintable · ' : ''}${fmt(a.charts)} charts · ${pct(a.coverage)} of the sheet`, [why, paint, baked, occluded].filter(Boolean).join(' ')];
   }
   const nm = state.bake && state.bake.maps.some(x => x.slot === 'normalMap') ? ` A normal map of the original's surface${state.bake.maps.some(x => x.detail) ? ', with detail from the base colour,' : ''} is baked into them at ${state.bake.size} px.`
     : state.texturing ? ' Baking a normal map of the original\'s surface into them…' : '';
@@ -3045,6 +3269,7 @@ function uvStatus() {
 }
 function updateUVPanel() {
   $('keepUVOpts').hidden = quadMode() || settings.uvMode === 'new';
+  $('aoNote').hidden = settings.occlusion === 'off' || !state.result || state.result.uvLayout !== 'original';
   updateExportPanel();
   // A bake that landed or started, or the normal map setting, changes the made normal map tiles.
   if ($('texList').dataset.made !== madeKey()) updateTexturePanel();
@@ -4088,6 +4313,11 @@ function syncControls() {
   $('colorDetailField').hidden = !settings.bakeNormals;
   if (document.activeElement !== $('colorDetail')) $('colorDetail').value = String(settings.colorDetail);
   $('colorDetailOut').textContent = settings.colorDetail > 0 ? `${Math.round(settings.colorDetail * 100)}%` : 'off';
+  pressSeg('aoSeg', 'ao', settings.occlusion);
+  $('aoStrengthField').hidden = settings.occlusion === 'off';
+  if (document.activeElement !== $('aoStrength')) $('aoStrength').value = String(settings.occlusionStrength);
+  $('aoStrengthOut').textContent = `${Math.round(settings.occlusionStrength * 100)}%`;
+  $('aoNote').hidden = settings.occlusion === 'off' || !state.result || state.result.uvLayout !== 'original';
   pressSeg('normalFormatSeg', 'nformat', settings.normalFormat);
   $('keepUVOpts').hidden = q || settings.uvMode === 'new';
   syncSymmetryUI();
@@ -4191,6 +4421,8 @@ bindCheck('quadThin', 'quadThin', () => scheduleReduce());
 bindRange('quadAdapt', 'quadAdapt', () => scheduleReduce());
 bindCheck('bakeNormals', 'bakeNormals', () => { refreshBake(); updateUVPanel(); updateExportPanel(); });
 bindRange('colorDetail', 'colorDetail', () => { refreshBake(); updateUVPanel(); });
+onSeg('aoSeg', 'ao', v => { if (settings.occlusion === v) return; settings.occlusion = v; refreshBake(); updateUVPanel(); updateExportPanel(); });
+bindRange('aoStrength', 'occlusionStrength', () => refreshBake());
 onSeg('normalFormatSeg', 'nformat', v => { settings.normalFormat = v; updateExportPanel(); });
 bindCheck('tintMirror', 'tintMirror', applyDisplaySettings);
 bindCheck('showPlane', 'showPlane', updatePlaneHelper);
@@ -4393,7 +4625,7 @@ window.addEventListener('keydown', e => {
 
 window.__polyBudget = {
   openFiles, setMaterialTexture, settings, exportModel, buildExport, engine, pick, camera, controls, requestRender, rects, viewport, undo, redo,
-  docs, activate, openTab, closeDoc, newDoc, uvView, renderUV, setUVOpen,
+  docs, activate, openTab, closeDoc, newDoc, uvView, renderUV, setUVOpen, bake, renderer,
   get state() { return state; }, get doc() { return doc; },
 };
 

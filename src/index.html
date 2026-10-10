@@ -850,6 +850,13 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
       <label class="check"><input type="checkbox" id="bakeNormals"><span>Normal map from the original<small>Bakes the original's surface detail into a normal map, in the tangent space Unity, Unreal, Blender and Godot use. With the original UVs kept, it takes the place of the model's own normal map</small></span></label>
       <label class="field" id="colorDetailField"><span>Detail from the base colour <output id="colorDetailOut"></output></span><input type="range" id="colorDetail" min="0" max="1" step="0.05" aria-label="Detail from the base colour" title="For materials that come without a normal map: embosses the base colour's fine painted detail into the baked normal map"></label>
+      <div class="field" id="aoField"><span>Ambient occlusion</span>
+        <div class="seg fill" role="group" aria-label="Ambient occlusion" id="aoSeg">
+          <button type="button" data-ao="off" title="No ambient occlusion">Off</button><button type="button" data-ao="base" title="Baked into the base colour, measured on the original: creases, folds and the undersides of overhangs darken, surfaces facing down a little too, and shadows keep their colour. The depth shows with any lighting, or none">In base colour</button><button type="button" data-ao="map" title="An occlusion map of its own, measured on the original, for materials and engines that read one (glTF, Unity's Lit shaders, Unreal). New UVs only">Separate map</button>
+        </div>
+      </div>
+      <label class="field" id="aoStrengthField"><span>Occlusion strength <output id="aoStrengthOut"></output></span><input type="range" id="aoStrength" min="0.1" max="1" step="0.05" aria-label="Occlusion strength" title="How dark the most occluded spots get: at 100% the deepest creases go to black"></label>
+      <p class="note" id="aoNote" hidden>Ambient occlusion is baked onto new UVs only; this result keeps the original UVs.</p>
       <details class="sub" id="keepUVOpts" data-sec="uvopts"><summary>Original UV options</summary>
         <div class="subbody">
           <label class="check"><input type="checkbox" id="permissive"><span>Allow collapsing across seams<small>Reaches lower counts with the original UVs, but the texture can smear at seams</small></span></label>

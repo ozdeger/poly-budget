@@ -1257,6 +1257,87 @@ export async function bakeReach(mesh, triEnd, dist, lo, hi, pause = null) {
   return out;
 }
 
+// ---------- ambient occlusion ----------
+// The bake's ambient occlusion, measured on the original at the spot each texel matches: the cosine-weighted share of the
+// directions over the surface that nothing in the model blocks. Each texel casts one set of directions spread evenly over
+// the sphere (a Fibonacci lattice), turned and shifted by one of 16 steps (interleaved sampling: a 4 × 4 Bayer pattern
+// gives every block of 4 × 4 texels all 16), and a 4 × 4 average over the texels of the same surface then merges them: as
+// smooth as 16 times the directions, without the streaks one fixed set leaves where an occluder's edge crosses its
+// directions. Occluders count fully up to half the reach and fade out at the reach. A second sum weights the directions
+// from above more, like light from a sky: the base colour uses it to darken surfaces that face down. The shaders in
+// app.js are built from these numbers.
+export const OCCLUSION = {
+  dirs: 64, // directions over the whole sphere per texel; about half face out of any surface
+  reach: 0.5, // how far occluders count, of the model's size
+  bias: 2e-4, // how far off the surface rays start, of the model's size
+  open: 0.95, span: 0.6, // occlusion 0 where AO ≥ open, 1 where AO ≤ open − span
+  skyFloor: 0.15, skyPower: 1.5, // sky weight of a direction: skyFloor + (1 − skyFloor)·max(up, 0)^skyPower
+  dark: 0.6, // surfaces seeing less sky than this darken
+  lit: [0.45, 0.85], // open surfaces seeing this much sky and more lighten
+  form: 0.6, lift: 0.2, // at full strength: occlusion darkens fully, facing down by form, open tops lighten by lift
+  chroma: [0.45, 0.3], // chroma follows lightness by these powers when darkening and when lightening (OKLab)
+};
+export const OCCLUSION_BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+// Direction i of interleaved set j (0–15): the lattice shifted by (j + 0.5) / 16 of a step and turned about the up axis.
+export function occlusionDirection(i, n = OCCLUSION.dirs, j = 7.5) {
+  const k = i + (j + 0.5) / 16, y = 1 - (2 * k) / n, r = Math.sqrt(Math.max(0, 1 - y * y)), a = GOLDEN_ANGLE * k + 2 * Math.PI * frac(0.6180339887 * j);
+  return [Math.cos(a) * r, y, Math.sin(a) * r];
+}
+const frac = x => x - Math.floor(x);
+export const skyWeight = up => OCCLUSION.skyFloor + (1 - OCCLUSION.skyFloor) * Math.max(up, 0) ** OCCLUSION.skyPower;
+const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+// { ao, sky } at a spot with shading normal ns and face normal ng (both on the side the result shows), from interleaved set
+// j, as the shader works them out. hit(d) is how far a ray from just off the spot along d meets the model (Infinity when
+// it doesn't). Directions below the face itself count as blocked. The sky sum is divided by what an open surface facing
+// straight up would get from the same set.
+export function ambientOcclusion(ns, ng, hit, reach, n = OCCLUSION.dirs, j = 7.5) {
+  let open = 0, total = 0, sky = 0, skyUp = 0;
+  for (let i = 0; i < n; i++) {
+    const d = occlusionDirection(i, n, j), w = ns[0] * d[0] + ns[1] * d[1] + ns[2] * d[2];
+    if (d[1] > 0) skyUp += d[1] * skyWeight(d[1]);
+    if (w <= 0) continue;
+    total += w;
+    if (ng[0] * d[0] + ng[1] * d[1] + ng[2] * d[2] <= 0) continue;
+    const v = smoothstep(0.5 * reach, reach, Math.min(hit(d), reach));
+    open += w * v;
+    sky += w * v * skyWeight(d[1]);
+  }
+  return { ao: total > 0 ? open / total : 1, sky: sky / skyUp };
+}
+// The 16 interleaved sets averaged, as a block of 4 × 4 texels on one surface ends up after the merge.
+export function ambientOcclusionMerged(ns, ng, hit, reach, n = OCCLUSION.dirs) {
+  let ao = 0, sky = 0;
+  for (let j = 0; j < 16; j++) { const r = ambientOcclusion(ns, ng, hit, reach, n, j); ao += r.ao / 16; sky += r.sky / 16; }
+  return { ao, sky };
+}
+// How occluded a spot reads, 0 (open) to 1.
+export const occlusionOf = ao => Math.min(1, Math.max(0, (OCCLUSION.open - ao) / OCCLUSION.span));
+// The separate occlusion map's value at strength s (0–1): 1 where open, down to 1 − s where fully occluded.
+export const occlusionMapValue = (ao, s) => 1 - s * occlusionOf(ao);
+// The base colour with the occlusion in it, at strength s: a linear RGB colour (0–1) darkened where the spot is occluded
+// and where it faces down, and lightened a little on open surfaces that face up. Shadows keep more of their colour than a
+// plain multiply would (chroma falls slower than lightness), so they read deep instead of grey.
+export function shadeOcclusion(rgb, ao, sky, s) {
+  const O = OCCLUSION, occ = occlusionOf(ao);
+  const dark = Math.min(1, Math.max(0, 1 - sky / O.dark)), lit = Math.min(1, Math.max(0, (sky - O.lit[0]) / (O.lit[1] - O.lit[0]))) * (1 - occ) ** 2;
+  const m = (1 - s * occ) * (1 - s * O.form * dark) * (1 + s * O.lift * lit);
+  if (m === 1) return rgb.slice();
+  const lab = linearToOklab(rgb), r = Math.cbrt(Math.max(m, 1e-6)), c = r ** (m < 1 ? O.chroma[0] : O.chroma[1]);
+  return oklabToLinear([lab[0] * r, lab[1] * c, lab[2] * c]).map(v => Math.min(1, Math.max(0, v)));
+}
+// OKLab (Ottosson 2020) from and to linear sRGB.
+export function linearToOklab([r, g, b]) {
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+}
+export function oklabToLinear([L, a, b]) {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3, m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3, s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s];
+}
+
 // ---------- new UVs ----------
 // Linear texel density per painted label, so More ×2/×4/×8 areas also get 2/4/8× the texels.
 const TEXEL_DENSITY = { 0: 1, 1: Math.SQRT2, 2: 2, 3: 2 * Math.SQRT2, '-1': Math.SQRT1_2, '-2': 0.5, '-3': 0.5 * Math.SQRT1_2, 100: 2 * Math.SQRT2, 50: 1, '-100': 0.5 * Math.SQRT1_2 };

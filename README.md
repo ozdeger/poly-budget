@@ -46,6 +46,8 @@ Every model needs a different budget, so the slider tells you. **Red** is too fe
 
 Every texture the model has is carried onto the new one, and a normal map is made from the original's surface, so folds, strands and fine carving still show on a light mesh. That works even for models that never came with a normal map.
 
+Want more depth? Turn on **ambient occlusion** and the original's creases, folds and overhangs are baked in as well, into the colour itself or as an occlusion map of its own.
+
 ![The remesh in clay, showing the detail of its baked normal map, beside the Texture and UVs panel with the normal map](docs/images/normal-map.jpg)
 
 ## UVs artists can paint
@@ -65,7 +67,7 @@ Choose **Paintable** and the texture layout comes in a few large, upright pieces
 
 <img src="docs/images/export.jpg" alt="The Export panel listing the files in the zip: the model, its baked colour and normal maps, and a UV layout sheet" width="300" align="right">
 
-Download a zip with your model as **FBX**, **OBJ** or **GLB**, its textures, and a normal map that looks right in Unity, Unreal, Blender and Godot. The panel shows every file before you download it.
+Download a zip with your model as **FBX**, **OBJ** or **GLB**, its textures, a normal map that looks right in Unity, Unreal, Blender and Godot, and an occlusion map if you want one. The panel shows every file before you download it.
 
 Poly Budget opens **FBX**, **glTF/GLB**, **OBJ**, **STL** and **PLY** files, with **PNG**, **JPG**, **WebP**, **TGA**, **BMP** or **GIF** textures. It runs in a current Chrome, Edge, Firefox or Safari on your desktop.
 
