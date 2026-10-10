@@ -2,6 +2,8 @@ import { MeshoptSimplifier } from 'https://cdn.jsdelivr.net/npm/meshoptimizer@1.
 import { packAttributes, runReduction, mirrorOriginal, unwrapResult } from './core.js';
 import { computeVisibility } from './visibility.js';
 import { formDensity } from './quad.js';
+import * as RIG from './rig.js';
+import * as SKIN from './skin.js';
 
 // One context per tab: the welded mesh, its packed attributes and the caches runReduction keeps.
 const ctxs = new Map();
@@ -27,6 +29,15 @@ self.onmessage = async ({ data }) => {
     if (data.type === 'resultVisibility') {
       const { vis } = computeVisibility(data.mesh, { rays: data.rays });
       self.postMessage({ type: 'resultVisibility', id: data.id, vis }, [vis.buffer]);
+      return;
+    }
+    // Rigging: a skeleton found on the result (unless one is given) and its weights by bone heat.
+    if (data.type === 'rig') {
+      const placed = data.rig ? { rig: data.rig, report: null } : RIG.placeHumanoid(data.mesh, data.opt || {});
+      const heat = SKIN.boneHeat(data.mesh, placed.rig, data.joints ? { joints: data.joints, W: data.W } : {});
+      const g = heat.groups;
+      self.postMessage({ type: 'rigged', id: data.id, rig: placed.rig, report: placed.report, W: heat.W, group: g.group, count: g.count, positions: g.positions, stats: heat.stats },
+        [heat.W.buffer, g.group.buffer, g.positions.buffer]);
       return;
     }
     if (data.type === 'unwrap') {

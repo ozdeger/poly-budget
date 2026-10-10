@@ -717,6 +717,28 @@ details.more[open] > summary { margin-bottom: 8px; }
 .empty-card .fine { font-size: 11.5px; color: var(--faint); }
 .empty-card .busy-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 0.9s ease-in-out infinite; }
 
+/* Each workspace shows its own sections and tools. */
+#app[data-space="rig"] #side > [data-space="shape"], #app:not([data-space="rig"]) #side > [data-space="rig"],
+#app[data-space="rig"] #toolPal, #app[data-space="rig"] #toolOpts, #app:not([data-space="rig"]) #rigPal, #app:not([data-space="rig"]) #rigOpts { display: none !important; }
+.space-bar { position: sticky; top: 0; z-index: 3; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.space-bar .seg button { gap: 6px; }
+.bone-tree { list-style: none; margin: 0; padding: 4px 0; max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raise); }
+.bone-tree:empty { display: none; }
+.bone-tree li { display: flex; align-items: center; gap: 7px; padding: 3px 10px 3px calc(10px + var(--d, 0) * 11px); cursor: pointer; font: 12px/1.35 var(--font-num); white-space: nowrap; }
+.bone-tree li:hover { background: color-mix(in srgb, var(--line) 60%, transparent); }
+.bone-tree li.sel { background: var(--accent-soft); color: var(--accent); }
+.bone-tree li.end { color: var(--faint); }
+.jname { overflow: hidden; text-overflow: ellipsis; }
+.jdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #e9e2d6; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25); }
+.jdot.L { background: #5a96ff; }
+.jdot.R { background: #ff6262; }
+.jdot.est { background: var(--accent); }
+.bone-props { display: flex; flex-direction: column; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); }
+.bone-props .row { justify-content: space-between; }
+.note.warn { color: var(--warn); }
+.toolopts .check { align-items: center; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.toolopts .check input { margin: 0; }
+
 @media (max-width: 1180px) {
   .stagebar kbd { display: none; }
 }
@@ -794,6 +816,11 @@ details.more[open] > summary { margin-bottom: 8px; }
   </div>
 
   <aside class="side" id="side" aria-label="Model and settings">
+    <div class="space-bar">
+      <div class="seg fill" role="group" aria-label="Workspace" id="spaceSeg">
+        <button type="button" data-space="shape" title="Budget, paint and texture (R)">Shape</button><button type="button" data-space="rig" title="Skeleton and weights, for animation (R)">Rig</button>
+      </div>
+    </div>
     <section class="sec" aria-labelledby="hModel">
       <div class="sec-head"><h2 id="hModel">Model</h2><span class="sec-meta" id="modelKind"></span></div>
       <div class="model-name" id="modelName">No model</div>
@@ -803,7 +830,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       <details class="more" id="meshDetails" data-sec="meshinfo"><summary>Mesh details</summary><dl class="stats" id="modelStats"></dl></details>
     </section>
 
-    <section class="sec" aria-labelledby="hBudget" data-needs-model>
+    <section class="sec" aria-labelledby="hBudget" data-space="shape" data-needs-model>
       <div class="sec-head"><h2 id="hBudget">Budget</h2>
         <div class="seg topo" role="group" aria-label="Output" id="topoSeg">
           <button type="button" data-topo="tris" title="Reduce the model's own triangles (Q)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 20.5 19h-17z"/></svg>Triangles</button><button type="button" data-topo="quads" title="Rebuild the surface as quads that follow its shape (Q)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="1"/><path d="M12 4.5v15M4.5 12h15"/></svg>Quads</button>
@@ -831,7 +858,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
     </section>
 
-    <section class="sec" id="secTex" aria-labelledby="hUV" data-needs-model>
+    <section class="sec" id="secTex" aria-labelledby="hUV" data-space="shape" data-needs-model>
       <div class="sec-head"><h2 id="hUV">Texture</h2><button type="button" class="btn small" id="addTexBtn" title="Add texture files; they are matched to materials by name">Add textures…</button></div>
       <ul class="mats" id="texList"></ul>
       <input type="file" id="texInput" multiple hidden accept=".png,.jpg,.jpeg,.webp,.tga,.bmp,.gif">
@@ -869,7 +896,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       </details>
     </section>
 
-    <section class="sec" aria-labelledby="hSym" data-needs-model>
+    <section class="sec" aria-labelledby="hSym" data-space="shape" data-needs-model>
       <div class="sec-head"><h2 id="hSym">Symmetry</h2><label class="switch" title="Mirror across a plane"><input type="checkbox" id="symOn" role="switch" aria-label="Mirror across a plane"><span></span></label></div>
       <p class="note" id="symIntro">Reduce one half and mirror it, so every vertex has an exact partner on the other side.</p>
       <div class="symbody" id="symBody">
@@ -893,7 +920,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
     </section>
 
-    <section class="sec" id="secHidden" aria-labelledby="hHidden" data-needs-model>
+    <section class="sec" id="secHidden" aria-labelledby="hHidden" data-space="shape" data-needs-model>
       <div class="sec-head"><h2 id="hHidden">Hidden areas</h2><label class="switch" title="Spend less on surface that is hard to see"><input type="checkbox" id="hiddenOn" role="switch" aria-label="Spend less on hidden areas"><span></span></label></div>
       <p class="note">Crevices and covered surface get fewer triangles, judged by how much of the view from all sides reaches them. Painted areas keep their paint; the Normal detail brush keeps an area out. Turn it off for rooms and other models seen from inside.</p>
       <div class="hiddenbody" id="hiddenBody">
@@ -905,7 +932,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       </div>
     </section>
 
-    <details class="sec" id="secQuads" data-sec="quads" data-needs-model hidden>
+    <details class="sec" id="secQuads" data-sec="quads" data-space="shape" data-needs-model hidden>
       <summary><h2>Remeshing</h2><span class="sum-meta" id="quadsMeta"></span></summary>
       <p class="note">Rebuilds the surface as quads whose edges follow its shape, and bakes the texture onto new UVs. Paint More or Less detail to change the quad size there; Keep asks for the smallest quads.</p>
       <label class="field"><span>Follow the shape <output id="quadAdaptOut"></output></span><input type="range" id="quadAdapt" min="0" max="1" step="0.05" aria-label="Follow the shape" title="Quads sized and stretched by the shape: long along chains, straps, strands and folds with more edges around them, big and square where the surface is flat. Higher follows the shape more closely but adds poles."></label>
@@ -914,7 +941,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       <label class="check"><input type="checkbox" id="prune2"><span>Remove tiny floating parts<small>Otherwise every separate piece keeps at least a few quads</small></span></label>
     </details>
 
-    <details class="sec" id="secReduce" data-sec="reduce" data-needs-model>
+    <details class="sec" id="secReduce" data-sec="reduce" data-space="shape" data-needs-model>
       <summary><h2>Reduction options</h2></summary>
       <label class="field"><span>Stop early at error</span>
         <select id="maxErr">
@@ -937,7 +964,7 @@ details.more[open] > summary { margin-bottom: 8px; }
       <label class="check"><input type="checkbox" id="prune"><span>Remove tiny floating parts</span></label>
     </details>
 
-    <details class="sec" id="secNormals" data-sec="normals" data-needs-model>
+    <details class="sec" id="secNormals" data-sec="normals" data-space="shape" data-needs-model>
       <summary><h2>Normals</h2><span class="sum-meta" id="normalsMeta"></span></summary>
       <div class="seg fill" role="group" aria-label="Normals" id="normalsSeg">
         <button type="button" data-normals="original">Original</button><button type="button" data-normals="smooth">Smooth</button><button type="button" data-normals="crease">Creased</button>
@@ -945,12 +972,47 @@ details.more[open] > summary { margin-bottom: 8px; }
       <label class="field" id="creaseField"><span>Crease angle <output id="creaseOut"></output></span><input type="range" id="creaseAngle" min="10" max="90" step="1"></label>
     </details>
 
-    <details class="sec" id="secWeld" data-sec="weld" data-needs-model>
+    <details class="sec" id="secWeld" data-sec="weld" data-space="shape" data-needs-model>
       <summary><h2>Welding</h2></summary>
       <p class="note">Files often store a separate copy of each vertex per triangle corner. Decimators can't collapse those, so they're merged first. Normals further apart than the hard edge angle stay split. Keep the merge distance low: a large one joins separate surfaces that come close, which blocks the reduction and shows as seams.</p>
       <label class="field"><span>Hard edge angle <output id="hardOut"></output></span><input type="range" id="hardAngle" min="0" max="90" step="1"></label>
       <label class="field"><span>Merge distance <output id="tolOut"></output></span><input type="range" id="weldTol" min="0" max="100" step="1"></label>
     </details>
+
+    <section class="sec" id="secRig" aria-labelledby="hRig" data-space="rig" data-needs-model>
+      <div class="sec-head"><h2 id="hRig">Skeleton</h2><button type="button" class="btn small" id="rigClear" title="Remove the skeleton (it can be undone)">Clear</button></div>
+      <div class="status-line" id="rigStatus"><b id="rigHead"></b><span id="rigNote"></span></div>
+      <div class="field"><span>Fingers</span>
+        <div class="seg fill" role="group" aria-label="Fingers" id="rigFingerSeg">
+          <button type="button" data-fingers="auto" title="Three joints per finger where the hands have them apart, none on mittens">Auto</button><button type="button" data-fingers="full" title="Three joints per finger always: laid out by a hand's proportions where they can't be seen">Always</button><button type="button" data-fingers="none" title="Hands without finger joints">None</button>
+        </div>
+      </div>
+      <div class="field"><span>Joint names</span>
+        <div class="seg fill" role="group" aria-label="Joint names" id="rigNameSeg">
+          <button type="button" data-naming="mixamo" title="Mixamo's names (Hips, LeftArm, …): Unity's Humanoid, Godot's humanoid profile and Blender map them on their own">Mixamo</button><button type="button" data-naming="unreal" title="Unreal's mannequin names (pelvis, upperarm_l, …)">Unreal</button>
+        </div>
+      </div>
+      <button type="button" class="btn primary wide" id="rigAuto">Find the skeleton</button>
+      <button type="button" class="btn wide" id="rigCustom" title="Start from a single root on the floor and add joints by clicking the model">Build your own</button>
+    </section>
+
+    <section class="sec" id="secBones" aria-labelledby="hBones" data-space="rig" data-needs-model>
+      <div class="sec-head"><h2 id="hBones">Bones</h2><span class="sec-meta" id="rigTreeMeta"></span></div>
+      <ul class="bone-tree" id="rigTree" aria-label="Joints"></ul>
+      <div class="bone-props" id="rigProps" hidden>
+        <label class="field"><span>Name</span><input class="input" id="rigName" type="text" autocomplete="off" spellcheck="false"></label>
+        <label class="field"><span>Parent</span><select id="rigParent"></select></label>
+        <label class="check"><input type="checkbox" id="rigDeform"><span>Moves the mesh<small>Off for end joints and helpers that only mark a place</small></span></label>
+        <p class="note" id="rigPlaced"></p>
+        <div class="row"><button type="button" class="btn small" id="rigDelete" title="Delete the joint (Delete); what hangs from it moves up to its parent">Delete joint</button></div>
+      </div>
+    </section>
+
+    <section class="sec" id="secWeights" aria-labelledby="hWeights" data-space="rig" data-needs-model>
+      <div class="sec-head"><h2 id="hWeights">Weights</h2><label class="switch" title="Show the weights on the model"><input type="checkbox" id="rigShowWeights" role="switch" aria-label="Show the weights on the model"><span></span></label></div>
+      <div class="status-line" id="rigWStatus"><b id="rigWHead"></b><span id="rigWNote"></span></div>
+      <button type="button" class="btn wide" id="rigReweight" title="Bone heat: each joint's weight spreads over the surface from the parts that see it nearest">Work out the weights again</button>
+    </section>
   </aside>
 
   <main class="stage" id="stage">
@@ -980,6 +1042,19 @@ details.more[open] > summary { margin-bottom: 8px; }
         <span class="pal-sep" aria-hidden="true"></span>
         <button type="button" class="palbtn" id="showPaintBtn" aria-label="Show paint" aria-pressed="true"><svg class="on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><path d="m4 4 16 16"/></svg></button>
         <button type="button" class="palbtn" id="clearBtn" title="Clear all paint" aria-label="Clear all paint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="m6 7 1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg></button>
+      </div>
+      <div class="toolpal" id="rigPal" role="toolbar" aria-label="Rig tools" aria-orientation="vertical" hidden>
+        <button type="button" class="tool" data-rigtool="orbit" title="Orbit (O)" aria-label="Orbit"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(-24 12 12)"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+        <button type="button" class="tool" data-rigtool="select" title="Move joints (V)" aria-label="Move joints"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4l13 6-5.5 1.8L10.7 17z"/><circle cx="17.5" cy="17.5" r="2.5"/></svg></button>
+        <button type="button" class="tool" data-rigtool="add" title="Add joints (J)" aria-label="Add joints"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.5" cy="17.5" r="2.5"/><path d="M8.3 15.7 14 10"/><circle cx="15.5" cy="8.5" r="2"/><path d="M19 15v6M16 18h6"/></svg></button>
+        <span class="pal-sep" aria-hidden="true"></span>
+        <button type="button" class="palbtn" id="rigUndo" aria-label="Undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H12"/></svg></button>
+        <button type="button" class="palbtn" id="rigRedo" aria-label="Redo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H12"/></svg></button>
+      </div>
+      <div class="toolopts" id="rigOpts" hidden>
+        <span class="opt-name" id="rigOptName"></span>
+        <label class="check" title="A dragged joint settles halfway through the limb under the pointer, so it stays inside the body from any view"><input type="checkbox" id="rigCentre"><span>Middle of the limb</span></label>
+        <label class="check" title="Joints on one side move their mirror image on the other, and joints on the mirror plane stay on it"><input type="checkbox" id="rigMirror"><span>Mirror</span></label>
       </div>
       <div class="toolpal renderpal" id="renderPal" role="toolbar" aria-label="Display" aria-orientation="vertical">
         <div class="palgroup" role="group" aria-label="Shading" id="shadeSeg">

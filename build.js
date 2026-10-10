@@ -21,12 +21,13 @@ const namespaced = (file, ns) => {
 const rigging = `${namespaced('./src/rig.js', 'RIG')}\n${namespaced('./src/skin.js', 'SKIN')}`;
 const collect = strip(read('./src/collect.js'));
 const app = read('./src/app.js');
-// The GLB writer's exporter import joins the page's imports.
+// The GLB writer's exporter import joins the page's imports, and so do the Rig workspace's.
 const glb = read('./src/glb.js');
+const rigui = read('./src/rigui.js');
 const libImports = src => (src.match(IMPORT) || []).filter(l => !/from '\.\//.test(l));
-const appImports = [...new Set([...libImports(app), ...libImports(glb)])].join('\n');
+const appImports = [...new Set([...libImports(app), ...libImports(glb), ...libImports(rigui)])].join('\n');
 const appBody = app.replace(IMPORT, '');
-const main = `${appImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${rigging}\n${collect}\n${strip(glb).replace(IMPORT, '')}\nconst FBX_TEMPLATE = ${read('./src/fbx_template.json')};\n${appBody}`;
+const main = `${appImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${rigging}\n${collect}\n${strip(glb).replace(IMPORT, '')}\n${strip(rigui).replace(IMPORT, '')}\nconst FBX_TEMPLATE = ${read('./src/fbx_template.json')};\n${appBody}`;
 const worker = read('./src/worker.js');
 const workerImports = (worker.match(IMPORT) || []).filter(l => !/from '\.\//.test(l)).join('\n');
 const workerSrc = `${workerImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${rigging}\n${worker.replace(IMPORT, '')}`;

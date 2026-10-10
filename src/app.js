@@ -16,6 +16,7 @@ import { collectScene } from './collect.js';
 import { glbBytes } from './glb.js';
 import { computeVisibility } from './visibility.js';
 import { formDensity } from './quad.js';
+import { initRig } from './rigui.js';
 
 const $ = id => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat('en-US');
@@ -46,6 +47,7 @@ const DEFAULTS = {
   view: 'split', shading: 'textured', wire: false, showOcclusion: true, showNormals: true, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
+  space: 'shape', rigTool: 'select', rigFingers: 'auto', rigNaming: 'mixamo', rigCentre: true, rigMirror: true, rigShowWeights: true, rigShowBones: true,
 };
 const settings = { ...DEFAULTS };
 // Only settings the tool still has are read back, so options removed since they were saved drop out. Settings saved while
@@ -95,7 +97,7 @@ function newDoc(saved = null) {
       meta: null, collected: null, welded: null, labels: null, result: null, info: null, engineMesh: null,
       orig: { bvh: null, index: null }, left: null, diag: 1, size: 1, undo: [], redo: [], strokeSnapshot: null, strokeChanged: false,
       painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
-      vis: null, visCurve: null, visStats: null, visJob: null, visFrac: 0, auto: null, detailMaps: new Map(), viewVariants: new Map(),
+      vis: null, visCurve: null, visStats: null, visJob: null, visFrac: 0, auto: null, detailMaps: new Map(), viewVariants: new Map(), rig: null,
     },
     symPlane: { axis: 0, offset: 0, fit: null, ready: false },
     session: { model: null, files: new Map(), ready: false },
@@ -171,6 +173,8 @@ sceneL.add(planeL);
 sceneR.add(planeR);
 
 const display = { L: null, R: null };
+// The Rig workspace (src/rigui.js), made at boot.
+let rigUI = null;
 const paintRGB = { more: [0, 0, 0], less: [0, 0, 0], keep: [0, 0, 0], plain: [0, 0, 0], hidden: [0, 0, 0] };
 const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
@@ -210,10 +214,11 @@ function requestRender() {
   renderQueued = true;
   requestAnimationFrame(render);
 }
+// The Rig workspace shows the reduced model alone: the skeleton goes on it, not on the original.
 function rects() {
-  const w = viewport.clientWidth, h = viewport.clientHeight;
-  if (settings.view === 'original') return { L: { x: 0, y: 0, w, h }, R: null, split: null };
-  if (settings.view === 'reduced') return { L: null, R: { x: 0, y: 0, w, h }, split: null };
+  const w = viewport.clientWidth, h = viewport.clientHeight, view = settings.space === 'rig' ? 'reduced' : settings.view;
+  if (view === 'original') return { L: { x: 0, y: 0, w, h }, R: null, split: null };
+  if (view === 'reduced') return { L: null, R: { x: 0, y: 0, w, h }, split: null };
   if (w >= h * 0.95) {
     const half = Math.floor(w / 2);
     return { L: { x: 0, y: 0, w: half, h }, R: { x: half, y: 0, w: w - half, h }, split: 'v' };
@@ -238,7 +243,7 @@ function render() {
   positionOverlays(r, w, h);
 }
 function positionOverlays(r, w, h) {
-  const opts = $('toolOpts'), pal = $('toolPal'), below = opts.hidden ? 0 : opts.offsetHeight + 10;
+  const rig = settings.space === 'rig', opts = $(rig ? 'rigOpts' : 'toolOpts'), pal = $(rig ? 'rigPal' : 'toolPal'), below = opts.hidden ? 0 : opts.offsetHeight + 10;
   // Labels move below the options bar, and right of the tool palette where they would sit behind it.
   const palTop = pal.hidden ? Infinity : pal.offsetTop - pal.offsetHeight / 2, palBottom = palTop + pal.offsetHeight;
   const place = (el, rc) => {
@@ -2453,6 +2458,7 @@ function buildReducedDisplay(res) {
   recolorReduced();
   applyDisplaySettings();
   refreshUVView();
+  if (rigUI) rigUI.onResult(res);
 }
 
 function applyDisplaySettings() {
@@ -2463,7 +2469,8 @@ function applyDisplaySettings() {
   for (const [d, side] of [[display.L, 'L'], [display.R, 'R']]) {
     if (!d) continue;
     d.surface.material = state.displayMats.length ? surfaceMaterials(side) : [clayMat];
-    d.paint.visible = settings.showPaint;
+    // In the Rig workspace the overlay shows the weights instead of the paint.
+    d.paint.visible = settings.space === 'rig' && rigUI ? side === 'R' && rigUI.paintVisible() : settings.showPaint;
     d.wire.visible = settings.wire && d.tris <= 800000;
     d.tint.visible = tint;
   }
@@ -2895,7 +2902,7 @@ function syncSymmetryUI() {
 
 let moveQueued = null;
 canvas.addEventListener('pointerdown', e => {
-  if (settings.tool === 'orbit' || e.button !== 0 || !(state.left && state.left.bvh)) return;
+  if (settings.space === 'rig' || settings.tool === 'orbit' || e.button !== 0 || !(state.left && state.left.bvh)) return;
   const hit = pick(e.clientX, e.clientY);
   if (!hit) return;
   e.preventDefault();
@@ -2907,7 +2914,7 @@ canvas.addEventListener('pointerdown', e => {
   paintAt(hit.point);
 });
 canvas.addEventListener('pointermove', e => {
-  if (settings.tool === 'orbit' || !(state.left && state.left.bvh)) return;
+  if (settings.space === 'rig' || settings.tool === 'orbit' || !(state.left && state.left.bvh)) return;
   const first = !moveQueued;
   moveQueued = { x: e.clientX, y: e.clientY };
   if (!first) return;
@@ -3560,6 +3567,7 @@ function exportPlan() {
   const base = sanitize((state.meta.name || 'model').replace(/\.[^.]+$/, ''));
   const stem = exportStem(base, res), ext = settings.format;
   const files = ext === 'obj' ? [{ name: `${stem}.obj`, note: 'model' }, { name: `${stem}.mtl`, note: 'materials' }] : [{ name: `${stem}.${ext}`, note: 'model' }];
+  if (rigUI && rigUI.has()) files[0].note = ext === 'obj' ? 'model · OBJ holds no skeleton; FBX and GLB carry the rig' : `model, rigged: ${rigUI.joints()} joints and their weights`;
   const names = materialNames(), seen = new Set(), textures = [];
   const add = (name, note, pending = false) => { if (!seen.has(name)) { seen.add(name); textures.push({ name, note, pending }); } };
   if (res.uvLayout === 'new' && state.bake) {
@@ -3610,7 +3618,7 @@ function updateExportPanel() {
   const rows = [];
   if (settings.format === 'glb') {
     const kinds = [...new Set(plan.textures.filter(t => !t.pending).map(t => t.note.split(' · ')[0]))];
-    rows.push(row(ICON_FILE, plan.files[0].name, kinds.length ? `model, with its ${listText(kinds)} ${kinds.length === 1 ? 'texture' : 'textures'} inside` : 'model'));
+    rows.push(row(ICON_FILE, plan.files[0].name, kinds.length ? `${plan.files[0].note}, with its ${listText(kinds)} ${kinds.length === 1 ? 'texture' : 'textures'} inside` : plan.files[0].note));
     for (const t of plan.textures.filter(t => t.pending)) rows.push(row(ICON_IMAGE, t.name, t.note, 'pending'));
   } else {
     for (const f of plan.files) rows.push(row(ICON_FILE, f.name, f.note));
@@ -3668,10 +3676,12 @@ async function buildExport() {
   const parts = state.collected.parts;
   setStatus('Writing files…');
   await nextFrame();
-  const objects = exportObjects(res, parts, mats, parts.length === 1, base);
+  // A rigged result carries its skeleton and weights into FBX and GLB (in the units each writes its positions in).
+  const rigged = settings.format === 'obj' || !rigUI ? null : rigUI.exportData(res, settings.format === 'glb' ? unitScale / 100 : 1);
+  const objects = exportObjects(res, parts, mats, parts.length === 1, base, rigged && rigged.skin);
   const files = {};
-  if (settings.format === 'fbx') files[`${stem}.fbx`] = writeFBX(objects, { unitScale, fileName: `${stem}.fbx` }, FBX_TEMPLATE);
-  else if (settings.format === 'glb') files[`${stem}.glb`] = await glbBytes(objects, unitScale / 100);
+  if (settings.format === 'fbx') files[`${stem}.fbx`] = writeFBX(objects, { unitScale, fileName: `${stem}.fbx`, skeleton: rigged && rigged.skeleton }, FBX_TEMPLATE);
+  else if (settings.format === 'glb') files[`${stem}.glb`] = await glbBytes(objects, unitScale / 100, rigged && rigged.skeleton);
   else {
     const { obj, mtl } = writeOBJ(objects, { scale: unitScale / 100, mtlName: `${stem}.mtl` });
     files[`${stem}.obj`] = strToU8(obj);
@@ -4179,6 +4189,7 @@ function showEmptyState(on) {
   $('emptyBusy').hidden = !(loading === doc || doc.saved);
   $('emptyIdle').hidden = !$('emptyBusy').hidden;
   $('toolPal').hidden = on;
+  $('rigPal').hidden = on;
   $('renderPal').hidden = on;
   $('toolOpts').hidden = on || settings.tool === 'orbit';
   for (const sec of document.querySelectorAll('[data-needs-model]')) sec.inert = on;
@@ -4194,6 +4205,7 @@ function clipForModel() {
 }
 // Leaves the active tab: keeps its camera and settings, saves it, stops its background work and frees its view.
 function detachDoc() {
+  if (rigUI) rigUI.detach();
   if (state.painting) { state.painting = false; endStroke(); }
   doc.settings = docSettings();
   if (state.welded) doc.camera = { position: camera.position.toArray(), target: controls.target.toArray() };
@@ -4319,7 +4331,7 @@ function syncControls() {
   pressSeg('normalsSeg', 'normals', settings.normals);
   pressSeg('regSeg', 'reg', settings.regularize);
   pressSeg('formatSeg', 'format', settings.format);
-  for (const b of document.querySelectorAll('.tool')) b.setAttribute('aria-pressed', String(b.dataset.tool === settings.tool));
+  for (const b of document.querySelectorAll('#toolPal .tool')) b.setAttribute('aria-pressed', String(b.dataset.tool === settings.tool));
   const less = settings.tool === 'less';
   const labels = less ? ['½', '¼', '⅛'] : ['×2', '×4', '×8'];
   $('strengthSeg').querySelectorAll('button').forEach((b, i) => { b.textContent = labels[i]; });
@@ -4386,8 +4398,26 @@ function syncControls() {
   $('keepUVOpts').hidden = q || settings.uvMode === 'new';
   syncSymmetryUI();
   updateHiddenUI();
-  applyTool();
+  // The workspace: Shape's sections and paint tools, or Rig's.
+  const rig = settings.space === 'rig';
+  pressSeg('spaceSeg', 'space', settings.space);
+  $('app').dataset.space = settings.space;
+  pressSeg('viewSeg', 'view', rig ? 'reduced' : settings.view);
+  for (const b of $('viewSeg').querySelectorAll('button')) b.disabled = rig;
+  if (rigUI) rigUI.sync();
+  if (!rig) applyTool();
 }
+// Switches between the Shape and Rig workspaces; leaving Rig puts the paint back on the reduced view.
+function setSpace(space) {
+  if (space === settings.space) return;
+  settings.space = space;
+  if (space !== 'rig') { if (rigUI) rigUI.detach(); recolorReduced(); controls.enabled = true; }
+  applyDisplaySettings();
+  syncControls();
+  saveSettings();
+  requestRender();
+}
+$('spaceSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b && b.dataset.space) setSpace(b.dataset.space); });
 
 function onSeg(id, key, apply) {
   $(id).addEventListener('click', e => {
@@ -4419,7 +4449,7 @@ function setTopology(v) {
   updateResultUI();
   scheduleReduce(0);
 }
-document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => { settings.tool = b.dataset.tool; syncControls(); saveSettings(); }));
+document.querySelectorAll('#toolPal .tool').forEach(b => b.addEventListener('click', () => { settings.tool = b.dataset.tool; syncControls(); saveSettings(); }));
 
 // Sliders show their value while they move and apply it once, when let go ('change'), so a drag regenerates once.
 // A drag that ends where it started applies nothing, so the readout goes back to what is in use.
@@ -4670,6 +4700,8 @@ window.addEventListener('drop', e => {
 window.addEventListener('keydown', e => {
   if (e.target.closest && e.target.closest('input, select, textarea, .pop')) return;
   const k = e.key.toLowerCase();
+  if (k === 'r' && !e.metaKey && !e.ctrlKey && !e.altKey) { setSpace(settings.space === 'rig' ? 'shape' : 'rig'); return; }
+  if (rigUI && rigUI.onKey(e)) { e.preventDefault(); return; }
   if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if ((e.metaKey || e.ctrlKey) && k === 'y') { e.preventDefault(); redo(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -4698,6 +4730,14 @@ window.__polyBudget = {
 };
 
 // ---------- boot ----------
+rigUI = initRig({
+  $, settings, sceneR, viewport, camera, controls, canvas, MeshBVH,
+  state: () => state, doc: () => doc, display: () => display.R, symPlane: () => symPlane,
+  rects, workerSource, requestRender, saveSettings, saveSessionSoon, showError, boundsOf,
+  setHint: hint => { if ($('hint').textContent !== hint) { $('hint').textContent = hint; flashHint(); } },
+  updateUndo: () => { $('rigUndo').disabled = !rigUI.canUndo(); $('rigRedo').disabled = !rigUI.canRedo(); },
+  updateExport: () => updateExportPanel(),
+});
 applyTheme();
 syncControls();
 engine.start();

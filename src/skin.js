@@ -475,3 +475,19 @@ function sideOf(groups, g, rig) {
   const p = [groups.positions[g * 3], groups.positions[g * 3 + 1], groups.positions[g * 3 + 2]];
   return dot(p, rig.frame.left) - (rig.plane ? rig.plane.offset * rig.frame.left[rig.plane.axis] : 0) >= 0 ? 'L' : 'R';
 }
+
+// The weights of the same positions in a new result, one whose vertices are only split differently (an unwrap): matched
+// by exact position. Null when a position of the new result wasn't in the old one.
+export function remapWeights(W, B, oldPositions, groups) {
+  const G0 = oldPositions.length / 3, at = new Map();
+  const ob = new Uint32Array(oldPositions.buffer, oldPositions.byteOffset, G0 * 3);
+  for (let g = 0; g < G0; g++) at.set(`${ob[g * 3]},${ob[g * 3 + 1]},${ob[g * 3 + 2]}`, g);
+  const nb = new Uint32Array(groups.positions.buffer, groups.positions.byteOffset, groups.count * 3);
+  const out = new Float32Array(groups.count * B);
+  for (let g = 0; g < groups.count; g++) {
+    const o = at.get(`${nb[g * 3]},${nb[g * 3 + 1]},${nb[g * 3 + 2]}`);
+    if (o === undefined) return null;
+    out.set(W.subarray(o * B, o * B + B), g * B);
+  }
+  return out;
+}
