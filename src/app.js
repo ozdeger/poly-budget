@@ -43,7 +43,7 @@ const DEFAULTS = {
   targetPct: 10, topology: 'quads', quadSharp: true, quadThin: true, quadAdapt: 0.75, maxError: 0, hardAngle: 30, weldTol: 25, normals: 'original', creaseAngle: 60,
   optimizePositions: true, regularize: 1, lockBorder: false, permissive: false, prune: false,
   normalWeight: 0.5, uvWeight: 1, format: 'fbx', units: 'auto', uvMode: 'auto', uvStyle: 'compact', bakeSize: 1024, bakeNormals: true, colorDetail: 0.5, occlusion: 'off', occlusionStrength: 0.7, normalFormat: 'opengl',
-  view: 'split', shading: 'textured', wire: false, showOcclusion: true, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
+  view: 'split', shading: 'textured', wire: false, showOcclusion: true, showNormals: true, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
 };
@@ -95,7 +95,7 @@ function newDoc(saved = null) {
       meta: null, collected: null, welded: null, labels: null, result: null, info: null, engineMesh: null,
       orig: { bvh: null, index: null }, left: null, diag: 1, size: 1, undo: [], redo: [], strokeSnapshot: null, strokeChanged: false,
       painting: false, displayMats: [], pendingMaps: [], hasColors: false, bake: null, bakedMats: null, geo: null, texturing: null,
-      vis: null, visCurve: null, visStats: null, visJob: null, visFrac: 0, auto: null, detailMaps: new Map(),
+      vis: null, visCurve: null, visStats: null, visJob: null, visFrac: 0, auto: null, detailMaps: new Map(), viewVariants: new Map(),
     },
     symPlane: { axis: 0, offset: 0, fit: null, ready: false },
     session: { model: null, files: new Map(), ready: false },
@@ -2089,6 +2089,10 @@ function bakedMaterials(bk, keepMaps = false) {
   });
 }
 function disposeBakedMaterials(s = state) {
+  if (s.viewVariants) {
+    for (const m of s.viewVariants.values()) m.dispose();
+    s.viewVariants.clear();
+  }
   if (s.occlusionViews) {
     for (const t of s.occlusionViews.textures) t.dispose();
     for (const m of s.occlusionViews.made) m.dispose();
@@ -2335,15 +2339,45 @@ function tangentSurface(res, geo) {
 }
 
 // The reduced view shows the baked materials when its result has new UVs, and clay while they are on the way. Baked
-// ambient occlusion shows in every shading, unless the display palette hides it.
+// ambient occlusion shows in every shading, and normal maps in textured and clay (facets show the bare faces), unless the
+// display palette hides them.
 function surfaceMaterials(side) {
-  const views = side === 'R' ? state.occlusionViews : null;
+  const views = side === 'R' ? state.occlusionViews : null, ao = !!views && settings.showOcclusion;
   if (settings.shading === 'textured' && side === 'R' && state.result && state.result.uvLayout === 'pending') return state.displayMats.map(() => clayMat);
-  if (settings.shading === 'textured') return side === 'R' && state.bakedMats ? (views && !settings.showOcclusion ? views.without : state.bakedMats) : state.displayMats;
-  if (views && settings.showOcclusion) return settings.shading === 'facets' ? views.facets : views.clay;
-  const m = settings.shading === 'facets' ? facetMat : clayMat;
-  return state.displayMats.map(() => m);
+  if (settings.shading === 'textured') {
+    const mats = side === 'R' && state.bakedMats ? (views && !ao ? views.without : state.bakedMats) : state.displayMats;
+    return settings.showNormals ? mats : mats.map(m => viewVariant(m));
+  }
+  if (settings.shading === 'facets') return ao ? views.facets : state.displayMats.map(() => facetMat);
+  const clay = ao ? views.clay : state.displayMats.map(() => clayMat);
+  // The normal maps clay takes: the result's baked ones, the original's own.
+  const from = side === 'R' ? state.bakedMats : state.displayMats;
+  if (!settings.showNormals || !from) return clay;
+  return clay.map((c, i) => (loadedMap(from[i], 'normalMap') ? viewVariant(c, from[i]) : c));
 }
+// A material as the view shows it, made once and kept until the next bake: without its normal map, or (with from) taking
+// the normal map of from, which is how clay shows one. Its other maps and colour follow the material it comes from, as
+// textures added after opening change that.
+function viewVariant(base, from = null) {
+  const normal = from ? from.normalMap : null;
+  if (!from && !base.normalMap) return base;
+  const key = `${objId(base)}|${objId(normal)}`;
+  let m = state.viewVariants.get(key), changed = false;
+  if (!m) {
+    m = base.clone();
+    state.viewVariants.set(key, m);
+  }
+  for (const slot of MAP_SLOTS) {
+    const want = slot === 'normalMap' ? normal : base[slot];
+    if (slot in m && m[slot] !== want) { changed ||= !m[slot] !== !want; m[slot] = want; }
+  }
+  if (from && from.normalScale && m.normalScale) m.normalScale.copy(from.normalScale);
+  if (m.color && base.color) m.color.copy(base.color);
+  if (changed) m.needsUpdate = true;
+  return m;
+}
+// Whether any material shown has a normal map: the original's own, or the result's baked ones.
+const shownNormals = () => state.displayMats.some(m => loadedMap(m, 'normalMap')) || !!(state.bakedMats && state.bakedMats.some(m => loadedMap(m, 'normalMap')));
 
 // edges: vertex pairs to draw as the wireframe instead of every triangle edge (a quad result's edges). surfGeo: the
 // surface's own geometry when it differs from the one the paint, wireframe and tint share.
@@ -4271,6 +4305,10 @@ function syncRenderPal() {
   b.disabled = !has;
   b.setAttribute('aria-pressed', String(has && settings.showOcclusion));
   b.title = has ? `${settings.showOcclusion ? 'Hide' : 'Show'} the baked ambient occlusion (A)` : 'Ambient occlusion (A): bake it under Texture to compare it here';
+  const n = $('nrmBtn'), normals = shownNormals();
+  n.disabled = !normals;
+  n.setAttribute('aria-pressed', String(normals && settings.showNormals));
+  n.title = normals ? `${settings.showNormals ? 'Hide' : 'Show'} the normal maps, in textured and clay (B)` : 'Normal maps (B): none yet; Normal map from the original under Texture bakes one';
   $('renderPal').hidden = !state.welded;
 }
 function syncControls() {
@@ -4437,6 +4475,7 @@ let weldTimer = 0;
 const reweld = () => { clearTimeout(weldTimer); weldTimer = setTimeout(() => rebuildWeld(false), 60); };
 $('wireBtn').addEventListener('click', () => { settings.wire = !settings.wire; syncControls(); saveSettings(); applyDisplaySettings(); });
 $('aoBtn').addEventListener('click', () => { settings.showOcclusion = !settings.showOcclusion; syncControls(); saveSettings(); applyDisplaySettings(); });
+$('nrmBtn').addEventListener('click', () => { settings.showNormals = !settings.showNormals; syncControls(); saveSettings(); applyDisplaySettings(); });
 $('showPaintBtn').addEventListener('click', () => { settings.showPaint = !settings.showPaint; syncControls(); saveSettings(); applyDisplaySettings(); });
 bindCheck('optPos', 'optimizePositions', () => scheduleReduce());
 bindCheck('permissive', 'permissive', () => scheduleReduce());
@@ -4639,6 +4678,7 @@ window.addEventListener('keydown', e => {
   else if (k === 'f') settings.mode = settings.mode === 'fill' ? 'brush' : 'fill';
   else if (k === 'w') { settings.wire = !settings.wire; applyDisplaySettings(); }
   else if (k === 'a') { if (!state.occlusionViews) return; settings.showOcclusion = !settings.showOcclusion; applyDisplaySettings(); }
+  else if (k === 'b') { if (!shownNormals()) return; settings.showNormals = !settings.showNormals; applyDisplaySettings(); }
   else if (k === 'u') { setUVOpen(!settings.uvOpen); return; }
   else if (k === 'q') { setTopology(quadMode() ? 'tris' : 'quads'); return; }
   else if (k === '1' || k === '2' || k === '3') { settings.view = ['split', 'original', 'reduced'][Number(k) - 1]; requestRender(); }

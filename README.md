@@ -59,7 +59,7 @@ Choose **Paintable** and the texture layout comes in a few large, upright pieces
 ## And the rest of your workflow
 
 - **Mirror symmetry.** Work on one half and the other mirrors it exactly.
-- **Compare as you go.** See the original and the result side by side, textured, in clay or as a wireframe, and switch the baked ambient occlusion on and off to see what it adds.
+- **Compare as you go.** See the original and the result side by side, textured, in clay or as a wireframe, and switch the normal maps and the baked ambient occlusion on and off to see what they add.
 - **Tabs.** Keep several models open, each with its own paint and settings. Everything reopens just as you left it.
 - **Try it straight away.** No model at hand? Start with the built-in sample pawn.
 
@@ -111,6 +111,7 @@ Everything happens on your own computer, inside the browser tab. Your models and
 | Q | Triangles or quads |
 | W | Wireframe |
 | A | Show or hide the baked ambient occlusion |
+| B | Show or hide the normal maps |
 | U | Texture & UVs panel |
 | O, M, L, K, N, E | Orbit, More detail, Less detail, Keep original, Normal detail, Erase |
 | F | Brush or fill a whole part |

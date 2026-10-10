@@ -155,7 +155,7 @@ Off by default. **In base colour** or **Separate map** bakes the original's ambi
 
 ### Display
 
-The palette at the right of the view picks how the models show: **Textured**, **Clay** (the shape alone) or **Facets** (every face flat), with the **Wireframe** (W) over any of them, and baked **Ambient occlusion** (A) shown or hidden on the result.
+The palette at the right of the view picks how the models show: **Textured**, **Clay** (the shape in one colour) or **Facets** (every face flat), with the **Wireframe** (W) over any of them. **Normal maps** (B) show or hide the original's own and the result's baked ones in textured and clay, so the bare shape of a remesh can be told from what its normal map adds; facets always show the bare faces. Baked **Ambient occlusion** (A) shows or hides on the result. Both switch at once, without a new bake, and neither changes the export.
 
 ### See the texture and its UVs
 
@@ -185,6 +185,7 @@ Each tab holds its own model, paint, mirror plane, budget, view and bakes. A mod
 | Q | Triangles or quads |
 | W | Wireframe |
 | A | Show or hide the baked ambient occlusion |
+| B | Show or hide the normal maps |
 | U | Texture & UVs panel |
 | O, M, L, K, N, E | Orbit, More detail, Less detail, Keep original, Normal detail, Erase |
 | F | Brush or fill a part |
