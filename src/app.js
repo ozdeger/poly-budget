@@ -47,7 +47,7 @@ const DEFAULTS = {
   view: 'split', shading: 'textured', wire: false, showOcclusion: true, showNormals: true, showPaint: true, brush: 6, strength: 2, mode: 'brush', tool: 'orbit',
   symmetry: false, symSide: '+', tintMirror: true, showPlane: true, hidden: true, hiddenLevel: 'medium', hiddenCull: false, sections: {},
   uvOpen: false, uvWidth: 420, uvLines: 'all', uvPanes: 'both', uvSlot: 'map',
-  space: 'shape', rigTool: 'select', rigFingers: 'auto', rigNaming: 'mixamo', rigCentre: true, rigMirror: true, rigShowWeights: true, rigShowBones: true,
+  space: 'shape', rigTool: 'select', rigFingers: 'auto', rigNaming: 'mixamo', rigCentre: true, rigMirror: true, rigShowWeights: true, rigShowBones: true, rigMotion: 'walk',
 };
 const settings = { ...DEFAULTS };
 // Only settings the tool still has are read back, so options removed since they were saved drop out. Settings saved while

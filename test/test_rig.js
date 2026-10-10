@@ -241,6 +241,33 @@ const ours = posed(rig, res.positions, res.normals, vskin);
   check(nHand > 0 && handMove / nHand > 0.15, `the left hand swings with the forearm (${(handMove / nHand).toFixed(2)} m on average)`);
 }
 
+console.log('== test motions');
+{
+  const world = (r, out, slot) => { const i = r.joints.findIndex(j => j.slot === slot); return [out.world[i * 16 + 12], out.world[i * 16 + 13], out.world[i * 16 + 14]]; };
+  for (const base of [false, true]) {
+    const joints = { ...figureJoints({ pose: 'A', fingers: false }) };
+    if (base) joints.Root = [0, -0.04, 0];
+    const r = R.humanoidRig(joints, { fingers: false });
+    // The squat at its deepest: the hips down, the feet where they stood, a base's Root unmoved.
+    const sq = R.testPose(r, 'squat', 0.5), m = K.poseMatrices(r, sq.pose, sq.rootOffset, sq.offsetJoint);
+    const foot = R.dist(world(r, m, 'LeftFoot'), joints.LeftFoot), hipDrop = joints.Hips[1] - world(r, m, 'Hips')[1];
+    const rootStill = !base || R.dist(world(r, m, 'Root'), joints.Root) < 1e-9;
+    check(foot < 0.03 && hipDrop > 0.25 && rootStill, `squat${base ? ' on a base' : ''}: the hips drop ${(hipDrop * 100).toFixed(0)} cm, the feet stay within ${(foot * 100).toFixed(1)} cm of where they stood${base ? ', the Root carrying the base stays put' : ''}`);
+  }
+  const r = R.humanoidRig(figureJoints({ pose: 'T', fingers: true }));
+  let finite = true, moved = 0;
+  for (const name of R.MOTIONS) for (const t of [0, 0.13, 0.37, 0.5, 0.81]) {
+    const tp = R.testPose(r, name, t), m = K.poseMatrices(r, tp.pose, tp.rootOffset, tp.offsetJoint);
+    finite = finite && m.world.every(Number.isFinite);
+    if (tp.pose.some(Boolean)) moved++;
+  }
+  check(finite && moved >= R.MOTIONS.length * 4, `every test motion gives finite poses that move the skeleton (${moved} of ${R.MOTIONS.length * 5} samples)`);
+  // Mirrored: the left arm raised in Arms is the right arm's mirror image.
+  const tp = R.testPose(r, 'arms', 0.25), m = K.poseMatrices(r, tp.pose);
+  const l = world(r, m, 'LeftHand'), rr = world(r, m, 'RightHand');
+  check(Math.abs(l[0] + rr[0]) < 1e-9 && Math.abs(l[1] - rr[1]) < 1e-9 && l[1] > 1.6, `Arms raises both hands alike, over the head (${l[1].toFixed(2)} m)`);
+}
+
 // Vertices of a loaded mesh (in the file's units, scale times the result's) matched to the result's by position.
 function matchByPosition(P, Q, scale = 1) {
   const h = 1e-4, cell = (x, y, z) => `${Math.floor(x / h)},${Math.floor(y / h)},${Math.floor(z / h)}`;

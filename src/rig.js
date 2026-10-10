@@ -1115,3 +1115,77 @@ function findFingers(g, L, arm, front, up, step, body) {
   void front; void up;
   return out;
 }
+
+// ---------- test motions ----------
+//
+// Short loops that bend the joints the way animation will, to see how the weights hold: on humanoid slots, and for any
+// skeleton every joint in turn. Rotations are about each joint's own axes: X bends (elbows, knees, the spine and fingers
+// forward, thighs forward with a positive angle), Y twists along the bone, Z raises an arm away from the body. The left
+// side's rotation is mirrored onto the right (x, −y, −z), so both sides move alike.
+export const MOTIONS = ['walk', 'arms', 'squat', 'twist', 'each'];
+const deg = Math.PI / 180;
+const qx = a => qaxis([1, 0, 0], a), qy = a => qaxis([0, 1, 0], a), qz = a => qaxis([0, 0, 1], a);
+export const mirrorDelta = q => [q[0], -q[1], -q[2], q[3]];
+
+// The pose of motion `name` at time t (in loops; any number): { pose: quaternion or null per joint, rootOffset,
+// offsetJoint }, the offset moving the hips when a Root carries a base, the whole figure otherwise.
+export function testPose(rig, name, t) {
+  const B = rig.joints.length, pose = new Array(B).fill(null), at = new Map(rig.joints.map((j, i) => [j.slot, i]));
+  const s = Math.sin(2 * Math.PI * t), c = Math.cos(2 * Math.PI * t), half = Math.sin(Math.PI * t) ** 2;
+  // Sets a slot's rotation; for a left slot the right one gets its mirror image (or `right`, given its own).
+  const set = (slot, q, right = null) => {
+    if (at.has(slot)) pose[at.get(slot)] = q;
+    if (slot.startsWith('Left')) { const r = `Right${slot.slice(4)}`; if (at.has(r)) pose[at.get(r)] = right || mirrorDelta(q); }
+  };
+  let rootOffset = null;
+  const offsetJoint = at.has('Root') && at.has('Hips') ? at.get('Hips') : -1;
+  const hips = at.has('Hips') ? rig.joints[at.get('Hips')] : null, feet = at.has('LeftFoot') ? rig.joints[at.get('LeftFoot')] : null;
+  const legLength = hips && feet ? Math.abs(dot(sub(hips.pos, feet.pos), rig.frame.up)) : 0;
+  // Where the hips go with the thigh turned forward by a and the knee bent back by k, the feet staying put: down by the
+  // height the bent leg loses, back by how far the knee would carry the foot forward.
+  const thigh = at.has('LeftUpLeg') && at.has('LeftLeg') ? dist(rig.joints[at.get('LeftUpLeg')].pos, rig.joints[at.get('LeftLeg')].pos) : legLength / 2;
+  const shin = at.has('LeftLeg') && feet ? dist(rig.joints[at.get('LeftLeg')].pos, feet.pos) : legLength / 2;
+  const hipsFor = (a, k) => add(scale(rig.frame.up, -(thigh + shin - (thigh * Math.cos(a) + shin * Math.cos(k - a)))), scale(rig.frame.front, -(thigh * Math.sin(a) - shin * Math.sin(k - a))));
+  if (name === 'each' || !hips) {
+    // Every deforming joint bends forward and back in turn.
+    const order = rig.joints.map((j, i) => i).filter(i => rig.joints[i].deform && rig.joints[i].parent >= 0);
+    if (!order.length) return { pose, rootOffset, offsetJoint };
+    const k = ((t % 1) + 1) % 1 * order.length, i = order[Math.floor(k)], f = k - Math.floor(k);
+    pose[i] = qx(45 * deg * Math.sin(2 * Math.PI * f));
+    return { pose, rootOffset, offsetJoint };
+  }
+  if (name === 'walk') {
+    set('LeftUpLeg', qx(28 * deg * s), qx(-28 * deg * s));
+    set('LeftLeg', qx(-(35 * Math.max(0, -s) + 8) * deg), qx(-(35 * Math.max(0, s) + 8) * deg));
+    set('LeftFoot', qx(10 * deg * s), qx(-10 * deg * s));
+    set('LeftArm', qx(-22 * deg * s), qx(22 * deg * s));
+    set('LeftForeArm', qx(18 * deg), qx(18 * deg));
+    set('Spine1', qy(6 * deg * s));
+    set('Spine2', qy(6 * deg * s));
+    rootOffset = scale(rig.frame.up, -0.02 * legLength * Math.abs(c));
+  } else if (name === 'arms') {
+    // Arms up over the head and down to the sides, the elbows bending on the way.
+    set('LeftShoulder', qz(12 * deg * s));
+    set('LeftArm', qz(70 * deg * s));
+    set('LeftForeArm', qx(60 * deg * half));
+    set('LeftHand', qx(30 * deg * s));
+    for (const f of FINGERS) for (const k of [1, 2, 3]) set(`LeftHand${f}${k}`, qx((f === 'Thumb' ? 25 : 55) * deg * half));
+  } else if (name === 'squat') {
+    // A deep knee bend with the feet flat where they stand: thighs forward, knees back, the hips down as far as that
+    // takes them, ankles turned to keep the feet flat, the back leaning forward and the arms out for balance.
+    const a = 80 * deg * half, k = 115 * deg * half;
+    rootOffset = hipsFor(a, k);
+    set('LeftUpLeg', qx(a));
+    set('LeftLeg', qx(-k));
+    set('LeftFoot', qx(k - a));
+    set('Spine', qx(25 * deg * half));
+    set('LeftArm', qx(55 * deg * half));
+  } else if (name === 'twist') {
+    set('Spine', qy(15 * deg * s));
+    set('Spine1', qy(15 * deg * s));
+    set('Spine2', qy(15 * deg * s));
+    set('Neck', qy(25 * deg * s));
+    set('Head', qx(20 * deg * c));
+  }
+  return { pose, rootOffset, offsetJoint };
+}

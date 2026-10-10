@@ -2,6 +2,7 @@
 // takes from them. The skeleton draws in the reduced view's scene, over the model; app.js hands over what the workspace
 // needs (initRig's host) and calls back in where the workspace changes what the page does.
 import * as THREE from 'three';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import * as RIG from './rig.js';
 import * as SKIN from './skin.js';
 
@@ -42,7 +43,7 @@ export function initRig(host) {
   const R = () => st() && st().rig;
   const ensure = () => {
     const s = st();
-    if (!s.rig) s.rig = { rig: null, weights: null, edited: false, stale: false, report: null, undo: [], redo: [], selected: -1, busy: null };
+    if (!s.rig) s.rig = { rig: null, weights: null, edited: false, stale: false, report: null, undo: [], redo: [], selected: -1, busy: null, pose: null, rootOffset: null };
     return s.rig;
   };
   const inRig = () => settings.space === 'rig';
@@ -74,7 +75,7 @@ export function initRig(host) {
   }
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), yAxis = new THREE.Vector3(0, 1, 0), tmp = new THREE.Vector3(), col = new THREE.Color();
   // Where each joint shows: at rest, or posed.
-  const shownAt = i => R().rig.joints[i].pos;
+  const shownAt = i => (posedWorld && posing() ? [posedWorld[i * 16 + 12], posedWorld[i * 16 + 13], posedWorld[i * 16 + 14]] : R().rig.joints[i].pos);
   function drawSkeleton() {
     const s = R(), rig = s && s.rig;
     overlay.visible = inRig() && !!rig && settings.rigShowBones !== false;
@@ -220,21 +221,31 @@ export function initRig(host) {
     }
   }
 
-  // History of the rig's edits: skeletons as they were (weights follow them by being worked out again).
-  function commit(before) {
+  // History of the rig's edits: skeletons as they were (weights follow them by being worked out again), and poses.
+  function commit(before, kind = 'rig') {
     const s = ensure();
-    s.undo.push(before);
+    s.undo.push({ kind, value: before });
     if (s.undo.length > HISTORY) s.undo.shift();
     s.redo.length = 0;
   }
+  const poseCopy = s => ({ pose: s.pose ? s.pose.map(q => q && [...q]) : null, rootOffset: s.rootOffset });
   function undoRedo(redo) {
     const s = R();
     if (!s) return;
     const from = redo ? s.redo : s.undo, to = redo ? s.undo : s.redo;
     if (!from.length) return;
-    to.push(RIG.cloneRig(s.rig));
-    s.rig = from.pop();
+    const entry = from.pop();
+    if (entry.kind === 'pose') {
+      to.push({ kind: 'pose', value: poseCopy(s) });
+      ({ pose: s.pose, rootOffset: s.rootOffset } = entry.value);
+      refreshPose();
+      drawSkeleton();
+      return;
+    }
+    to.push({ kind: 'rig', value: RIG.cloneRig(s.rig) });
+    s.rig = entry.value;
     s.selected = s.rig && s.selected < s.rig.joints.length ? s.selected : -1;
+    if (s.pose && (!s.rig || s.pose.length !== s.rig.joints.length)) s.pose = null;
     skeletonChanged();
   }
 
@@ -246,7 +257,9 @@ export function initRig(host) {
       s.stale = true;
       if (!s.edited) scheduleWeights();
     }
-    if (!s.rig) s.weights = null;
+    if (!s.rig) { s.weights = null; s.pose = null; }
+    if (s.pose && s.rig && s.pose.length !== s.rig.joints.length) s.pose = null;
+    refreshPose();
     drawSkeleton();
     paintWeights();
     updatePanels();
@@ -319,7 +332,7 @@ export function initRig(host) {
       const out = await engine.run(msg);
       if (host.doc() !== d || st().result !== res) return;
       if (what === 'place') {
-        if (s.rig) commit(RIG.cloneRig(s.rig)); else commit(null);
+        commit(s.rig ? RIG.cloneRig(s.rig) : null);
         s.rig = out.rig;
         s.report = out.report;
         s.selected = -1;
@@ -336,6 +349,7 @@ export function initRig(host) {
       if (busyDoc === d) busyDoc = null;
       s.busy = null;
       if (host.doc() === d) {
+        refreshPose();
         drawSkeleton();
         paintWeights();
         updatePanels();
@@ -394,6 +408,156 @@ export function initRig(host) {
     host.requestRender();
   }
 
+  // ---------- posing ----------
+  // The reduced view's model bent by the skeleton, by linear blend skinning as engines do it. The view's geometry shares
+  // its positions with the result, so posing gives it copies (the paint overlay and quad wireframe take them too); the
+  // surface with tangents, when there is one, is a copy already and is posed in place from its rest values.
+  let poser = null, posedWorld = null, playing = null;
+  const posing = () => inRig() && !!(R() && R().rig) && (settings.rigTool === 'pose' || !!playing);
+  function ensurePoser() {
+    const d = host.display(), s = R();
+    if (!d || !s || !s.rig || !s.weights || s.weights.res !== st().result) return null;
+    if (poser && poser.d === d && poser.W === s.weights.W && poser.B === s.rig.joints.length) return poser;
+    if (poser && poser.d === d) restPose();
+    const B = s.rig.joints.length, { W, groups } = s.weights, sk = SKIN.vertexSkin(groups.group, SKIN.limitWeights(W, groups.count, B));
+    const geo = d.geo, restP = geo.attributes.position.array, restN = geo.attributes.normal.array;
+    const pos = poser && poser.d === d ? poser.pos : new THREE.BufferAttribute(restP.slice(), 3), nrm = poser && poser.d === d ? poser.nrm : new THREE.BufferAttribute(restN.slice(), 3);
+    if (geo.attributes.position !== pos) {
+      geo.setAttribute('position', pos);
+      geo.setAttribute('normal', nrm);
+      d.paintGeo.setAttribute('position', pos);
+      if (d.wireGeo) d.wireGeo.setAttribute('position', pos);
+    }
+    let surf = null;
+    if (d.surfGeo !== d.geo) {
+      const sg = d.surfGeo, corner = sg.userData.cornerVertex, n = corner.length;
+      const ci = new Uint16Array(n * 4), cw = new Float32Array(n * 4);
+      for (let c = 0; c < n; c++) for (let k = 0; k < 4; k++) { ci[c * 4 + k] = sk.index[corner[c] * 4 + k]; cw[c * 4 + k] = sk.weight[corner[c] * 4 + k]; }
+      const T = sg.attributes.tangent;
+      surf = { sg, skin: { index: ci, weight: cw }, P: (poser && poser.surf ? poser.surf.P : sg.attributes.position.array.slice()), N: (poser && poser.surf ? poser.surf.N : sg.attributes.normal.array.slice()), T: T ? (poser && poser.surf ? poser.surf.T : T.array.slice()) : null };
+    }
+    poser = { d, W, B, sk, restP: poser && poser.d === d ? poser.restP : restP.slice(), restN: poser && poser.d === d ? poser.restN : restN.slice(), pos, nrm, surf };
+    return poser;
+  }
+  function applyPose() {
+    const s = R(), p = ensurePoser();
+    const m = SKIN.poseMatrices(s.rig, s.pose, s.rootOffset, s.offsetJoint ?? -1);
+    posedWorld = m.world;
+    if (!p) return;
+    SKIN.skinVertices(m.skin, p.sk.index, p.sk.weight, p.restP, p.restN, p.pos.array, p.nrm.array);
+    p.pos.needsUpdate = true;
+    p.nrm.needsUpdate = true;
+    if (p.surf) {
+      const a = p.surf.sg.attributes;
+      SKIN.skinVertices(m.skin, p.surf.skin.index, p.surf.skin.weight, p.surf.P, p.surf.N, a.position.array, a.normal.array, p.surf.T, a.tangent ? a.tangent.array : null);
+      a.position.needsUpdate = true; a.normal.needsUpdate = true;
+      if (a.tangent) a.tangent.needsUpdate = true;
+    }
+    host.requestRender();
+  }
+  // Back to the model as it stands.
+  function restPose() {
+    const p = poser;
+    if (!p) return;
+    p.pos.array.set(p.restP); p.pos.needsUpdate = true;
+    p.nrm.array.set(p.restN); p.nrm.needsUpdate = true;
+    if (p.surf) {
+      const a = p.surf.sg.attributes;
+      a.position.array.set(p.surf.P); a.normal.array.set(p.surf.N);
+      a.position.needsUpdate = a.normal.needsUpdate = true;
+      if (a.tangent && p.surf.T) { a.tangent.array.set(p.surf.T); a.tangent.needsUpdate = true; }
+    }
+    host.requestRender();
+  }
+  function refreshPose() {
+    if (posing() && R() && R().rig) applyPose(); else { restPose(); posedWorld = null; }
+    placeGizmo();
+  }
+
+  // The rotate gizmo on the selected joint, in the joint's own axes: red turns about X (the bend), green about the
+  // bone, blue about Z.
+  const gizmo = new TransformControls(host.camera, host.canvas);
+  gizmo.setMode('rotate');
+  gizmo.setSpace('local');
+  gizmo.setSize(0.75);
+  const proxy = new THREE.Object3D();
+  host.sceneR.add(proxy, gizmo.getHelper());
+  gizmo.addEventListener('change', () => host.requestRender());
+  let poseBefore = null;
+  gizmo.addEventListener('dragging-changed', e => {
+    host.controls.enabled = !e.value;
+    const s = R();
+    if (e.value) poseBefore = poseCopy(s);
+    else if (poseBefore) { commit(poseBefore, 'pose'); poseBefore = null; updatePanels(); }
+  });
+  gizmo.addEventListener('objectChange', () => {
+    const s = R(), i = s && s.selected;
+    if (!s || !s.rig || i < 0 || !posedWorld) return;
+    const rig = s.rig, j = rig.joints[i];
+    // The joint's world turn is its parent's posed turn, its rest place under the parent, then its own pose: solve for
+    // the last from the gizmo's.
+    const qw = proxy.quaternion.toArray(), parentQ = j.parent >= 0 ? new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().fromArray(posedWorld, j.parent * 16)).toArray() : [0, 0, 0, 1];
+    const restParent = j.parent >= 0 ? rig.joints[j.parent].rot : [0, 0, 0, 1];
+    const d = RIG.qnorm(RIG.qmul(RIG.qconj(j.rot), RIG.qmul(restParent, RIG.qmul(RIG.qconj(parentQ), qw))));
+    if (!s.pose) s.pose = rig.joints.map(() => null);
+    s.pose[i] = d;
+    if (mirrorEdits() && j.mirror >= 0) s.pose[j.mirror] = RIG.mirrorDelta(d);
+    applyPose();
+    drawSkeleton();
+  });
+  function placeGizmo() {
+    const s = R(), i = s && s.selected;
+    const show = posing() && !playing && settings.rigTool === 'pose' && i >= 0 && !!posedWorld && i < s.rig.joints.length;
+    if (!show) { if (gizmo.object) gizmo.detach(); host.requestRender(); return; }
+    const m = new THREE.Matrix4().fromArray(posedWorld, i * 16);
+    m.decompose(proxy.position, proxy.quaternion, proxy.scale);
+    proxy.updateMatrixWorld(true);
+    if (gizmo.object !== proxy) gizmo.attach(proxy);
+    host.requestRender();
+  }
+  function resetPose(all) {
+    const s = R();
+    if (!s || !s.pose) return;
+    commit(poseCopy(s), 'pose');
+    if (all || s.selected < 0) { s.pose = null; s.rootOffset = null; }
+    else { s.pose[s.selected] = null; const m = s.rig.joints[s.selected].mirror; if (mirrorEdits() && m >= 0) s.pose[m] = null; }
+    refreshPose();
+    drawSkeleton();
+    updatePanels();
+  }
+
+  // Test motions, looping until stopped (Space).
+  function play(on = !playing) {
+    const s = R();
+    if (on && (!s || !s.rig)) return;
+    if (!on) {
+      if (playing) cancelAnimationFrame(playing.raf);
+      playing = null;
+      const st2 = R();
+      if (st2) { st2.pose = st2.savedPose || null; st2.rootOffset = st2.savedOffset || null; st2.offsetJoint = -1; st2.savedPose = st2.savedOffset = undefined; }
+      refreshPose(); drawSkeleton(); updatePanels();
+      return;
+    }
+    s.savedPose = s.pose; s.savedOffset = s.rootOffset;
+    if (!ensurePoser() && !s.busy) scheduleWeights(0);
+    const t0 = performance.now(), motion = s.rig.template === 'humanoid' ? settings.rigMotion : 'each';
+    const loop = settings.rigMotion === 'each' || s.rig.template !== 'humanoid' ? 1.6 * s.rig.joints.filter(j => j.deform).length : 2.2;
+    playing = { raf: 0 };
+    const frame = now => {
+      if (!playing) return;
+      const cur = R();
+      if (!cur || !cur.rig) { play(false); return; }
+      const t = (now - t0) / 1000 / loop;
+      ({ pose: cur.pose, rootOffset: cur.rootOffset, offsetJoint: cur.offsetJoint } = RIG.testPose(cur.rig, motion, t));
+      applyPose();
+      drawSkeleton();
+      playing.raf = requestAnimationFrame(frame);
+    };
+    playing.raf = requestAnimationFrame(frame);
+    placeGizmo();
+    updatePanels();
+  }
+
   // ---------- panels ----------
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   function depthOf(rig, i) { let d = 0; for (let p = rig.joints[i].parent; p >= 0; p = rig.joints[p].parent) d++; return d; }
@@ -446,6 +610,12 @@ export function initRig(host) {
       $('rigPlaced').textContent = sel.placed === 'estimated' ? 'Placed by proportion: drag it where the joint bends.' : sel.placed === 'user' ? 'Placed by you.' : 'Read from the shape.';
       $('rigPlaced').className = `note ${sel.placed === 'estimated' ? 'warn' : ''}`;
     }
+    // Pose.
+    const custom = rig && rig.template !== 'humanoid';
+    $('rigPlay').disabled = !rig;
+    $('rigPlay').textContent = playing ? 'Stop' : 'Play the test motion';
+    $('rigResetPose').disabled = !(s && s.pose && s.pose.some(Boolean)) || !!playing;
+    for (const b of document.querySelectorAll('#rigMotionSeg button')) b.disabled = !rig || (custom && b.dataset.motion !== 'each');
     host.updateUndo();
     host.updateExport();
   }
@@ -557,7 +727,7 @@ export function initRig(host) {
       down = { x: e.clientX, y: e.clientY, tool };
       return false;
     }
-    if (tool === 'add') { down = { x: e.clientX, y: e.clientY, tool }; return false; }
+    if (tool === 'add' || tool === 'pose') { down = { x: e.clientX, y: e.clientY, tool }; return false; }
     return false;
   }
   function onPointerMove(e) {
@@ -592,10 +762,11 @@ export function initRig(host) {
     down = null;
     if (!clicked) return;
     const s = ensure();
-    if (tool === 'select') {
-      const b = pickBone(e);
+    if (tool === 'select' || tool === 'pose') {
+      if (tool === 'pose' && gizmo.dragging) return;
+      const j = tool === 'pose' ? pickJoint(e) : -1, b = j >= 0 ? j : pickBone(e);
       s.selected = b;
-      drawSkeleton(); paintWeights(); updatePanels();
+      drawSkeleton(); paintWeights(); updatePanels(); placeGizmo();
     } else if (tool === 'add') {
       const ray = rayAt(e), p = middleUnder(ray);
       if (!p) return;
@@ -610,7 +781,7 @@ export function initRig(host) {
   }
 
   // ---------- keys ----------
-  const TOOLS = { o: 'orbit', v: 'select', j: 'add' };
+  const TOOLS = { o: 'orbit', v: 'select', j: 'add', p: 'pose' };
   function onKey(e) {
     if (!inRig()) return false;
     const k = e.key.toLowerCase(), mod = e.metaKey || e.ctrlKey;
@@ -619,7 +790,8 @@ export function initRig(host) {
     if (mod || e.altKey) return false;
     if (TOOLS[k]) { setTool(TOOLS[k]); return true; }
     if (k === 'delete' || k === 'backspace') { const s = R(); if (s && s.selected >= 0) deleteJoint(s.selected); return true; }
-    if (k === 'escape') { const s = R(); if (s) { s.selected = -1; drawSkeleton(); paintWeights(); updatePanels(); } return true; }
+    if (k === 'escape') { const s = R(); if (playing) play(false); else if (s) { s.selected = -1; drawSkeleton(); paintWeights(); updatePanels(); placeGizmo(); } return true; }
+    if (k === ' ') { play(); return true; }
     return false;
   }
 
@@ -634,13 +806,14 @@ export function initRig(host) {
     if (!inRig()) return;
     const tool = settings.rigTool;
     // Select and Add leave a left drag that starts off a joint to orbiting; the other tools orbit with the right button.
-    const orbitLeft = tool === 'orbit' || tool === 'select' || tool === 'add';
+    const orbitLeft = tool === 'orbit' || tool === 'select' || tool === 'add' || tool === 'pose';
     host.controls.mouseButtons = orbitLeft ? { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN } : { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
     host.controls.touches = orbitLeft ? { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN } : { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };
     host.canvas.style.cursor = tool === 'orbit' ? 'grab' : tool === 'add' ? 'copy' : 'default';
     const hint = tool === 'orbit' ? 'Drag to orbit · right-drag to pan · scroll to zoom'
       : tool === 'select' ? 'Drag a joint to move it; it settles in the middle of the limb · Shift drags what hangs below too · Alt keeps its depth · click a bone to select it · drag elsewhere to orbit'
-        : 'Click the model to add a joint there, chained from the selected one · Esc to start a new chain';
+        : tool === 'pose' ? 'Click a joint and turn it with the rings: red bends it, green twists it along the bone · Space plays the test motion · drag elsewhere to orbit'
+          : 'Click the model to add a joint there, chained from the selected one · Esc to start a new chain';
     host.setHint(hint);
   }
   function sync() {
@@ -652,8 +825,12 @@ export function initRig(host) {
     for (const b of document.querySelectorAll('#rigFingerSeg button')) b.setAttribute('aria-pressed', String(b.dataset.fingers === settings.rigFingers));
     for (const b of document.querySelectorAll('#rigNameSeg button')) b.setAttribute('aria-pressed', String(b.dataset.naming === settings.rigNaming));
     $('rigOpts').hidden = !rig || !st() || !st().result;
-    $('rigOptName').textContent = settings.rigTool === 'add' ? 'Add joint' : settings.rigTool === 'select' ? 'Move joints' : 'Orbit';
+    $('rigOptName').textContent = { add: 'Add joint', select: 'Move joints', pose: 'Pose', orbit: 'Orbit' }[settings.rigTool] || '';
+    $('rigCentre').closest('label').hidden = settings.rigTool === 'pose';
+    for (const b of document.querySelectorAll('#rigMotionSeg button')) b.setAttribute('aria-pressed', String(b.dataset.motion === settings.rigMotion));
     if (rig) applyControls();
+    if (!rig && playing) play(false);
+    refreshPose();
     drawSkeleton();
     paintWeights();
     updatePanels();
@@ -736,6 +913,14 @@ export function initRig(host) {
     skeletonChanged();
   });
   $('rigDelete').addEventListener('click', () => { const s = R(); if (s) deleteJoint(s.selected); });
+  $('rigPlay').addEventListener('click', () => play());
+  $('rigResetPose').addEventListener('click', () => resetPose(true));
+  for (const b of document.querySelectorAll('#rigMotionSeg button')) b.addEventListener('click', () => {
+    settings.rigMotion = b.dataset.motion;
+    host.saveSettings();
+    if (playing) { play(false); play(true); }
+    sync();
+  });
   // After OrbitControls' own listeners, so a drag that starts on a joint can stop the orbit it began.
   host.canvas.addEventListener('pointerdown', onPointerDown);
   host.canvas.addEventListener('pointermove', onPointerMove);
@@ -751,7 +936,12 @@ export function initRig(host) {
     onPointerUp,
     onResult,
     // Leaving the tab or the workspace: the job for the old tab ends, the overlay goes.
-    detach() { engine.cancel(); clearTimeout(weightTimer); drag = null; host.controls.enabled = true; overlay.visible = false; },
+    detach() {
+      engine.cancel(); clearTimeout(weightTimer); drag = null; host.controls.enabled = true; overlay.visible = false;
+      if (playing) { cancelAnimationFrame(playing.raf); playing = null; const s = R(); if (s) { s.pose = s.savedPose || null; s.rootOffset = s.savedOffset || null; } }
+      restPose(); poser = null; posedWorld = null;
+      if (gizmo.object) gizmo.detach();
+    },
     paintVisible: () => showWeights(),
     canUndo: () => !!(R() && R().undo.length),
     canRedo: () => !!(R() && R().redo.length),

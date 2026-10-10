@@ -1013,6 +1013,17 @@ details.more[open] > summary { margin-bottom: 8px; }
       <div class="status-line" id="rigWStatus"><b id="rigWHead"></b><span id="rigWNote"></span></div>
       <button type="button" class="btn wide" id="rigReweight" title="Bone heat: each joint's weight spreads over the surface from the parts that see it nearest">Work out the weights again</button>
     </section>
+
+    <section class="sec" id="secPose" aria-labelledby="hPose" data-space="rig" data-needs-model>
+      <div class="sec-head"><h2 id="hPose">Pose</h2><button type="button" class="btn small" id="rigResetPose" title="Back to the model as it stands">Reset</button></div>
+      <p class="note">Turn joints with the Pose tool (P), or play a test motion (Space), to see how the mesh bends. The pose is only for looking: the export keeps the model as it stands.</p>
+      <div class="field"><span>Test motion</span>
+        <div class="seg fill" role="group" aria-label="Test motion" id="rigMotionSeg">
+          <button type="button" data-motion="walk" title="Legs stepping, arms swinging">Walk</button><button type="button" data-motion="arms" title="Arms up over the head and down, elbows and fingers bending">Arms</button><button type="button" data-motion="squat" title="A deep knee bend">Squat</button><button type="button" data-motion="twist" title="The spine and neck turning, the head nodding">Twist</button><button type="button" data-motion="each" title="Every joint bending in turn">Each</button>
+        </div>
+      </div>
+      <button type="button" class="btn wide" id="rigPlay">Play the test motion</button>
+    </section>
   </aside>
 
   <main class="stage" id="stage">
@@ -1047,6 +1058,7 @@ details.more[open] > summary { margin-bottom: 8px; }
         <button type="button" class="tool" data-rigtool="orbit" title="Orbit (O)" aria-label="Orbit"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(-24 12 12)"/><circle cx="12" cy="12" r="2.6"/></svg></button>
         <button type="button" class="tool" data-rigtool="select" title="Move joints (V)" aria-label="Move joints"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4l13 6-5.5 1.8L10.7 17z"/><circle cx="17.5" cy="17.5" r="2.5"/></svg></button>
         <button type="button" class="tool" data-rigtool="add" title="Add joints (J)" aria-label="Add joints"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.5" cy="17.5" r="2.5"/><path d="M8.3 15.7 14 10"/><circle cx="15.5" cy="8.5" r="2"/><path d="M19 15v6M16 18h6"/></svg></button>
+        <button type="button" class="tool" data-rigtool="pose" title="Pose: turn joints to see the mesh bend (P)" aria-label="Pose"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4.5" r="2"/><path d="M12 7v6l-4 7M12 13l4 7M6 9.5l6-1 5.5 3.5"/></svg></button>
         <span class="pal-sep" aria-hidden="true"></span>
         <button type="button" class="palbtn" id="rigUndo" aria-label="Undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H12"/></svg></button>
         <button type="button" class="palbtn" id="rigRedo" aria-label="Redo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H12"/></svg></button>

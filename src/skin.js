@@ -104,22 +104,23 @@ export function vertexSkin(group, skin) {
 }
 
 // Every joint's posed matrix in model space, given per-joint rotations (quaternions in the joint's own rest frame,
-// null for none) and a translation of the root: { world, skin }, skin being world × rest⁻¹, 16 per joint, which takes a
-// rest position to its posed one.
-export function poseMatrices(rig, pose = null, rootOffset = null) {
+// null for none) and a translation of the root (or of joint `offsetJoint`, the hips of a figure whose Root carries its
+// base): { world, skin }, skin being world × rest⁻¹, 16 per joint, which takes a rest position to its posed one.
+export function poseMatrices(rig, pose = null, rootOffset = null, offsetJoint = -1) {
   const B = rig.joints.length, rest = restMatrices(rig), world = new Float64Array(B * 16), skinM = new Float64Array(B * 16);
   const local = new Float64Array(16), inv = new Float64Array(16), tmp = new Float64Array(16);
   for (let i = 0; i < B; i++) {
     const j = rig.joints[i], r = rest.subarray(i * 16, i * 16 + 16);
     const q = pose && pose[i] ? qnorm(qmul(j.rot, pose[i])) : j.rot;
     if (j.parent < 0) {
-      compose(rootOffset ? add(j.pos, rootOffset) : j.pos, q, world.subarray(i * 16, i * 16 + 16));
+      compose(rootOffset && offsetJoint < 0 ? add(j.pos, rootOffset) : j.pos, q, world.subarray(i * 16, i * 16 + 16));
     } else {
       // The joint keeps its place in its parent's rest frame and turns by its own rotation.
       const p = j.parent, pr = rest.subarray(p * 16, p * 16 + 16);
       rigidInverse(pr, inv);
       mmul(inv, compose(j.pos, q, tmp), local);
       mmul(world.subarray(p * 16, p * 16 + 16), local, world.subarray(i * 16, i * 16 + 16));
+      if (rootOffset && i === offsetJoint) for (let k = 0; k < 3; k++) world[i * 16 + 12 + k] += rootOffset[k];
     }
     mmul(world.subarray(i * 16, i * 16 + 16), rigidInverse(r, inv), skinM.subarray(i * 16, i * 16 + 16));
   }
