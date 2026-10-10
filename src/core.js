@@ -598,8 +598,9 @@ export function finalize(mesh, red, opt = {}) {
   return { positions, normals, uvs, colors, srcId, index, vPart, vMat, vertexCount: positions.length / 3, triCount: index.length / 3 };
 }
 
-// Splits a finalized result into export objects, one per part (or one merged object).
-export function exportObjects(result, parts, materials, merge, name) {
+// Splits a finalized result into export objects, one per part (or one merged object). skin, when the result is rigged:
+// four joint indices and weights per result vertex ({ index, weight }), carried onto each object's vertices.
+export function exportObjects(result, parts, materials, merge, name, skin = null) {
   const T = result.triCount;
   const groupsOf = merge ? [[...parts.keys()]] : parts.map((_, i) => [i]);
   const objects = [];
@@ -626,14 +627,16 @@ export function exportObjects(result, parts, materials, merge, name) {
     const n = remap.size;
     const P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = result.uvs ? new Float32Array(n * 2) : null;
     const COL = result.colors ? new Float32Array(n * 3) : null;
+    const SI = skin ? new Uint16Array(n * 4) : null, SW = skin ? new Float32Array(n * 4) : null;
     for (const [v, o] of remap) {
       P.set(result.positions.subarray(v * 3, v * 3 + 3), o * 3);
       N.set(result.normals.subarray(v * 3, v * 3 + 3), o * 3);
       if (UV) UV.set(result.uvs.subarray(v * 2, v * 2 + 2), o * 2);
       if (COL) COL.set(result.colors.subarray(v * 3, v * 3 + 3), o * 3);
+      if (skin) { SI.set(skin.index.subarray(v * 4, v * 4 + 4), o * 4); SW.set(skin.weight.subarray(v * 4, v * 4 + 4), o * 4); }
     }
     const mats = [...matMap.keys()].map(gm => materials[gm]);
-    objects.push({ name: merge ? name : parts[partIds[0]].name, positions: P, normals: N, uvs: UV, colors: COL, index: idx, quad, triMat, materials: mats });
+    objects.push({ name: merge ? name : parts[partIds[0]].name, positions: P, normals: N, uvs: UV, colors: COL, index: idx, quad, triMat, materials: mats, skinIndex: SI, skinWeight: SW });
   }
   return objects;
 }
@@ -799,7 +802,31 @@ export function writeFBX(objects, opt, template) {
   const id = () => nextId++;
   const objNodes = [], conns = [];
   const matIds = new Map(), texIds = new Map();
-  let geoCount = 0, matCount = 0, texCount = 0;
+  let geoCount = 0, matCount = 0, texCount = 0, deformerCount = 0;
+  // The skeleton (rig.js exportSkeleton): a LimbNode model per joint under its parent, in the same units as Vertices.
+  const bones = opt.skeleton || [], boneIds = bones.map(() => id()), poseNodes = [];
+  bones.forEach((b, i) => {
+    const aid = id();
+    objNodes.push(N('NodeAttribute', [['L', aid], ['S', `${b.name}\u0000\u0001NodeAttribute`], ['S', 'LimbNode']], [
+      N('Properties70', [], [P70('Size', 'double', 'Number', '', ['D', b.size])]),
+      N('TypeFlags', [['S', 'Skeleton']]),
+    ]));
+    objNodes.push(N('Model', [['L', boneIds[i]], ['S', `${b.name}\u0000\u0001Model`], ['S', 'LimbNode']], [
+      N('Version', [['I', 232]]),
+      N('Properties70', [], [
+        P70('Lcl Translation', 'Lcl Translation', '', 'A', ['D', b.t[0]], ['D', b.t[1]], ['D', b.t[2]]),
+        P70('Lcl Rotation', 'Lcl Rotation', '', 'A', ['D', b.r[0]], ['D', b.r[1]], ['D', b.r[2]]),
+        P70('Lcl Scaling', 'Lcl Scaling', '', 'A', ['D', 1], ['D', 1], ['D', 1]),
+        P70('DefaultAttributeIndex', 'int', 'Integer', '', ['I', 0]),
+        P70('InheritType', 'enum', '', '', ['I', 1]),
+      ]),
+      N('MultiLayer', [['I', 0]]), N('MultiTake', [['I', 0]]), N('Shading', [['C', 1]]), N('Culling', [['S', 'CullingOff']]),
+    ]));
+    conns.push(N('C', [['S', 'OO'], ['L', aid], ['L', boneIds[i]]]));
+    conns.push(N('C', [['S', 'OO'], ['L', boneIds[i]], ['L', b.parent >= 0 ? boneIds[b.parent] : 0]]));
+    poseNodes.push(N('PoseNode', [], [N('Node', [['L', boneIds[i]]]), N('Matrix', [['d', Float64Array.from(b.world)]])]));
+  });
+  const IDENTITY = Float64Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
   for (const o of objects) {
     const gid = id(), mid = id();
     const polys = polygonsOf(o);
@@ -866,6 +893,33 @@ export function writeFBX(objects, opt, template) {
     geoCount++;
     conns.push(N('C', [['S', 'OO'], ['L', mid], ['L', 0]]));
     conns.push(N('C', [['S', 'OO'], ['L', gid], ['L', mid]]));
+    // Its skin: a cluster per deforming joint, listing the vertices it moves. The mesh sits at the origin unrotated,
+    // so TransformLink is the joint's rest matrix and Transform its inverse.
+    if (bones.length && o.skinIndex) {
+      const sid = id();
+      objNodes.push(N('Deformer', [['L', sid], ['S', `${o.name}\u0000\u0001Deformer`], ['S', 'Skin']], [N('Version', [['I', 101]]), N('Link_DeformAcuracy', [['D', 50]])]));
+      conns.push(N('C', [['S', 'OO'], ['L', sid], ['L', gid]]));
+      deformerCount++;
+      const nv = o.positions.length / 3, lists = bones.map(() => ({ idx: [], w: [] }));
+      for (let v = 0; v < nv; v++) for (let k = 0; k < 4; k++) {
+        const w = o.skinWeight[v * 4 + k];
+        if (w > 0) { const l = lists[o.skinIndex[v * 4 + k]]; l.idx.push(v); l.w.push(w); }
+      }
+      bones.forEach((b, i) => {
+        // A joint that moves no vertex of this object gets no cluster; the bind pose still says where it rests.
+        if (!lists[i].idx.length) return;
+        const cid = id();
+        objNodes.push(N('Deformer', [['L', cid], ['S', `${b.name}\u0000\u0001SubDeformer`], ['S', 'Cluster']], [
+          N('Version', [['I', 100]]), N('UserData', [['S', ''], ['S', '']]),
+          N('Indexes', [['i', Int32Array.from(lists[i].idx)]]), N('Weights', [['d', Float64Array.from(lists[i].w)]]),
+          N('Transform', [['d', rigidInverse64(b.world)]]), N('TransformLink', [['d', Float64Array.from(b.world)]]),
+        ]));
+        conns.push(N('C', [['S', 'OO'], ['L', cid], ['L', sid]]));
+        conns.push(N('C', [['S', 'OO'], ['L', boneIds[i]], ['L', cid]]));
+        deformerCount++;
+      });
+      poseNodes.push(N('PoseNode', [], [N('Node', [['L', mid]]), N('Matrix', [['d', IDENTITY]])]));
+    }
     const mats = o.materials.length ? o.materials : [{ name: 'Material', color: [0.8, 0.8, 0.8], texture: null }];
     for (const m of mats) {
       if (!matIds.has(m)) {
@@ -910,15 +964,25 @@ export function writeFBX(objects, opt, template) {
       conns.push(N('C', [['S', 'OO'], ['L', matIds.get(m)], ['L', mid]]));
     }
   }
+  // The bind pose: every joint and skinned mesh where it was when the weights were made.
+  const poseCount = poseNodes.length && deformerCount ? 1 : 0;
+  if (poseCount) {
+    objNodes.push(N('Pose', [['L', id()], ['S', `${fileName.replace(/\.[^.]+$/, '')}\u0000\u0001Pose`], ['S', 'BindPose']], [
+      N('Type', [['S', 'BindPose']]), N('Version', [['I', 100]]), N('NbPoseNodes', [['I', poseNodes.length]]), ...poseNodes,
+    ]));
+  }
   const objType = (name, count, tplName) => N('ObjectType', [['S', name]], [N('Count', [['I', count]]), ...(tplName && templates[name] ? [templates[name]] : [])]);
   const defs = N('Definitions', [], [
     N('Version', [['I', 100]]),
-    N('Count', [['I', 1 + geoCount * 2 + matCount + texCount * 2]]),
+    N('Count', [['I', 1 + geoCount * 2 + matCount + texCount * 2 + bones.length * 2 + deformerCount + poseCount]]),
     objType('GlobalSettings', 1),
+    ...(bones.length ? [objType('NodeAttribute', bones.length)] : []),
     objType('Geometry', geoCount, true),
-    objType('Model', geoCount, true),
+    objType('Model', geoCount + bones.length, true),
     objType('Material', matCount, true),
     ...(texCount ? [objType('Texture', texCount, true), objType('Video', texCount, true)] : []),
+    ...(deformerCount ? [objType('Deformer', deformerCount)] : []),
+    ...(poseCount ? [objType('Pose', poseCount)] : []),
   ]);
   const top = [tpl.FBXHeaderExtension, tpl.FileId, tpl.CreationTime, tpl.Creator, tpl.GlobalSettings, tpl.Documents, tpl.References,
     defs, N('Objects', [], objNodes), N('Connections', [], conns), tpl.Takes];
@@ -935,6 +999,19 @@ export function writeFBX(objects, opt, template) {
   out.zeros(120);
   out.bytes(FOOT_MAGIC);
   return out.buf.slice(0, out.len);
+}
+
+// The inverse of a rotation plus translation (column-major 4×4), as FBX's cluster Transform wants it.
+function rigidInverse64(m) {
+  const o = new Float64Array(16);
+  o[0] = m[0]; o[1] = m[4]; o[2] = m[8];
+  o[4] = m[1]; o[5] = m[5]; o[6] = m[9];
+  o[8] = m[2]; o[9] = m[6]; o[10] = m[10];
+  o[12] = -(m[0] * m[12] + m[1] * m[13] + m[2] * m[14]);
+  o[13] = -(m[4] * m[12] + m[5] * m[13] + m[6] * m[14]);
+  o[14] = -(m[8] * m[12] + m[9] * m[13] + m[10] * m[14]);
+  o[15] = 1;
+  return o;
 }
 
 // Reads UnitScaleFactor (centimetres per file unit) from an FBX file, binary or ASCII.

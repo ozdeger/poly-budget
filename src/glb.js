@@ -19,9 +19,38 @@ function drawable(tex, copies) {
   return copies.get(tex);
 }
 
-// The result as a binary glTF: one mesh per object, triangles grouped by material, positions times scale.
-export async function glbBytes(objects, scale) {
+// The skeleton (rig.js exportSkeleton, already in the export's units) as three.js bones, posed at rest: { bones,
+// roots, skeleton }.
+export function bonesOf(joints) {
+  const bones = joints.map(b => {
+    const bone = new THREE.Bone();
+    bone.name = b.name;
+    bone.position.fromArray(b.t);
+    bone.quaternion.fromArray(b.q);
+    return bone;
+  });
+  const roots = [];
+  joints.forEach((b, i) => (b.parent >= 0 ? bones[b.parent].add(bones[i]) : roots.push(bones[i])));
+  for (const r of roots) r.updateMatrixWorld(true);
+  return { bones, roots, skeleton: new THREE.Skeleton(bones) };
+}
+
+// An export object's mesh: skinned and bound at rest when the object has weights and there is a skeleton.
+export function meshOf(g, material, o, rig) {
+  if (!rig || !o.skinIndex) return new THREE.Mesh(g, material);
+  g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(o.skinIndex, 4));
+  g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(o.skinWeight, 4));
+  const mesh = new THREE.SkinnedMesh(g, material);
+  mesh.bind(rig.skeleton, new THREE.Matrix4());
+  return mesh;
+}
+
+// The result as a binary glTF: one mesh per object, triangles grouped by material, positions times scale. skeleton:
+// rig.js exportSkeleton(rig, scale), which makes the objects that carry weights skinned meshes.
+export async function glbBytes(objects, scale, skeleton = null) {
   const scene = new THREE.Scene(), copies = new Map();
+  const rig = skeleton && skeleton.length ? bonesOf(skeleton) : null;
+  if (rig) scene.add(...rig.roots);
   for (const o of objects) {
     const P = Float32Array.from(o.positions, v => v * scale);
     const g = new THREE.BufferGeometry();
@@ -50,7 +79,7 @@ export async function glbBytes(objects, scale) {
       }
       return new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...mi.color, THREE.SRGBColorSpace) });
     });
-    const mesh = new THREE.Mesh(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial());
+    const mesh = meshOf(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial(), o, rig);
     mesh.name = o.name;
     scene.add(mesh);
   }

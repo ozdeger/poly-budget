@@ -6850,8 +6850,9 @@ function finalize(mesh, red, opt = {}) {
   return { positions, normals, uvs, colors, srcId, index, vPart, vMat, vertexCount: positions.length / 3, triCount: index.length / 3 };
 }
 
-// Splits a finalized result into export objects, one per part (or one merged object).
-function exportObjects(result, parts, materials, merge, name) {
+// Splits a finalized result into export objects, one per part (or one merged object). skin, when the result is rigged:
+// four joint indices and weights per result vertex ({ index, weight }), carried onto each object's vertices.
+function exportObjects(result, parts, materials, merge, name, skin = null) {
   const T = result.triCount;
   const groupsOf = merge ? [[...parts.keys()]] : parts.map((_, i) => [i]);
   const objects = [];
@@ -6878,14 +6879,16 @@ function exportObjects(result, parts, materials, merge, name) {
     const n = remap.size;
     const P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = result.uvs ? new Float32Array(n * 2) : null;
     const COL = result.colors ? new Float32Array(n * 3) : null;
+    const SI = skin ? new Uint16Array(n * 4) : null, SW = skin ? new Float32Array(n * 4) : null;
     for (const [v, o] of remap) {
       P.set(result.positions.subarray(v * 3, v * 3 + 3), o * 3);
       N.set(result.normals.subarray(v * 3, v * 3 + 3), o * 3);
       if (UV) UV.set(result.uvs.subarray(v * 2, v * 2 + 2), o * 2);
       if (COL) COL.set(result.colors.subarray(v * 3, v * 3 + 3), o * 3);
+      if (skin) { SI.set(skin.index.subarray(v * 4, v * 4 + 4), o * 4); SW.set(skin.weight.subarray(v * 4, v * 4 + 4), o * 4); }
     }
     const mats = [...matMap.keys()].map(gm => materials[gm]);
-    objects.push({ name: merge ? name : parts[partIds[0]].name, positions: P, normals: N, uvs: UV, colors: COL, index: idx, quad, triMat, materials: mats });
+    objects.push({ name: merge ? name : parts[partIds[0]].name, positions: P, normals: N, uvs: UV, colors: COL, index: idx, quad, triMat, materials: mats, skinIndex: SI, skinWeight: SW });
   }
   return objects;
 }
@@ -7051,7 +7054,31 @@ function writeFBX(objects, opt, template) {
   const id = () => nextId++;
   const objNodes = [], conns = [];
   const matIds = new Map(), texIds = new Map();
-  let geoCount = 0, matCount = 0, texCount = 0;
+  let geoCount = 0, matCount = 0, texCount = 0, deformerCount = 0;
+  // The skeleton (rig.js exportSkeleton): a LimbNode model per joint under its parent, in the same units as Vertices.
+  const bones = opt.skeleton || [], boneIds = bones.map(() => id()), poseNodes = [];
+  bones.forEach((b, i) => {
+    const aid = id();
+    objNodes.push(N('NodeAttribute', [['L', aid], ['S', `${b.name}\u0000\u0001NodeAttribute`], ['S', 'LimbNode']], [
+      N('Properties70', [], [P70('Size', 'double', 'Number', '', ['D', b.size])]),
+      N('TypeFlags', [['S', 'Skeleton']]),
+    ]));
+    objNodes.push(N('Model', [['L', boneIds[i]], ['S', `${b.name}\u0000\u0001Model`], ['S', 'LimbNode']], [
+      N('Version', [['I', 232]]),
+      N('Properties70', [], [
+        P70('Lcl Translation', 'Lcl Translation', '', 'A', ['D', b.t[0]], ['D', b.t[1]], ['D', b.t[2]]),
+        P70('Lcl Rotation', 'Lcl Rotation', '', 'A', ['D', b.r[0]], ['D', b.r[1]], ['D', b.r[2]]),
+        P70('Lcl Scaling', 'Lcl Scaling', '', 'A', ['D', 1], ['D', 1], ['D', 1]),
+        P70('DefaultAttributeIndex', 'int', 'Integer', '', ['I', 0]),
+        P70('InheritType', 'enum', '', '', ['I', 1]),
+      ]),
+      N('MultiLayer', [['I', 0]]), N('MultiTake', [['I', 0]]), N('Shading', [['C', 1]]), N('Culling', [['S', 'CullingOff']]),
+    ]));
+    conns.push(N('C', [['S', 'OO'], ['L', aid], ['L', boneIds[i]]]));
+    conns.push(N('C', [['S', 'OO'], ['L', boneIds[i]], ['L', b.parent >= 0 ? boneIds[b.parent] : 0]]));
+    poseNodes.push(N('PoseNode', [], [N('Node', [['L', boneIds[i]]]), N('Matrix', [['d', Float64Array.from(b.world)]])]));
+  });
+  const IDENTITY = Float64Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
   for (const o of objects) {
     const gid = id(), mid = id();
     const polys = polygonsOf(o);
@@ -7118,6 +7145,33 @@ function writeFBX(objects, opt, template) {
     geoCount++;
     conns.push(N('C', [['S', 'OO'], ['L', mid], ['L', 0]]));
     conns.push(N('C', [['S', 'OO'], ['L', gid], ['L', mid]]));
+    // Its skin: a cluster per deforming joint, listing the vertices it moves. The mesh sits at the origin unrotated,
+    // so TransformLink is the joint's rest matrix and Transform its inverse.
+    if (bones.length && o.skinIndex) {
+      const sid = id();
+      objNodes.push(N('Deformer', [['L', sid], ['S', `${o.name}\u0000\u0001Deformer`], ['S', 'Skin']], [N('Version', [['I', 101]]), N('Link_DeformAcuracy', [['D', 50]])]));
+      conns.push(N('C', [['S', 'OO'], ['L', sid], ['L', gid]]));
+      deformerCount++;
+      const nv = o.positions.length / 3, lists = bones.map(() => ({ idx: [], w: [] }));
+      for (let v = 0; v < nv; v++) for (let k = 0; k < 4; k++) {
+        const w = o.skinWeight[v * 4 + k];
+        if (w > 0) { const l = lists[o.skinIndex[v * 4 + k]]; l.idx.push(v); l.w.push(w); }
+      }
+      bones.forEach((b, i) => {
+        // A joint that moves no vertex of this object gets no cluster; the bind pose still says where it rests.
+        if (!lists[i].idx.length) return;
+        const cid = id();
+        objNodes.push(N('Deformer', [['L', cid], ['S', `${b.name}\u0000\u0001SubDeformer`], ['S', 'Cluster']], [
+          N('Version', [['I', 100]]), N('UserData', [['S', ''], ['S', '']]),
+          N('Indexes', [['i', Int32Array.from(lists[i].idx)]]), N('Weights', [['d', Float64Array.from(lists[i].w)]]),
+          N('Transform', [['d', rigidInverse64(b.world)]]), N('TransformLink', [['d', Float64Array.from(b.world)]]),
+        ]));
+        conns.push(N('C', [['S', 'OO'], ['L', cid], ['L', sid]]));
+        conns.push(N('C', [['S', 'OO'], ['L', boneIds[i]], ['L', cid]]));
+        deformerCount++;
+      });
+      poseNodes.push(N('PoseNode', [], [N('Node', [['L', mid]]), N('Matrix', [['d', IDENTITY]])]));
+    }
     const mats = o.materials.length ? o.materials : [{ name: 'Material', color: [0.8, 0.8, 0.8], texture: null }];
     for (const m of mats) {
       if (!matIds.has(m)) {
@@ -7162,15 +7216,25 @@ function writeFBX(objects, opt, template) {
       conns.push(N('C', [['S', 'OO'], ['L', matIds.get(m)], ['L', mid]]));
     }
   }
+  // The bind pose: every joint and skinned mesh where it was when the weights were made.
+  const poseCount = poseNodes.length && deformerCount ? 1 : 0;
+  if (poseCount) {
+    objNodes.push(N('Pose', [['L', id()], ['S', `${fileName.replace(/\.[^.]+$/, '')}\u0000\u0001Pose`], ['S', 'BindPose']], [
+      N('Type', [['S', 'BindPose']]), N('Version', [['I', 100]]), N('NbPoseNodes', [['I', poseNodes.length]]), ...poseNodes,
+    ]));
+  }
   const objType = (name, count, tplName) => N('ObjectType', [['S', name]], [N('Count', [['I', count]]), ...(tplName && templates[name] ? [templates[name]] : [])]);
   const defs = N('Definitions', [], [
     N('Version', [['I', 100]]),
-    N('Count', [['I', 1 + geoCount * 2 + matCount + texCount * 2]]),
+    N('Count', [['I', 1 + geoCount * 2 + matCount + texCount * 2 + bones.length * 2 + deformerCount + poseCount]]),
     objType('GlobalSettings', 1),
+    ...(bones.length ? [objType('NodeAttribute', bones.length)] : []),
     objType('Geometry', geoCount, true),
-    objType('Model', geoCount, true),
+    objType('Model', geoCount + bones.length, true),
     objType('Material', matCount, true),
     ...(texCount ? [objType('Texture', texCount, true), objType('Video', texCount, true)] : []),
+    ...(deformerCount ? [objType('Deformer', deformerCount)] : []),
+    ...(poseCount ? [objType('Pose', poseCount)] : []),
   ]);
   const top = [tpl.FBXHeaderExtension, tpl.FileId, tpl.CreationTime, tpl.Creator, tpl.GlobalSettings, tpl.Documents, tpl.References,
     defs, N('Objects', [], objNodes), N('Connections', [], conns), tpl.Takes];
@@ -7187,6 +7251,19 @@ function writeFBX(objects, opt, template) {
   out.zeros(120);
   out.bytes(FOOT_MAGIC);
   return out.buf.slice(0, out.len);
+}
+
+// The inverse of a rotation plus translation (column-major 4×4), as FBX's cluster Transform wants it.
+function rigidInverse64(m) {
+  const o = new Float64Array(16);
+  o[0] = m[0]; o[1] = m[4]; o[2] = m[8];
+  o[4] = m[1]; o[5] = m[5]; o[6] = m[9];
+  o[8] = m[2]; o[9] = m[6]; o[10] = m[10];
+  o[12] = -(m[0] * m[12] + m[1] * m[13] + m[2] * m[14]);
+  o[13] = -(m[4] * m[12] + m[5] * m[13] + m[6] * m[14]);
+  o[14] = -(m[8] * m[12] + m[9] * m[13] + m[10] * m[14]);
+  o[15] = 1;
+  return o;
 }
 
 // Reads UnitScaleFactor (centimetres per file unit) from an FBX file, binary or ASCII.
@@ -8872,6 +8949,449 @@ function runReduction(S, ctx, labels, st, fopt, progress = null) {
   return out;
 }
 
+const RIG = (() => {
+
+// Skeletons for the result: the humanoid template, bone names for each engine, and each joint's rest orientation.
+// No DOM and no three.js, so it runs in the page, the worker and Node alike.
+//
+// A rig is { version, template, fingers, naming, frame: { up, front, left }, plane, joints }. Each joint is
+// { name, slot, parent, pos, rot, deform, side, mirror, placed }: pos in the model's own units (as the result's
+// positions), rot its rest orientation in model space as a quaternion [x, y, z, w], parent and mirror joint indices
+// (-1 for none), side 'L', 'R' or 'C', and placed 'detected', 'estimated' or 'user'. Parents always come before their
+// children. A joint's bone runs from it to its main child; its +Y points along that bone and +X is its hinge, the axis
+// elbows, knees, the spine and fingers bend about.
+
+const RIG_VERSION = 1;
+
+// ---------- small vector, quaternion and matrix helpers (matrices column-major, as three.js keeps them) ----------
+
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const len = a => Math.hypot(a[0], a[1], a[2]);
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+function norm(a) { const l = len(a); return l > 1e-12 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; }
+
+// The rotation whose columns are the axes x, y, z (orthonormal, right-handed).
+function quatFromAxes(x, y, z) {
+  const m00 = x[0], m10 = x[1], m20 = x[2], m01 = y[0], m11 = y[1], m21 = y[2], m02 = z[0], m12 = z[1], m22 = z[2];
+  const tr = m00 + m11 + m22;
+  let q;
+  if (tr > 0) { const s = 0.5 / Math.sqrt(tr + 1); q = [(m21 - m12) * s, (m02 - m20) * s, (m10 - m01) * s, 0.25 / s]; }
+  else if (m00 > m11 && m00 > m22) { const s = 2 * Math.sqrt(1 + m00 - m11 - m22); q = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
+  else if (m11 > m22) { const s = 2 * Math.sqrt(1 + m11 - m00 - m22); q = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
+  else { const s = 2 * Math.sqrt(1 + m22 - m00 - m11); q = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]; }
+  return qnorm(q);
+}
+function qnorm(q) { const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1; return [q[0] / l, q[1] / l, q[2] / l, q[3] / l]; }
+const qconj = q => [-q[0], -q[1], -q[2], q[3]];
+function qmul(a, b) {
+  return [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+}
+function qrot(q, v) {
+  const [x, y, z, w] = q;
+  const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+  return [v[0] + w * tx + y * tz - z * ty, v[1] + w * ty + z * tx - x * tz, v[2] + w * tz + x * ty - y * tx];
+}
+function qaxis(axis, angle) { const a = norm(axis), s = Math.sin(angle / 2); return [a[0] * s, a[1] * s, a[2] * s, Math.cos(angle / 2)]; }
+// The shortest rotation taking direction a onto direction b.
+function qbetween(a, b) {
+  a = norm(a); b = norm(b);
+  const d = dot(a, b);
+  if (d < -0.999999) {
+    const axis = norm(Math.abs(a[0]) < 0.9 ? cross(a, [1, 0, 0]) : cross(a, [0, 1, 0]));
+    return [axis[0], axis[1], axis[2], 0];
+  }
+  const c = cross(a, b);
+  return qnorm([c[0], c[1], c[2], 1 + d]);
+}
+
+// Rotation and translation as a 4×4 matrix.
+function compose(pos, q, out = new Float64Array(16)) {
+  const [x, y, z, w] = q, x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2, yy = y * y2, yz = y * z2, zz = z * z2, wx = w * x2, wy = w * y2, wz = w * z2;
+  out[0] = 1 - (yy + zz); out[1] = xy + wz; out[2] = xz - wy; out[3] = 0;
+  out[4] = xy - wz; out[5] = 1 - (xx + zz); out[6] = yz + wx; out[7] = 0;
+  out[8] = xz + wy; out[9] = yz - wx; out[10] = 1 - (xx + yy); out[11] = 0;
+  out[12] = pos[0]; out[13] = pos[1]; out[14] = pos[2]; out[15] = 1;
+  return out;
+}
+function mmul(a, b, out = new Float64Array(16)) {
+  const r = new Float64Array(16);
+  for (let c = 0; c < 4; c++) for (let row = 0; row < 4; row++) {
+    r[c * 4 + row] = a[row] * b[c * 4] + a[4 + row] * b[c * 4 + 1] + a[8 + row] * b[c * 4 + 2] + a[12 + row] * b[c * 4 + 3];
+  }
+  out.set(r);
+  return out;
+}
+// Inverse of a rotation plus translation.
+function rigidInverse(m, out = new Float64Array(16)) {
+  const r = [m[0], m[4], m[8], m[1], m[5], m[9], m[2], m[6], m[10]];
+  const t = [m[12], m[13], m[14]];
+  out[0] = r[0]; out[1] = r[1]; out[2] = r[2]; out[3] = 0;
+  out[4] = r[3]; out[5] = r[4]; out[6] = r[5]; out[7] = 0;
+  out[8] = r[6]; out[9] = r[7]; out[10] = r[8]; out[11] = 0;
+  out[12] = -(r[0] * t[0] + r[3] * t[1] + r[6] * t[2]);
+  out[13] = -(r[1] * t[0] + r[4] * t[1] + r[7] * t[2]);
+  out[14] = -(r[2] * t[0] + r[5] * t[1] + r[8] * t[2]);
+  out[15] = 1;
+  return out;
+}
+// FBX's default rotation order (eEulerXYZ: X first, then Y, then Z), which is three.js's 'ZYX', in degrees.
+function eulerXYZ(q) {
+  const m = compose([0, 0, 0], q);
+  const m11 = m[0], m12 = m[4], m21 = m[1], m22 = m[5], m31 = m[2], m32 = m[6], m33 = m[10];
+  const y = Math.asin(-Math.min(1, Math.max(-1, m31)));
+  let x, z;
+  if (Math.abs(m31) < 0.9999999) { x = Math.atan2(m32, m33); z = Math.atan2(m21, m11); }
+  else { x = 0; z = Math.atan2(-m12, m22); }
+  const d = 180 / Math.PI;
+  return [x * d, y * d, z * d];
+}
+
+// ---------- the humanoid template ----------
+
+const FINGERS = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'];
+const SIDES = [['Left', 'L'], ['Right', 'R']];
+
+// The humanoid's joints in order, parents first: { slot, parent, side, deform }. Slots are Mixamo's joint names.
+function humanoidSlots(fingers = true) {
+  const out = [];
+  const add = (slot, parent, side = 'C', deform = true) => out.push({ slot, parent, side, deform });
+  add('Hips', null); add('Spine', 'Hips'); add('Spine1', 'Spine'); add('Spine2', 'Spine1');
+  add('Neck', 'Spine2'); add('Head', 'Neck'); add('HeadTop_End', 'Head', 'C', false);
+  for (const [S, side] of SIDES) {
+    add(`${S}Shoulder`, 'Spine2', side); add(`${S}Arm`, `${S}Shoulder`, side); add(`${S}ForeArm`, `${S}Arm`, side); add(`${S}Hand`, `${S}ForeArm`, side);
+    if (fingers) {
+      for (const f of FINGERS) {
+        add(`${S}Hand${f}1`, `${S}Hand`, side); add(`${S}Hand${f}2`, `${S}Hand${f}1`, side);
+        add(`${S}Hand${f}3`, `${S}Hand${f}2`, side); add(`${S}Hand${f}4`, `${S}Hand${f}3`, side, false);
+      }
+    }
+  }
+  for (const [S, side] of SIDES) {
+    add(`${S}UpLeg`, 'Hips', side); add(`${S}Leg`, `${S}UpLeg`, side); add(`${S}Foot`, `${S}Leg`, side);
+    add(`${S}ToeBase`, `${S}Foot`, side); add(`${S}Toe_End`, `${S}ToeBase`, side, false);
+  }
+  return out;
+}
+
+// Where a joint with several children points its bone.
+const MAIN_CHILD = { Hips: 'Spine', Spine2: 'Neck', LeftHand: 'LeftHandMiddle1', RightHand: 'RightHandMiddle1' };
+
+// The other side's slot: Left ↔ Right.
+const mirrorSlot = slot => (slot.startsWith('Left') ? `Right${slot.slice(4)}` : slot.startsWith('Right') ? `Left${slot.slice(5)}` : slot);
+
+// Bone names per engine. Mixamo's (the slots themselves) are mapped on their own by Unity's Humanoid, Godot's humanoid
+// profile and Blender; Unreal's are its mannequin's.
+const UNREAL = {
+  Hips: 'pelvis', Spine: 'spine_01', Spine1: 'spine_02', Spine2: 'spine_03', Neck: 'neck_01', Head: 'head', HeadTop_End: 'head_end',
+  Shoulder: 'clavicle', Arm: 'upperarm', ForeArm: 'lowerarm', Hand: 'hand', UpLeg: 'thigh', Leg: 'calf', Foot: 'foot', ToeBase: 'ball', Toe_End: 'ball_end',
+};
+const NAMINGS = ['mixamo', 'unreal'];
+function boneName(slot, naming = 'mixamo') {
+  if (naming !== 'unreal') return slot;
+  if (UNREAL[slot]) return UNREAL[slot];
+  const m = /^(Left|Right)(.+)$/.exec(slot);
+  if (!m) return slot;
+  const s = m[1] === 'Left' ? 'l' : 'r', rest = m[2];
+  if (UNREAL[rest]) return `${UNREAL[rest]}_${s}`;
+  const f = /^Hand(Thumb|Index|Middle|Ring|Pinky)(\d)$/.exec(rest);
+  if (f) return `${f[1].toLowerCase()}_0${f[2]}_${s}`;
+  return slot;
+}
+
+// A rig from joint positions by slot. Joints the map lacks are left out with their children; `placed` marks how each
+// position was found ({ slot: 'detected' | 'estimated' | 'user' }, default estimated).
+function humanoidRig(positions, opt = {}) {
+  const fingers = opt.fingers ?? FINGERS.every(f => positions[`LeftHand${f}1`]);
+  const naming = opt.naming || 'mixamo';
+  const slots = humanoidSlots(fingers).filter(s => positions[s.slot]);
+  const index = new Map(slots.map((s, i) => [s.slot, i]));
+  const joints = slots.map(s => ({
+    name: boneName(s.slot, naming), slot: s.slot, parent: s.parent ? index.get(s.parent) ?? -1 : -1,
+    pos: [...positions[s.slot]], rot: [0, 0, 0, 1], deform: s.deform, side: s.side,
+    mirror: index.get(mirrorSlot(s.slot)) ?? -1, placed: (opt.placed && opt.placed[s.slot]) || 'estimated',
+  }));
+  // A joint whose parent was left out goes too.
+  const keep = joints.map(() => true);
+  joints.forEach((j, i) => { if (slots[i].parent && (j.parent < 0 || !keep[j.parent])) keep[i] = false; });
+  const rig = { version: RIG_VERSION, template: 'humanoid', fingers, naming, frame: frameOf(opt.frame), plane: opt.plane || null, joints: [] };
+  const remap = new Int32Array(joints.length).fill(-1);
+  joints.forEach((j, i) => { if (keep[i]) { remap[i] = rig.joints.length; rig.joints.push(j); } });
+  for (const j of rig.joints) { j.parent = j.parent >= 0 ? remap[j.parent] : -1; j.mirror = j.mirror >= 0 ? remap[j.mirror] : -1; }
+  orientJoints(rig);
+  return rig;
+}
+
+// up, front and left as unit vectors; three.js's convention (Y up, facing +Z, the character's left at +X) by default.
+function frameOf(f) {
+  const up = norm(f?.up || [0, 1, 0]);
+  const front = norm(sub(f?.front || [0, 0, 1], scale(up, dot(f?.front || [0, 0, 1], up))));
+  return { up, front, left: norm(cross(up, front)) };
+}
+
+const childrenOf = rig => {
+  const kids = rig.joints.map(() => []);
+  rig.joints.forEach((j, i) => { if (j.parent >= 0) kids[j.parent].push(i); });
+  return kids;
+};
+
+// The child a joint's bone points at, or -1 for a leaf.
+function mainChild(rig, i, kids = childrenOf(rig)) {
+  const c = kids[i];
+  if (!c.length) return -1;
+  const want = MAIN_CHILD[rig.joints[i].slot];
+  if (want) { const k = c.find(k => rig.joints[k].slot === want); if (k !== undefined) return k; }
+  return c[0];
+}
+
+// Each joint's rest orientation: +Y along its bone (a leaf keeps its parent's), +X its hinge, cross(Y, front) or, for a
+// bone running front to back (feet, toes), cross(Y, ±up). Mirrored joints come out mirrored, so a rotation about X bends
+// both elbows alike. Joints marked keepRot (from a file's own skeleton) keep theirs.
+function orientJoints(rig) {
+  const { up, front } = rig.frame, kids = childrenOf(rig);
+  const dirs = rig.joints.map(() => null);
+  rig.joints.forEach((j, i) => {
+    const c = mainChild(rig, i, kids);
+    let y = c >= 0 ? norm(sub(rig.joints[c].pos, j.pos)) : null;
+    if (!y || len(y) < 0.5) y = j.parent >= 0 ? dirs[j.parent] : up;
+    dirs[i] = y;
+    if (j.keepRot) return;
+    const f = dot(y, front);
+    const ref = Math.abs(f) <= 0.8 ? front : scale(up, Math.sign(f) || 1);
+    let x = norm(cross(y, ref));
+    if (len(x) < 0.5) x = norm(cross(y, Math.abs(dot(y, up)) < 0.9 ? up : front));
+    const z = cross(x, y);
+    j.rot = quatFromAxes(x, y, z);
+  });
+  return rig;
+}
+
+// Rest matrices in model space, 16 per joint.
+function restMatrices(rig) {
+  const out = new Float64Array(rig.joints.length * 16);
+  rig.joints.forEach((j, i) => compose(j.pos, j.rot, out.subarray(i * 16, i * 16 + 16)));
+  return out;
+}
+
+// The skeleton as exporters want it, in the model's units times `unit`: per joint its name, parent, world rest matrix,
+// local translation and rotation (quaternion, and Euler degrees in FBX's XYZ order), whether it deforms, and a display
+// size for FBX's LimbNode.
+function exportSkeleton(rig, unit = 1) {
+  const kids = childrenOf(rig);
+  return rig.joints.map((j, i) => {
+    const p = j.parent >= 0 ? rig.joints[j.parent] : null;
+    const pos = scale(j.pos, unit);
+    const local = p ? qrot(qconj(p.rot), sub(pos, scale(p.pos, unit))) : pos;
+    const q = p ? qnorm(qmul(qconj(p.rot), j.rot)) : j.rot;
+    const c = mainChild(rig, i, kids);
+    const size = c >= 0 ? dist(j.pos, rig.joints[c].pos) * unit : p ? dist(j.pos, p.pos) * unit * 0.5 : 1;
+    return { name: j.name, parent: j.parent, world: compose(pos, j.rot), t: local, q, r: eulerXYZ(q), deform: j.deform, size };
+  });
+}
+
+// Renames template joints for another engine's names; custom joints keep theirs.
+function renameRig(rig, naming) {
+  rig.naming = naming;
+  for (const j of rig.joints) if (j.slot) j.name = boneName(j.slot, naming);
+  return rig;
+}
+
+// Joint names made unique (FBX and glTF importers match bones by name), in place.
+function uniqueNames(rig) {
+  const seen = new Set();
+  for (const j of rig.joints) {
+    let base = (j.name || 'Bone').replace(/[^\w.:-]+/g, '_') || 'Bone', name = base, k = 1;
+    while (seen.has(name)) name = `${base}.${String(k++).padStart(3, '0')}`;
+    seen.add(name);
+    j.name = name;
+  }
+  return rig;
+}
+
+// A plain copy, safe to store, post to a worker or keep in undo history.
+function cloneRig(rig) {
+  return rig && { ...rig, frame: { ...rig.frame }, plane: rig.plane && { ...rig.plane }, joints: rig.joints.map(j => ({ ...j, pos: [...j.pos], rot: [...j.rot] })) };
+}
+
+return { RIG_VERSION, sub, add, scale, dot, cross, len, dist, lerp, norm, quatFromAxes, qnorm, qconj, qmul, qrot, qaxis, qbetween, compose, mmul, rigidInverse, eulerXYZ, FINGERS, humanoidSlots, mirrorSlot, NAMINGS, boneName, humanoidRig, frameOf, childrenOf, mainChild, orientJoints, restMatrices, exportSkeleton, renameRig, uniqueNames, cloneRig };
+})();
+const SKIN = (() => {
+const { compose, mmul, rigidInverse, restMatrices, childrenOf, mainChild, qmul, qnorm, sub, dot, len, norm, scale, add, dist } = RIG;
+// Skin weights for the result and posing it. No DOM and no three.js, so it runs in the page, the worker and Node alike.
+//
+// Weights live on the result's distinct positions (groups), never on its render vertices: the copies a vertex gets
+// along UV seams and hard edges must move together, or the mesh tears where they part. In memory they are dense,
+// W[g * B + b] for group g and joint b; for export and the preview each group keeps its four largest.
+
+
+
+
+const MAX_INFLUENCES = 4;
+// Weights below this share are dropped when the weights are limited, so no vertex carries influences too small to see.
+const MIN_WEIGHT = 0.01;
+
+// The result's distinct positions: group per vertex, the group count and each group's position.
+function skinGroups(mesh) {
+  const V = mesh.positions.length / 3;
+  const { group, count } = positionGroups({ positions: mesh.positions, vertexCount: V });
+  const P = new Float32Array(count * 3);
+  for (let v = 0; v < V; v++) P.set(mesh.positions.subarray(v * 3, v * 3 + 3), group[v] * 3);
+  return { group, count, positions: P };
+}
+
+// Each deforming joint's bone as a segment, from the joint to its main child. A leaf (a hand without fingers) gets a
+// stub along its parent's direction, 0.4 of its parent's length. Segments of joints that don't deform are null.
+function boneSegments(rig) {
+  const kids = childrenOf(rig);
+  return rig.joints.map((j, i) => {
+    if (!j.deform) return null;
+    const c = mainChild(rig, i, kids);
+    if (c >= 0 && dist(rig.joints[c].pos, j.pos) > 1e-9) return { a: j.pos, b: rig.joints[c].pos };
+    const p = j.parent >= 0 ? rig.joints[j.parent] : null;
+    const d = p ? sub(j.pos, p.pos) : [0, 0, 0];
+    return { a: j.pos, b: add(j.pos, scale(norm(d), 0.4 * len(d))) };
+  });
+}
+
+// Distance from p to segment s, and the point's parameter along it.
+function segmentDistance(p, s) {
+  const ab = sub(s.b, s.a), l2 = dot(ab, ab);
+  const t = l2 > 0 ? Math.min(1, Math.max(0, dot(sub(p, s.a), ab) / l2)) : 0;
+  return Math.hypot(p[0] - s.a[0] - ab[0] * t, p[1] - s.a[1] - ab[1] * t, p[2] - s.a[2] - ab[2] * t);
+}
+
+// Weights that fall off with the distance to each bone (1/d⁴, the two nearest): a quick stand-in for the solved ones.
+function envelopeWeights(points, rig) {
+  const segs = boneSegments(rig), B = rig.joints.length, G = points.length / 3;
+  const W = new Float32Array(G * B);
+  for (let g = 0; g < G; g++) {
+    const p = [points[g * 3], points[g * 3 + 1], points[g * 3 + 2]];
+    let b1 = -1, d1 = Infinity, b2 = -1, d2 = Infinity;
+    segs.forEach((s, b) => {
+      if (!s) return;
+      const d = segmentDistance(p, s);
+      if (d < d1) { b2 = b1; d2 = d1; b1 = b; d1 = d; } else if (d < d2) { b2 = b; d2 = d; }
+    });
+    if (b1 < 0) continue;
+    const w1 = 1 / Math.max(d1, 1e-9) ** 4, w2 = b2 >= 0 ? 1 / Math.max(d2, 1e-9) ** 4 : 0;
+    W[g * B + b1] = w1 / (w1 + w2);
+    if (b2 >= 0) W[g * B + b2] = w2 / (w1 + w2);
+  }
+  return W;
+}
+
+// Each group's largest weights (at most `max`, none under `min`), normalised: { index: Uint16Array(G·4), weight:
+// Float32Array(G·4), unweighted }. A group with no weight at all goes wholly to `fallback` (the root), and is counted.
+function limitWeights(W, G, B, max = MAX_INFLUENCES, min = MIN_WEIGHT, fallback = 0) {
+  const index = new Uint16Array(G * 4), weight = new Float32Array(G * 4);
+  const top = new Int32Array(max), val = new Float64Array(max);
+  let unweighted = 0;
+  for (let g = 0; g < G; g++) {
+    let n = 0, total = 0;
+    for (let b = 0; b < B; b++) {
+      const w = W[g * B + b];
+      if (!(w > 0)) continue;
+      total += w;
+      if (n < max) { top[n] = b; val[n] = w; n++; }
+      else {
+        let lo = 0;
+        for (let k = 1; k < max; k++) if (val[k] < val[lo]) lo = k;
+        if (w > val[lo]) { top[lo] = b; val[lo] = w; }
+      }
+    }
+    if (!n) { unweighted++; index[g * 4] = fallback; weight[g * 4] = 1; continue; }
+    // Largest first, then drop what stays under the minimum share (always keeping the largest).
+    const order = [...Array(n).keys()].sort((a, b) => val[b] - val[a]);
+    let kept = 0, sum = 0;
+    for (const k of order) {
+      if (kept && val[k] / total < min) break;
+      index[g * 4 + kept] = top[k]; weight[g * 4 + kept] = val[k]; sum += val[k]; kept++;
+    }
+    for (let k = 0; k < kept; k++) weight[g * 4 + k] /= sum;
+  }
+  return { index, weight, unweighted };
+}
+
+// Per-group skin data spread to the render vertices.
+function vertexSkin(group, skin) {
+  const V = group.length, index = new Uint16Array(V * 4), weight = new Float32Array(V * 4);
+  for (let v = 0; v < V; v++) {
+    const g = group[v];
+    for (let k = 0; k < 4; k++) { index[v * 4 + k] = skin.index[g * 4 + k]; weight[v * 4 + k] = skin.weight[g * 4 + k]; }
+  }
+  return { index, weight };
+}
+
+// Every joint's posed matrix in model space, given per-joint rotations (quaternions in the joint's own rest frame,
+// null for none) and a translation of the root: { world, skin }, skin being world × rest⁻¹, 16 per joint, which takes a
+// rest position to its posed one.
+function poseMatrices(rig, pose = null, rootOffset = null) {
+  const B = rig.joints.length, rest = restMatrices(rig), world = new Float64Array(B * 16), skinM = new Float64Array(B * 16);
+  const local = new Float64Array(16), inv = new Float64Array(16), tmp = new Float64Array(16);
+  for (let i = 0; i < B; i++) {
+    const j = rig.joints[i], r = rest.subarray(i * 16, i * 16 + 16);
+    const q = pose && pose[i] ? qnorm(qmul(j.rot, pose[i])) : j.rot;
+    if (j.parent < 0) {
+      compose(rootOffset ? add(j.pos, rootOffset) : j.pos, q, world.subarray(i * 16, i * 16 + 16));
+    } else {
+      // The joint keeps its place in its parent's rest frame and turns by its own rotation.
+      const p = j.parent, pr = rest.subarray(p * 16, p * 16 + 16);
+      rigidInverse(pr, inv);
+      mmul(inv, compose(j.pos, q, tmp), local);
+      mmul(world.subarray(p * 16, p * 16 + 16), local, world.subarray(i * 16, i * 16 + 16));
+    }
+    mmul(world.subarray(i * 16, i * 16 + 16), rigidInverse(r, inv), skinM.subarray(i * 16, i * 16 + 16));
+  }
+  return { world, skin: skinM };
+}
+
+// Linear blend skinning, as the engines do it: posed positions and normals (and tangents, xyz of 4) from their rest
+// ones, with M from poseMatrices().skin. index and weight hold four influences per vertex.
+function skinVertices(M, index, weight, P, N, outP, outN, T = null, outT = null) {
+  const V = P.length / 3;
+  const m = new Float64Array(12);
+  for (let v = 0; v < V; v++) {
+    m.fill(0);
+    for (let k = 0; k < 4; k++) {
+      const w = weight[v * 4 + k];
+      if (!w) continue;
+      const o = index[v * 4 + k] * 16;
+      m[0] += w * M[o]; m[1] += w * M[o + 1]; m[2] += w * M[o + 2];
+      m[3] += w * M[o + 4]; m[4] += w * M[o + 5]; m[5] += w * M[o + 6];
+      m[6] += w * M[o + 8]; m[7] += w * M[o + 9]; m[8] += w * M[o + 10];
+      m[9] += w * M[o + 12]; m[10] += w * M[o + 13]; m[11] += w * M[o + 14];
+    }
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    outP[v * 3] = m[0] * x + m[3] * y + m[6] * z + m[9];
+    outP[v * 3 + 1] = m[1] * x + m[4] * y + m[7] * z + m[10];
+    outP[v * 3 + 2] = m[2] * x + m[5] * y + m[8] * z + m[11];
+    if (N && outN) {
+      const a = N[v * 3], b = N[v * 3 + 1], c = N[v * 3 + 2];
+      const nx = m[0] * a + m[3] * b + m[6] * c, ny = m[1] * a + m[4] * b + m[7] * c, nz = m[2] * a + m[5] * b + m[8] * c;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      outN[v * 3] = nx / l; outN[v * 3 + 1] = ny / l; outN[v * 3 + 2] = nz / l;
+    }
+    if (T && outT) {
+      const a = T[v * 4], b = T[v * 4 + 1], c = T[v * 4 + 2];
+      const tx = m[0] * a + m[3] * b + m[6] * c, ty = m[1] * a + m[4] * b + m[7] * c, tz = m[2] * a + m[5] * b + m[8] * c;
+      const l = Math.hypot(tx, ty, tz) || 1;
+      outT[v * 4] = tx / l; outT[v * 4 + 1] = ty / l; outT[v * 4 + 2] = tz / l; outT[v * 4 + 3] = T[v * 4 + 3];
+    }
+  }
+}
+
+return { MAX_INFLUENCES, MIN_WEIGHT, skinGroups, boneSegments, segmentDistance, envelopeWeights, limitWeights, vertexSkin, poseMatrices, skinVertices };
+})();
 
 
 
@@ -14744,8 +15264,9 @@ function finalize(mesh, red, opt = {}) {
   return { positions, normals, uvs, colors, srcId, index, vPart, vMat, vertexCount: positions.length / 3, triCount: index.length / 3 };
 }
 
-// Splits a finalized result into export objects, one per part (or one merged object).
-function exportObjects(result, parts, materials, merge, name) {
+// Splits a finalized result into export objects, one per part (or one merged object). skin, when the result is rigged:
+// four joint indices and weights per result vertex ({ index, weight }), carried onto each object's vertices.
+function exportObjects(result, parts, materials, merge, name, skin = null) {
   const T = result.triCount;
   const groupsOf = merge ? [[...parts.keys()]] : parts.map((_, i) => [i]);
   const objects = [];
@@ -14772,14 +15293,16 @@ function exportObjects(result, parts, materials, merge, name) {
     const n = remap.size;
     const P = new Float32Array(n * 3), N = new Float32Array(n * 3), UV = result.uvs ? new Float32Array(n * 2) : null;
     const COL = result.colors ? new Float32Array(n * 3) : null;
+    const SI = skin ? new Uint16Array(n * 4) : null, SW = skin ? new Float32Array(n * 4) : null;
     for (const [v, o] of remap) {
       P.set(result.positions.subarray(v * 3, v * 3 + 3), o * 3);
       N.set(result.normals.subarray(v * 3, v * 3 + 3), o * 3);
       if (UV) UV.set(result.uvs.subarray(v * 2, v * 2 + 2), o * 2);
       if (COL) COL.set(result.colors.subarray(v * 3, v * 3 + 3), o * 3);
+      if (skin) { SI.set(skin.index.subarray(v * 4, v * 4 + 4), o * 4); SW.set(skin.weight.subarray(v * 4, v * 4 + 4), o * 4); }
     }
     const mats = [...matMap.keys()].map(gm => materials[gm]);
-    objects.push({ name: merge ? name : parts[partIds[0]].name, positions: P, normals: N, uvs: UV, colors: COL, index: idx, quad, triMat, materials: mats });
+    objects.push({ name: merge ? name : parts[partIds[0]].name, positions: P, normals: N, uvs: UV, colors: COL, index: idx, quad, triMat, materials: mats, skinIndex: SI, skinWeight: SW });
   }
   return objects;
 }
@@ -14945,7 +15468,31 @@ function writeFBX(objects, opt, template) {
   const id = () => nextId++;
   const objNodes = [], conns = [];
   const matIds = new Map(), texIds = new Map();
-  let geoCount = 0, matCount = 0, texCount = 0;
+  let geoCount = 0, matCount = 0, texCount = 0, deformerCount = 0;
+  // The skeleton (rig.js exportSkeleton): a LimbNode model per joint under its parent, in the same units as Vertices.
+  const bones = opt.skeleton || [], boneIds = bones.map(() => id()), poseNodes = [];
+  bones.forEach((b, i) => {
+    const aid = id();
+    objNodes.push(N('NodeAttribute', [['L', aid], ['S', `${b.name}\u0000\u0001NodeAttribute`], ['S', 'LimbNode']], [
+      N('Properties70', [], [P70('Size', 'double', 'Number', '', ['D', b.size])]),
+      N('TypeFlags', [['S', 'Skeleton']]),
+    ]));
+    objNodes.push(N('Model', [['L', boneIds[i]], ['S', `${b.name}\u0000\u0001Model`], ['S', 'LimbNode']], [
+      N('Version', [['I', 232]]),
+      N('Properties70', [], [
+        P70('Lcl Translation', 'Lcl Translation', '', 'A', ['D', b.t[0]], ['D', b.t[1]], ['D', b.t[2]]),
+        P70('Lcl Rotation', 'Lcl Rotation', '', 'A', ['D', b.r[0]], ['D', b.r[1]], ['D', b.r[2]]),
+        P70('Lcl Scaling', 'Lcl Scaling', '', 'A', ['D', 1], ['D', 1], ['D', 1]),
+        P70('DefaultAttributeIndex', 'int', 'Integer', '', ['I', 0]),
+        P70('InheritType', 'enum', '', '', ['I', 1]),
+      ]),
+      N('MultiLayer', [['I', 0]]), N('MultiTake', [['I', 0]]), N('Shading', [['C', 1]]), N('Culling', [['S', 'CullingOff']]),
+    ]));
+    conns.push(N('C', [['S', 'OO'], ['L', aid], ['L', boneIds[i]]]));
+    conns.push(N('C', [['S', 'OO'], ['L', boneIds[i]], ['L', b.parent >= 0 ? boneIds[b.parent] : 0]]));
+    poseNodes.push(N('PoseNode', [], [N('Node', [['L', boneIds[i]]]), N('Matrix', [['d', Float64Array.from(b.world)]])]));
+  });
+  const IDENTITY = Float64Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
   for (const o of objects) {
     const gid = id(), mid = id();
     const polys = polygonsOf(o);
@@ -15012,6 +15559,33 @@ function writeFBX(objects, opt, template) {
     geoCount++;
     conns.push(N('C', [['S', 'OO'], ['L', mid], ['L', 0]]));
     conns.push(N('C', [['S', 'OO'], ['L', gid], ['L', mid]]));
+    // Its skin: a cluster per deforming joint, listing the vertices it moves. The mesh sits at the origin unrotated,
+    // so TransformLink is the joint's rest matrix and Transform its inverse.
+    if (bones.length && o.skinIndex) {
+      const sid = id();
+      objNodes.push(N('Deformer', [['L', sid], ['S', `${o.name}\u0000\u0001Deformer`], ['S', 'Skin']], [N('Version', [['I', 101]]), N('Link_DeformAcuracy', [['D', 50]])]));
+      conns.push(N('C', [['S', 'OO'], ['L', sid], ['L', gid]]));
+      deformerCount++;
+      const nv = o.positions.length / 3, lists = bones.map(() => ({ idx: [], w: [] }));
+      for (let v = 0; v < nv; v++) for (let k = 0; k < 4; k++) {
+        const w = o.skinWeight[v * 4 + k];
+        if (w > 0) { const l = lists[o.skinIndex[v * 4 + k]]; l.idx.push(v); l.w.push(w); }
+      }
+      bones.forEach((b, i) => {
+        // A joint that moves no vertex of this object gets no cluster; the bind pose still says where it rests.
+        if (!lists[i].idx.length) return;
+        const cid = id();
+        objNodes.push(N('Deformer', [['L', cid], ['S', `${b.name}\u0000\u0001SubDeformer`], ['S', 'Cluster']], [
+          N('Version', [['I', 100]]), N('UserData', [['S', ''], ['S', '']]),
+          N('Indexes', [['i', Int32Array.from(lists[i].idx)]]), N('Weights', [['d', Float64Array.from(lists[i].w)]]),
+          N('Transform', [['d', rigidInverse64(b.world)]]), N('TransformLink', [['d', Float64Array.from(b.world)]]),
+        ]));
+        conns.push(N('C', [['S', 'OO'], ['L', cid], ['L', sid]]));
+        conns.push(N('C', [['S', 'OO'], ['L', boneIds[i]], ['L', cid]]));
+        deformerCount++;
+      });
+      poseNodes.push(N('PoseNode', [], [N('Node', [['L', mid]]), N('Matrix', [['d', IDENTITY]])]));
+    }
     const mats = o.materials.length ? o.materials : [{ name: 'Material', color: [0.8, 0.8, 0.8], texture: null }];
     for (const m of mats) {
       if (!matIds.has(m)) {
@@ -15056,15 +15630,25 @@ function writeFBX(objects, opt, template) {
       conns.push(N('C', [['S', 'OO'], ['L', matIds.get(m)], ['L', mid]]));
     }
   }
+  // The bind pose: every joint and skinned mesh where it was when the weights were made.
+  const poseCount = poseNodes.length && deformerCount ? 1 : 0;
+  if (poseCount) {
+    objNodes.push(N('Pose', [['L', id()], ['S', `${fileName.replace(/\.[^.]+$/, '')}\u0000\u0001Pose`], ['S', 'BindPose']], [
+      N('Type', [['S', 'BindPose']]), N('Version', [['I', 100]]), N('NbPoseNodes', [['I', poseNodes.length]]), ...poseNodes,
+    ]));
+  }
   const objType = (name, count, tplName) => N('ObjectType', [['S', name]], [N('Count', [['I', count]]), ...(tplName && templates[name] ? [templates[name]] : [])]);
   const defs = N('Definitions', [], [
     N('Version', [['I', 100]]),
-    N('Count', [['I', 1 + geoCount * 2 + matCount + texCount * 2]]),
+    N('Count', [['I', 1 + geoCount * 2 + matCount + texCount * 2 + bones.length * 2 + deformerCount + poseCount]]),
     objType('GlobalSettings', 1),
+    ...(bones.length ? [objType('NodeAttribute', bones.length)] : []),
     objType('Geometry', geoCount, true),
-    objType('Model', geoCount, true),
+    objType('Model', geoCount + bones.length, true),
     objType('Material', matCount, true),
     ...(texCount ? [objType('Texture', texCount, true), objType('Video', texCount, true)] : []),
+    ...(deformerCount ? [objType('Deformer', deformerCount)] : []),
+    ...(poseCount ? [objType('Pose', poseCount)] : []),
   ]);
   const top = [tpl.FBXHeaderExtension, tpl.FileId, tpl.CreationTime, tpl.Creator, tpl.GlobalSettings, tpl.Documents, tpl.References,
     defs, N('Objects', [], objNodes), N('Connections', [], conns), tpl.Takes];
@@ -15081,6 +15665,19 @@ function writeFBX(objects, opt, template) {
   out.zeros(120);
   out.bytes(FOOT_MAGIC);
   return out.buf.slice(0, out.len);
+}
+
+// The inverse of a rotation plus translation (column-major 4×4), as FBX's cluster Transform wants it.
+function rigidInverse64(m) {
+  const o = new Float64Array(16);
+  o[0] = m[0]; o[1] = m[4]; o[2] = m[8];
+  o[4] = m[1]; o[5] = m[5]; o[6] = m[9];
+  o[8] = m[2]; o[9] = m[6]; o[10] = m[10];
+  o[12] = -(m[0] * m[12] + m[1] * m[13] + m[2] * m[14]);
+  o[13] = -(m[4] * m[12] + m[5] * m[13] + m[6] * m[14]);
+  o[14] = -(m[8] * m[12] + m[9] * m[13] + m[10] * m[14]);
+  o[15] = 1;
+  return o;
 }
 
 // Reads UnitScaleFactor (centimetres per file unit) from an FBX file, binary or ASCII.
@@ -16766,6 +17363,449 @@ function runReduction(S, ctx, labels, st, fopt, progress = null) {
   return out;
 }
 
+const RIG = (() => {
+
+// Skeletons for the result: the humanoid template, bone names for each engine, and each joint's rest orientation.
+// No DOM and no three.js, so it runs in the page, the worker and Node alike.
+//
+// A rig is { version, template, fingers, naming, frame: { up, front, left }, plane, joints }. Each joint is
+// { name, slot, parent, pos, rot, deform, side, mirror, placed }: pos in the model's own units (as the result's
+// positions), rot its rest orientation in model space as a quaternion [x, y, z, w], parent and mirror joint indices
+// (-1 for none), side 'L', 'R' or 'C', and placed 'detected', 'estimated' or 'user'. Parents always come before their
+// children. A joint's bone runs from it to its main child; its +Y points along that bone and +X is its hinge, the axis
+// elbows, knees, the spine and fingers bend about.
+
+const RIG_VERSION = 1;
+
+// ---------- small vector, quaternion and matrix helpers (matrices column-major, as three.js keeps them) ----------
+
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const len = a => Math.hypot(a[0], a[1], a[2]);
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+function norm(a) { const l = len(a); return l > 1e-12 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; }
+
+// The rotation whose columns are the axes x, y, z (orthonormal, right-handed).
+function quatFromAxes(x, y, z) {
+  const m00 = x[0], m10 = x[1], m20 = x[2], m01 = y[0], m11 = y[1], m21 = y[2], m02 = z[0], m12 = z[1], m22 = z[2];
+  const tr = m00 + m11 + m22;
+  let q;
+  if (tr > 0) { const s = 0.5 / Math.sqrt(tr + 1); q = [(m21 - m12) * s, (m02 - m20) * s, (m10 - m01) * s, 0.25 / s]; }
+  else if (m00 > m11 && m00 > m22) { const s = 2 * Math.sqrt(1 + m00 - m11 - m22); q = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]; }
+  else if (m11 > m22) { const s = 2 * Math.sqrt(1 + m11 - m00 - m22); q = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]; }
+  else { const s = 2 * Math.sqrt(1 + m22 - m00 - m11); q = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]; }
+  return qnorm(q);
+}
+function qnorm(q) { const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1; return [q[0] / l, q[1] / l, q[2] / l, q[3] / l]; }
+const qconj = q => [-q[0], -q[1], -q[2], q[3]];
+function qmul(a, b) {
+  return [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+}
+function qrot(q, v) {
+  const [x, y, z, w] = q;
+  const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+  return [v[0] + w * tx + y * tz - z * ty, v[1] + w * ty + z * tx - x * tz, v[2] + w * tz + x * ty - y * tx];
+}
+function qaxis(axis, angle) { const a = norm(axis), s = Math.sin(angle / 2); return [a[0] * s, a[1] * s, a[2] * s, Math.cos(angle / 2)]; }
+// The shortest rotation taking direction a onto direction b.
+function qbetween(a, b) {
+  a = norm(a); b = norm(b);
+  const d = dot(a, b);
+  if (d < -0.999999) {
+    const axis = norm(Math.abs(a[0]) < 0.9 ? cross(a, [1, 0, 0]) : cross(a, [0, 1, 0]));
+    return [axis[0], axis[1], axis[2], 0];
+  }
+  const c = cross(a, b);
+  return qnorm([c[0], c[1], c[2], 1 + d]);
+}
+
+// Rotation and translation as a 4×4 matrix.
+function compose(pos, q, out = new Float64Array(16)) {
+  const [x, y, z, w] = q, x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2, yy = y * y2, yz = y * z2, zz = z * z2, wx = w * x2, wy = w * y2, wz = w * z2;
+  out[0] = 1 - (yy + zz); out[1] = xy + wz; out[2] = xz - wy; out[3] = 0;
+  out[4] = xy - wz; out[5] = 1 - (xx + zz); out[6] = yz + wx; out[7] = 0;
+  out[8] = xz + wy; out[9] = yz - wx; out[10] = 1 - (xx + yy); out[11] = 0;
+  out[12] = pos[0]; out[13] = pos[1]; out[14] = pos[2]; out[15] = 1;
+  return out;
+}
+function mmul(a, b, out = new Float64Array(16)) {
+  const r = new Float64Array(16);
+  for (let c = 0; c < 4; c++) for (let row = 0; row < 4; row++) {
+    r[c * 4 + row] = a[row] * b[c * 4] + a[4 + row] * b[c * 4 + 1] + a[8 + row] * b[c * 4 + 2] + a[12 + row] * b[c * 4 + 3];
+  }
+  out.set(r);
+  return out;
+}
+// Inverse of a rotation plus translation.
+function rigidInverse(m, out = new Float64Array(16)) {
+  const r = [m[0], m[4], m[8], m[1], m[5], m[9], m[2], m[6], m[10]];
+  const t = [m[12], m[13], m[14]];
+  out[0] = r[0]; out[1] = r[1]; out[2] = r[2]; out[3] = 0;
+  out[4] = r[3]; out[5] = r[4]; out[6] = r[5]; out[7] = 0;
+  out[8] = r[6]; out[9] = r[7]; out[10] = r[8]; out[11] = 0;
+  out[12] = -(r[0] * t[0] + r[3] * t[1] + r[6] * t[2]);
+  out[13] = -(r[1] * t[0] + r[4] * t[1] + r[7] * t[2]);
+  out[14] = -(r[2] * t[0] + r[5] * t[1] + r[8] * t[2]);
+  out[15] = 1;
+  return out;
+}
+// FBX's default rotation order (eEulerXYZ: X first, then Y, then Z), which is three.js's 'ZYX', in degrees.
+function eulerXYZ(q) {
+  const m = compose([0, 0, 0], q);
+  const m11 = m[0], m12 = m[4], m21 = m[1], m22 = m[5], m31 = m[2], m32 = m[6], m33 = m[10];
+  const y = Math.asin(-Math.min(1, Math.max(-1, m31)));
+  let x, z;
+  if (Math.abs(m31) < 0.9999999) { x = Math.atan2(m32, m33); z = Math.atan2(m21, m11); }
+  else { x = 0; z = Math.atan2(-m12, m22); }
+  const d = 180 / Math.PI;
+  return [x * d, y * d, z * d];
+}
+
+// ---------- the humanoid template ----------
+
+const FINGERS = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'];
+const SIDES = [['Left', 'L'], ['Right', 'R']];
+
+// The humanoid's joints in order, parents first: { slot, parent, side, deform }. Slots are Mixamo's joint names.
+function humanoidSlots(fingers = true) {
+  const out = [];
+  const add = (slot, parent, side = 'C', deform = true) => out.push({ slot, parent, side, deform });
+  add('Hips', null); add('Spine', 'Hips'); add('Spine1', 'Spine'); add('Spine2', 'Spine1');
+  add('Neck', 'Spine2'); add('Head', 'Neck'); add('HeadTop_End', 'Head', 'C', false);
+  for (const [S, side] of SIDES) {
+    add(`${S}Shoulder`, 'Spine2', side); add(`${S}Arm`, `${S}Shoulder`, side); add(`${S}ForeArm`, `${S}Arm`, side); add(`${S}Hand`, `${S}ForeArm`, side);
+    if (fingers) {
+      for (const f of FINGERS) {
+        add(`${S}Hand${f}1`, `${S}Hand`, side); add(`${S}Hand${f}2`, `${S}Hand${f}1`, side);
+        add(`${S}Hand${f}3`, `${S}Hand${f}2`, side); add(`${S}Hand${f}4`, `${S}Hand${f}3`, side, false);
+      }
+    }
+  }
+  for (const [S, side] of SIDES) {
+    add(`${S}UpLeg`, 'Hips', side); add(`${S}Leg`, `${S}UpLeg`, side); add(`${S}Foot`, `${S}Leg`, side);
+    add(`${S}ToeBase`, `${S}Foot`, side); add(`${S}Toe_End`, `${S}ToeBase`, side, false);
+  }
+  return out;
+}
+
+// Where a joint with several children points its bone.
+const MAIN_CHILD = { Hips: 'Spine', Spine2: 'Neck', LeftHand: 'LeftHandMiddle1', RightHand: 'RightHandMiddle1' };
+
+// The other side's slot: Left ↔ Right.
+const mirrorSlot = slot => (slot.startsWith('Left') ? `Right${slot.slice(4)}` : slot.startsWith('Right') ? `Left${slot.slice(5)}` : slot);
+
+// Bone names per engine. Mixamo's (the slots themselves) are mapped on their own by Unity's Humanoid, Godot's humanoid
+// profile and Blender; Unreal's are its mannequin's.
+const UNREAL = {
+  Hips: 'pelvis', Spine: 'spine_01', Spine1: 'spine_02', Spine2: 'spine_03', Neck: 'neck_01', Head: 'head', HeadTop_End: 'head_end',
+  Shoulder: 'clavicle', Arm: 'upperarm', ForeArm: 'lowerarm', Hand: 'hand', UpLeg: 'thigh', Leg: 'calf', Foot: 'foot', ToeBase: 'ball', Toe_End: 'ball_end',
+};
+const NAMINGS = ['mixamo', 'unreal'];
+function boneName(slot, naming = 'mixamo') {
+  if (naming !== 'unreal') return slot;
+  if (UNREAL[slot]) return UNREAL[slot];
+  const m = /^(Left|Right)(.+)$/.exec(slot);
+  if (!m) return slot;
+  const s = m[1] === 'Left' ? 'l' : 'r', rest = m[2];
+  if (UNREAL[rest]) return `${UNREAL[rest]}_${s}`;
+  const f = /^Hand(Thumb|Index|Middle|Ring|Pinky)(\d)$/.exec(rest);
+  if (f) return `${f[1].toLowerCase()}_0${f[2]}_${s}`;
+  return slot;
+}
+
+// A rig from joint positions by slot. Joints the map lacks are left out with their children; `placed` marks how each
+// position was found ({ slot: 'detected' | 'estimated' | 'user' }, default estimated).
+function humanoidRig(positions, opt = {}) {
+  const fingers = opt.fingers ?? FINGERS.every(f => positions[`LeftHand${f}1`]);
+  const naming = opt.naming || 'mixamo';
+  const slots = humanoidSlots(fingers).filter(s => positions[s.slot]);
+  const index = new Map(slots.map((s, i) => [s.slot, i]));
+  const joints = slots.map(s => ({
+    name: boneName(s.slot, naming), slot: s.slot, parent: s.parent ? index.get(s.parent) ?? -1 : -1,
+    pos: [...positions[s.slot]], rot: [0, 0, 0, 1], deform: s.deform, side: s.side,
+    mirror: index.get(mirrorSlot(s.slot)) ?? -1, placed: (opt.placed && opt.placed[s.slot]) || 'estimated',
+  }));
+  // A joint whose parent was left out goes too.
+  const keep = joints.map(() => true);
+  joints.forEach((j, i) => { if (slots[i].parent && (j.parent < 0 || !keep[j.parent])) keep[i] = false; });
+  const rig = { version: RIG_VERSION, template: 'humanoid', fingers, naming, frame: frameOf(opt.frame), plane: opt.plane || null, joints: [] };
+  const remap = new Int32Array(joints.length).fill(-1);
+  joints.forEach((j, i) => { if (keep[i]) { remap[i] = rig.joints.length; rig.joints.push(j); } });
+  for (const j of rig.joints) { j.parent = j.parent >= 0 ? remap[j.parent] : -1; j.mirror = j.mirror >= 0 ? remap[j.mirror] : -1; }
+  orientJoints(rig);
+  return rig;
+}
+
+// up, front and left as unit vectors; three.js's convention (Y up, facing +Z, the character's left at +X) by default.
+function frameOf(f) {
+  const up = norm(f?.up || [0, 1, 0]);
+  const front = norm(sub(f?.front || [0, 0, 1], scale(up, dot(f?.front || [0, 0, 1], up))));
+  return { up, front, left: norm(cross(up, front)) };
+}
+
+const childrenOf = rig => {
+  const kids = rig.joints.map(() => []);
+  rig.joints.forEach((j, i) => { if (j.parent >= 0) kids[j.parent].push(i); });
+  return kids;
+};
+
+// The child a joint's bone points at, or -1 for a leaf.
+function mainChild(rig, i, kids = childrenOf(rig)) {
+  const c = kids[i];
+  if (!c.length) return -1;
+  const want = MAIN_CHILD[rig.joints[i].slot];
+  if (want) { const k = c.find(k => rig.joints[k].slot === want); if (k !== undefined) return k; }
+  return c[0];
+}
+
+// Each joint's rest orientation: +Y along its bone (a leaf keeps its parent's), +X its hinge, cross(Y, front) or, for a
+// bone running front to back (feet, toes), cross(Y, ±up). Mirrored joints come out mirrored, so a rotation about X bends
+// both elbows alike. Joints marked keepRot (from a file's own skeleton) keep theirs.
+function orientJoints(rig) {
+  const { up, front } = rig.frame, kids = childrenOf(rig);
+  const dirs = rig.joints.map(() => null);
+  rig.joints.forEach((j, i) => {
+    const c = mainChild(rig, i, kids);
+    let y = c >= 0 ? norm(sub(rig.joints[c].pos, j.pos)) : null;
+    if (!y || len(y) < 0.5) y = j.parent >= 0 ? dirs[j.parent] : up;
+    dirs[i] = y;
+    if (j.keepRot) return;
+    const f = dot(y, front);
+    const ref = Math.abs(f) <= 0.8 ? front : scale(up, Math.sign(f) || 1);
+    let x = norm(cross(y, ref));
+    if (len(x) < 0.5) x = norm(cross(y, Math.abs(dot(y, up)) < 0.9 ? up : front));
+    const z = cross(x, y);
+    j.rot = quatFromAxes(x, y, z);
+  });
+  return rig;
+}
+
+// Rest matrices in model space, 16 per joint.
+function restMatrices(rig) {
+  const out = new Float64Array(rig.joints.length * 16);
+  rig.joints.forEach((j, i) => compose(j.pos, j.rot, out.subarray(i * 16, i * 16 + 16)));
+  return out;
+}
+
+// The skeleton as exporters want it, in the model's units times `unit`: per joint its name, parent, world rest matrix,
+// local translation and rotation (quaternion, and Euler degrees in FBX's XYZ order), whether it deforms, and a display
+// size for FBX's LimbNode.
+function exportSkeleton(rig, unit = 1) {
+  const kids = childrenOf(rig);
+  return rig.joints.map((j, i) => {
+    const p = j.parent >= 0 ? rig.joints[j.parent] : null;
+    const pos = scale(j.pos, unit);
+    const local = p ? qrot(qconj(p.rot), sub(pos, scale(p.pos, unit))) : pos;
+    const q = p ? qnorm(qmul(qconj(p.rot), j.rot)) : j.rot;
+    const c = mainChild(rig, i, kids);
+    const size = c >= 0 ? dist(j.pos, rig.joints[c].pos) * unit : p ? dist(j.pos, p.pos) * unit * 0.5 : 1;
+    return { name: j.name, parent: j.parent, world: compose(pos, j.rot), t: local, q, r: eulerXYZ(q), deform: j.deform, size };
+  });
+}
+
+// Renames template joints for another engine's names; custom joints keep theirs.
+function renameRig(rig, naming) {
+  rig.naming = naming;
+  for (const j of rig.joints) if (j.slot) j.name = boneName(j.slot, naming);
+  return rig;
+}
+
+// Joint names made unique (FBX and glTF importers match bones by name), in place.
+function uniqueNames(rig) {
+  const seen = new Set();
+  for (const j of rig.joints) {
+    let base = (j.name || 'Bone').replace(/[^\w.:-]+/g, '_') || 'Bone', name = base, k = 1;
+    while (seen.has(name)) name = `${base}.${String(k++).padStart(3, '0')}`;
+    seen.add(name);
+    j.name = name;
+  }
+  return rig;
+}
+
+// A plain copy, safe to store, post to a worker or keep in undo history.
+function cloneRig(rig) {
+  return rig && { ...rig, frame: { ...rig.frame }, plane: rig.plane && { ...rig.plane }, joints: rig.joints.map(j => ({ ...j, pos: [...j.pos], rot: [...j.rot] })) };
+}
+
+return { RIG_VERSION, sub, add, scale, dot, cross, len, dist, lerp, norm, quatFromAxes, qnorm, qconj, qmul, qrot, qaxis, qbetween, compose, mmul, rigidInverse, eulerXYZ, FINGERS, humanoidSlots, mirrorSlot, NAMINGS, boneName, humanoidRig, frameOf, childrenOf, mainChild, orientJoints, restMatrices, exportSkeleton, renameRig, uniqueNames, cloneRig };
+})();
+const SKIN = (() => {
+const { compose, mmul, rigidInverse, restMatrices, childrenOf, mainChild, qmul, qnorm, sub, dot, len, norm, scale, add, dist } = RIG;
+// Skin weights for the result and posing it. No DOM and no three.js, so it runs in the page, the worker and Node alike.
+//
+// Weights live on the result's distinct positions (groups), never on its render vertices: the copies a vertex gets
+// along UV seams and hard edges must move together, or the mesh tears where they part. In memory they are dense,
+// W[g * B + b] for group g and joint b; for export and the preview each group keeps its four largest.
+
+
+
+
+const MAX_INFLUENCES = 4;
+// Weights below this share are dropped when the weights are limited, so no vertex carries influences too small to see.
+const MIN_WEIGHT = 0.01;
+
+// The result's distinct positions: group per vertex, the group count and each group's position.
+function skinGroups(mesh) {
+  const V = mesh.positions.length / 3;
+  const { group, count } = positionGroups({ positions: mesh.positions, vertexCount: V });
+  const P = new Float32Array(count * 3);
+  for (let v = 0; v < V; v++) P.set(mesh.positions.subarray(v * 3, v * 3 + 3), group[v] * 3);
+  return { group, count, positions: P };
+}
+
+// Each deforming joint's bone as a segment, from the joint to its main child. A leaf (a hand without fingers) gets a
+// stub along its parent's direction, 0.4 of its parent's length. Segments of joints that don't deform are null.
+function boneSegments(rig) {
+  const kids = childrenOf(rig);
+  return rig.joints.map((j, i) => {
+    if (!j.deform) return null;
+    const c = mainChild(rig, i, kids);
+    if (c >= 0 && dist(rig.joints[c].pos, j.pos) > 1e-9) return { a: j.pos, b: rig.joints[c].pos };
+    const p = j.parent >= 0 ? rig.joints[j.parent] : null;
+    const d = p ? sub(j.pos, p.pos) : [0, 0, 0];
+    return { a: j.pos, b: add(j.pos, scale(norm(d), 0.4 * len(d))) };
+  });
+}
+
+// Distance from p to segment s, and the point's parameter along it.
+function segmentDistance(p, s) {
+  const ab = sub(s.b, s.a), l2 = dot(ab, ab);
+  const t = l2 > 0 ? Math.min(1, Math.max(0, dot(sub(p, s.a), ab) / l2)) : 0;
+  return Math.hypot(p[0] - s.a[0] - ab[0] * t, p[1] - s.a[1] - ab[1] * t, p[2] - s.a[2] - ab[2] * t);
+}
+
+// Weights that fall off with the distance to each bone (1/d⁴, the two nearest): a quick stand-in for the solved ones.
+function envelopeWeights(points, rig) {
+  const segs = boneSegments(rig), B = rig.joints.length, G = points.length / 3;
+  const W = new Float32Array(G * B);
+  for (let g = 0; g < G; g++) {
+    const p = [points[g * 3], points[g * 3 + 1], points[g * 3 + 2]];
+    let b1 = -1, d1 = Infinity, b2 = -1, d2 = Infinity;
+    segs.forEach((s, b) => {
+      if (!s) return;
+      const d = segmentDistance(p, s);
+      if (d < d1) { b2 = b1; d2 = d1; b1 = b; d1 = d; } else if (d < d2) { b2 = b; d2 = d; }
+    });
+    if (b1 < 0) continue;
+    const w1 = 1 / Math.max(d1, 1e-9) ** 4, w2 = b2 >= 0 ? 1 / Math.max(d2, 1e-9) ** 4 : 0;
+    W[g * B + b1] = w1 / (w1 + w2);
+    if (b2 >= 0) W[g * B + b2] = w2 / (w1 + w2);
+  }
+  return W;
+}
+
+// Each group's largest weights (at most `max`, none under `min`), normalised: { index: Uint16Array(G·4), weight:
+// Float32Array(G·4), unweighted }. A group with no weight at all goes wholly to `fallback` (the root), and is counted.
+function limitWeights(W, G, B, max = MAX_INFLUENCES, min = MIN_WEIGHT, fallback = 0) {
+  const index = new Uint16Array(G * 4), weight = new Float32Array(G * 4);
+  const top = new Int32Array(max), val = new Float64Array(max);
+  let unweighted = 0;
+  for (let g = 0; g < G; g++) {
+    let n = 0, total = 0;
+    for (let b = 0; b < B; b++) {
+      const w = W[g * B + b];
+      if (!(w > 0)) continue;
+      total += w;
+      if (n < max) { top[n] = b; val[n] = w; n++; }
+      else {
+        let lo = 0;
+        for (let k = 1; k < max; k++) if (val[k] < val[lo]) lo = k;
+        if (w > val[lo]) { top[lo] = b; val[lo] = w; }
+      }
+    }
+    if (!n) { unweighted++; index[g * 4] = fallback; weight[g * 4] = 1; continue; }
+    // Largest first, then drop what stays under the minimum share (always keeping the largest).
+    const order = [...Array(n).keys()].sort((a, b) => val[b] - val[a]);
+    let kept = 0, sum = 0;
+    for (const k of order) {
+      if (kept && val[k] / total < min) break;
+      index[g * 4 + kept] = top[k]; weight[g * 4 + kept] = val[k]; sum += val[k]; kept++;
+    }
+    for (let k = 0; k < kept; k++) weight[g * 4 + k] /= sum;
+  }
+  return { index, weight, unweighted };
+}
+
+// Per-group skin data spread to the render vertices.
+function vertexSkin(group, skin) {
+  const V = group.length, index = new Uint16Array(V * 4), weight = new Float32Array(V * 4);
+  for (let v = 0; v < V; v++) {
+    const g = group[v];
+    for (let k = 0; k < 4; k++) { index[v * 4 + k] = skin.index[g * 4 + k]; weight[v * 4 + k] = skin.weight[g * 4 + k]; }
+  }
+  return { index, weight };
+}
+
+// Every joint's posed matrix in model space, given per-joint rotations (quaternions in the joint's own rest frame,
+// null for none) and a translation of the root: { world, skin }, skin being world × rest⁻¹, 16 per joint, which takes a
+// rest position to its posed one.
+function poseMatrices(rig, pose = null, rootOffset = null) {
+  const B = rig.joints.length, rest = restMatrices(rig), world = new Float64Array(B * 16), skinM = new Float64Array(B * 16);
+  const local = new Float64Array(16), inv = new Float64Array(16), tmp = new Float64Array(16);
+  for (let i = 0; i < B; i++) {
+    const j = rig.joints[i], r = rest.subarray(i * 16, i * 16 + 16);
+    const q = pose && pose[i] ? qnorm(qmul(j.rot, pose[i])) : j.rot;
+    if (j.parent < 0) {
+      compose(rootOffset ? add(j.pos, rootOffset) : j.pos, q, world.subarray(i * 16, i * 16 + 16));
+    } else {
+      // The joint keeps its place in its parent's rest frame and turns by its own rotation.
+      const p = j.parent, pr = rest.subarray(p * 16, p * 16 + 16);
+      rigidInverse(pr, inv);
+      mmul(inv, compose(j.pos, q, tmp), local);
+      mmul(world.subarray(p * 16, p * 16 + 16), local, world.subarray(i * 16, i * 16 + 16));
+    }
+    mmul(world.subarray(i * 16, i * 16 + 16), rigidInverse(r, inv), skinM.subarray(i * 16, i * 16 + 16));
+  }
+  return { world, skin: skinM };
+}
+
+// Linear blend skinning, as the engines do it: posed positions and normals (and tangents, xyz of 4) from their rest
+// ones, with M from poseMatrices().skin. index and weight hold four influences per vertex.
+function skinVertices(M, index, weight, P, N, outP, outN, T = null, outT = null) {
+  const V = P.length / 3;
+  const m = new Float64Array(12);
+  for (let v = 0; v < V; v++) {
+    m.fill(0);
+    for (let k = 0; k < 4; k++) {
+      const w = weight[v * 4 + k];
+      if (!w) continue;
+      const o = index[v * 4 + k] * 16;
+      m[0] += w * M[o]; m[1] += w * M[o + 1]; m[2] += w * M[o + 2];
+      m[3] += w * M[o + 4]; m[4] += w * M[o + 5]; m[5] += w * M[o + 6];
+      m[6] += w * M[o + 8]; m[7] += w * M[o + 9]; m[8] += w * M[o + 10];
+      m[9] += w * M[o + 12]; m[10] += w * M[o + 13]; m[11] += w * M[o + 14];
+    }
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    outP[v * 3] = m[0] * x + m[3] * y + m[6] * z + m[9];
+    outP[v * 3 + 1] = m[1] * x + m[4] * y + m[7] * z + m[10];
+    outP[v * 3 + 2] = m[2] * x + m[5] * y + m[8] * z + m[11];
+    if (N && outN) {
+      const a = N[v * 3], b = N[v * 3 + 1], c = N[v * 3 + 2];
+      const nx = m[0] * a + m[3] * b + m[6] * c, ny = m[1] * a + m[4] * b + m[7] * c, nz = m[2] * a + m[5] * b + m[8] * c;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      outN[v * 3] = nx / l; outN[v * 3 + 1] = ny / l; outN[v * 3 + 2] = nz / l;
+    }
+    if (T && outT) {
+      const a = T[v * 4], b = T[v * 4 + 1], c = T[v * 4 + 2];
+      const tx = m[0] * a + m[3] * b + m[6] * c, ty = m[1] * a + m[4] * b + m[7] * c, tz = m[2] * a + m[5] * b + m[8] * c;
+      const l = Math.hypot(tx, ty, tz) || 1;
+      outT[v * 4] = tx / l; outT[v * 4 + 1] = ty / l; outT[v * 4 + 2] = tz / l; outT[v * 4 + 3] = T[v * 4 + 3];
+    }
+  }
+}
+
+return { MAX_INFLUENCES, MIN_WEIGHT, skinGroups, boneSegments, segmentDistance, envelopeWeights, limitWeights, vertexSkin, poseMatrices, skinVertices };
+})();
 
 
 
@@ -16861,9 +17901,38 @@ function drawable(tex, copies) {
   return copies.get(tex);
 }
 
-// The result as a binary glTF: one mesh per object, triangles grouped by material, positions times scale.
-async function glbBytes(objects, scale) {
+// The skeleton (rig.js exportSkeleton, already in the export's units) as three.js bones, posed at rest: { bones,
+// roots, skeleton }.
+function bonesOf(joints) {
+  const bones = joints.map(b => {
+    const bone = new THREE.Bone();
+    bone.name = b.name;
+    bone.position.fromArray(b.t);
+    bone.quaternion.fromArray(b.q);
+    return bone;
+  });
+  const roots = [];
+  joints.forEach((b, i) => (b.parent >= 0 ? bones[b.parent].add(bones[i]) : roots.push(bones[i])));
+  for (const r of roots) r.updateMatrixWorld(true);
+  return { bones, roots, skeleton: new THREE.Skeleton(bones) };
+}
+
+// An export object's mesh: skinned and bound at rest when the object has weights and there is a skeleton.
+function meshOf(g, material, o, rig) {
+  if (!rig || !o.skinIndex) return new THREE.Mesh(g, material);
+  g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(o.skinIndex, 4));
+  g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(o.skinWeight, 4));
+  const mesh = new THREE.SkinnedMesh(g, material);
+  mesh.bind(rig.skeleton, new THREE.Matrix4());
+  return mesh;
+}
+
+// The result as a binary glTF: one mesh per object, triangles grouped by material, positions times scale. skeleton:
+// rig.js exportSkeleton(rig, scale), which makes the objects that carry weights skinned meshes.
+async function glbBytes(objects, scale, skeleton = null) {
   const scene = new THREE.Scene(), copies = new Map();
+  const rig = skeleton && skeleton.length ? bonesOf(skeleton) : null;
+  if (rig) scene.add(...rig.roots);
   for (const o of objects) {
     const P = Float32Array.from(o.positions, v => v * scale);
     const g = new THREE.BufferGeometry();
@@ -16892,7 +17961,7 @@ async function glbBytes(objects, scale) {
       }
       return new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...mi.color, THREE.SRGBColorSpace) });
     });
-    const mesh = new THREE.Mesh(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial());
+    const mesh = meshOf(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial(), o, rig);
     mesh.name = o.name;
     scene.add(mesh);
   }

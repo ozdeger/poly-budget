@@ -9,6 +9,16 @@ const quad = `const { remeshQuads, remeshZones, QUAD_NONE, formDensity } = (() =
 const paint = `const { unwrapPaintable } = (() => {\n${strip(read('./src/paint.js'))}\nreturn { unwrapPaintable };\n})();`;
 // So does the visibility pass for hidden areas.
 const visibility = `const { computeVisibility } = (() => {\n${strip(read('./src/visibility.js'))}\nreturn { computeVisibility };\n})();`;
+// Rigging keeps to itself too, each module as one object (app and worker code import them as `* as RIG` and
+// `* as SKIN`); what one imports from the other comes from that object.
+const NS = { './rig.js': 'RIG', './skin.js': 'SKIN' };
+const namespaced = (file, ns) => {
+  const src = read(file);
+  const names = [...src.matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let|class)\s+(\w+)/gm)].map(m => m[1]);
+  const uses = [...src.matchAll(/^import\s*\{([^}]*)\}\s*from\s*'(\.\/[^']+)';/gm)].filter(m => NS[m[2]]).map(m => `const {${m[1]}} = ${NS[m[2]]};`).join('\n');
+  return `const ${ns} = (() => {\n${uses}\n${strip(src)}\nreturn { ${names.join(', ')} };\n})();`;
+};
+const rigging = `${namespaced('./src/rig.js', 'RIG')}\n${namespaced('./src/skin.js', 'SKIN')}`;
 const collect = strip(read('./src/collect.js'));
 const app = read('./src/app.js');
 // The GLB writer's exporter import joins the page's imports.
@@ -16,10 +26,10 @@ const glb = read('./src/glb.js');
 const libImports = src => (src.match(IMPORT) || []).filter(l => !/from '\.\//.test(l));
 const appImports = [...new Set([...libImports(app), ...libImports(glb)])].join('\n');
 const appBody = app.replace(IMPORT, '');
-const main = `${appImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${collect}\n${strip(glb).replace(IMPORT, '')}\nconst FBX_TEMPLATE = ${read('./src/fbx_template.json')};\n${appBody}`;
+const main = `${appImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${rigging}\n${collect}\n${strip(glb).replace(IMPORT, '')}\nconst FBX_TEMPLATE = ${read('./src/fbx_template.json')};\n${appBody}`;
 const worker = read('./src/worker.js');
 const workerImports = (worker.match(IMPORT) || []).filter(l => !/from '\.\//.test(l)).join('\n');
-const workerSrc = `${workerImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${worker.replace(IMPORT, '')}`;
+const workerSrc = `${workerImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${rigging}\n${worker.replace(IMPORT, '')}`;
 if (/<\/script/i.test(main + workerSrc)) throw new Error('script terminator inside inlined code');
 const html = read('./src/index.html').replace('/*WORKER*/', () => workerSrc).replace('/*MAIN*/', () => main);
 
