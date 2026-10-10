@@ -11,9 +11,12 @@ const paint = `const { unwrapPaintable } = (() => {\n${strip(read('./src/paint.j
 const visibility = `const { computeVisibility } = (() => {\n${strip(read('./src/visibility.js'))}\nreturn { computeVisibility };\n})();`;
 const collect = strip(read('./src/collect.js'));
 const app = read('./src/app.js');
-const appImports = (app.match(IMPORT) || []).filter(l => !/from '\.\//.test(l)).join('\n');
+// The GLB writer's exporter import joins the page's imports.
+const glb = read('./src/glb.js');
+const libImports = src => (src.match(IMPORT) || []).filter(l => !/from '\.\//.test(l));
+const appImports = [...new Set([...libImports(app), ...libImports(glb)])].join('\n');
 const appBody = app.replace(IMPORT, '');
-const main = `${appImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${collect}\nconst FBX_TEMPLATE = ${read('./src/fbx_template.json')};\n${appBody}`;
+const main = `${appImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${collect}\n${strip(glb).replace(IMPORT, '')}\nconst FBX_TEMPLATE = ${read('./src/fbx_template.json')};\n${appBody}`;
 const worker = read('./src/worker.js');
 const workerImports = (worker.match(IMPORT) || []).filter(l => !/from '\.\//.test(l)).join('\n');
 const workerSrc = `${workerImports}\n${quad}\n${paint}\n${visibility}\n${core}\n${worker.replace(IMPORT, '')}`;

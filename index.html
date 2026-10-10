@@ -8956,10 +8956,10 @@ import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { TGALoader } from 'three/addons/loaders/TGALoader.js';
-import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 const { remeshQuads, remeshZones, QUAD_NONE, formDensity } = (() => {
 // Quad remeshing: rebuilds a surface as quads that follow its shape, at a given face count.
 //
@@ -16829,6 +16829,65 @@ function collectScene(root) {
   return { positions, normals, uvs, colors, index, triPart, triMat, parts, materials };
 }
 
+
+
+
+// three's GLTFExporter draws normal maps onto a 2D canvas to turn their green (for every mesh without tangents, so for
+// all of these) and roughness and metalness maps to merge them, and drawImage refuses a DataTexture's { data, width,
+// height }. Baked maps are DataTextures, so the export takes canvas copies, rows in the same order and flipY kept: the
+// exporter writes those the way the app samples them, which it gets wrong for raw pixels with flipY set (TGALoader's).
+const canvasOf = (w, h) => (typeof document === 'undefined' && typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h }));
+function drawable(tex, copies) {
+  const img = tex.image;
+  if (!img || !ArrayBuffer.isView(img.data) || img.data.BYTES_PER_ELEMENT !== 1 || img.data.length !== img.width * img.height * 4) return tex;
+  if (!copies.has(tex)) {
+    const canvas = canvasOf(img.width, img.height);
+    canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data.buffer, img.data.byteOffset, img.data.length), img.width, img.height), 0, 0);
+    const t = new THREE.Texture().copy(tex);
+    t.source = new THREE.TextureSource(canvas);
+    copies.set(tex, t);
+  }
+  return copies.get(tex);
+}
+
+// The result as a binary glTF: one mesh per object, triangles grouped by material, positions times scale.
+async function glbBytes(objects, scale) {
+  const scene = new THREE.Scene(), copies = new Map();
+  for (const o of objects) {
+    const P = Float32Array.from(o.positions, v => v * scale);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(P, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(o.normals, 3));
+    if (o.uvs) g.setAttribute('uv', new THREE.BufferAttribute(o.uvs, 2));
+    if (o.colors) g.setAttribute('color', new THREE.BufferAttribute(o.colors, 3));
+    const T = o.index.length / 3, nm = Math.max(1, o.materials.length);
+    const order = [...Array(T).keys()].sort((a, b) => o.triMat[a] - o.triMat[b]);
+    const idx = new Uint32Array(o.index.length);
+    order.forEach((t, j) => idx.set(o.index.subarray(t * 3, t * 3 + 3), j * 3));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    let start = 0;
+    for (let m = 0; m < nm; m++) {
+      let c = 0;
+      while (start / 3 + c < T && o.triMat[order[start / 3 + c]] === m) c++;
+      if (c) g.addGroup(start, c * 3, m);
+      start += c * 3;
+    }
+    const mats = o.materials.map(mi => {
+      if (mi.source && mi.source.isMaterial) {
+        const mat = mi.source.clone();
+        mat.polygonOffset = false;
+        for (const key of Object.keys(mat)) if (mat[key] && mat[key].isTexture) mat[key] = drawable(mat[key], copies);
+        return mat;
+      }
+      return new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...mi.color, THREE.SRGBColorSpace) });
+    });
+    const mesh = new THREE.Mesh(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial());
+    mesh.name = o.name;
+    scene.add(mesh);
+  }
+  return new Uint8Array(await new GLTFExporter().parseAsync(scene, { binary: true }));
+}
+
 const FBX_TEMPLATE = {"FBXHeaderExtension":["FBXHeaderExtension",[],[["FBXHeaderVersion",[["I",1003]],[],false],["FBXVersion",[["I",7400]],[],false],["EncryptionType",[["I",0]],[],false],["CreationTimeStamp",[],[["Version",[["I",1000]],[],false],["Year",[["I",2026]],[],false],["Month",[["I",9]],[],false],["Day",[["I",22]],[],false],["Hour",[["I",16]],[],false],["Minute",[["I",53]],[],false],["Second",[["I",9]],[],false],["Millisecond",[["I",102]],[],false]],true],["Creator",[["S","Blender (stable FBX IO) - 4.4.0 - 5.12.7"]],[],false],["SceneInfo",[["S","GlobalInfo\u0000\u0001SceneInfo"],["S","UserData"]],[["Type",[["S","UserData"]],[],false],["Version",[["I",100]],[],false],["MetaData",[],[["Version",[["I",100]],[],false],["Title",[["S",""]],[],false],["Subject",[["S",""]],[],false],["Author",[["S",""]],[],false],["Keywords",[["S",""]],[],false],["Revision",[["S",""]],[],false],["Comment",[["S",""]],[],false]],true],["Properties70",[],[["P",[["S","DocumentUrl"],["S","KString"],["S","Url"],["S",""],["S","/foobar.fbx"]],[],false],["P",[["S","SrcDocumentUrl"],["S","KString"],["S","Url"],["S",""],["S","/foobar.fbx"]],[],false],["P",[["S","Original"],["S","Compound"],["S",""],["S",""]],[],false],["P",[["S","Original|ApplicationVendor"],["S","KString"],["S",""],["S",""],["S","Blender Foundation"]],[],false],["P",[["S","Original|ApplicationName"],["S","KString"],["S",""],["S",""],["S","Blender (stable FBX IO)"]],[],false],["P",[["S","Original|ApplicationVersion"],["S","KString"],["S",""],["S",""],["S","4.4.0"]],[],false],["P",[["S","Original|DateTime_GMT"],["S","DateTime"],["S",""],["S",""],["S","01/01/1970 00:00:00.000"]],[],false],["P",[["S","Original|FileName"],["S","KString"],["S",""],["S",""],["S","/foobar.fbx"]],[],false],["P",[["S","LastSaved"],["S","Compound"],["S",""],["S",""]],[],false],["P",[["S","LastSaved|ApplicationVendor"],["S","KString"],["S",""],["S",""],["S","Blender Foundation"]],[],false],["P",[["S","LastSaved|ApplicationName"],["S","KString"],["S",""],["S",""],["S","Blender (stable FBX IO)"]],[],false],["P",[["S","LastSaved|ApplicationVersion"],["S","KString"],["S",""],["S",""],["S","4.4.0"]],[],false],["P",[["S","LastSaved|DateTime_GMT"],["S","DateTime"],["S",""],["S",""],["S","01/01/1970 00:00:00.000"]],[],false],["P",[["S","Original|ApplicationNativeFile"],["S","KString"],["S",""],["S",""],["S",""]],[],false]],true]],true]],true],"FileId":["FileId",[["R","KLMq67YkzMK/yLAqqSv88Q=="]],[],false],"CreationTime":["CreationTime",[["S","1970-01-01 10:00:00:000"]],[],false],"Creator":["Creator",[["S","Blender (stable FBX IO) - 4.4.0 - 5.12.7"]],[],false],"GlobalSettings":["GlobalSettings",[],[["Version",[["I",1000]],[],false],["Properties70",[],[["P",[["S","UpAxis"],["S","int"],["S","Integer"],["S",""],["I",1]],[],false],["P",[["S","UpAxisSign"],["S","int"],["S","Integer"],["S",""],["I",1]],[],false],["P",[["S","FrontAxis"],["S","int"],["S","Integer"],["S",""],["I",2]],[],false],["P",[["S","FrontAxisSign"],["S","int"],["S","Integer"],["S",""],["I",1]],[],false],["P",[["S","CoordAxis"],["S","int"],["S","Integer"],["S",""],["I",0]],[],false],["P",[["S","CoordAxisSign"],["S","int"],["S","Integer"],["S",""],["I",1]],[],false],["P",[["S","OriginalUpAxis"],["S","int"],["S","Integer"],["S",""],["I",-1]],[],false],["P",[["S","OriginalUpAxisSign"],["S","int"],["S","Integer"],["S",""],["I",1]],[],false],["P",[["S","UnitScaleFactor"],["S","double"],["S","Number"],["S",""],["D",1.0]],[],false],["P",[["S","OriginalUnitScaleFactor"],["S","double"],["S","Number"],["S",""],["D",1.0]],[],false],["P",[["S","AmbientColor"],["S","ColorRGB"],["S","Color"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","DefaultCamera"],["S","KString"],["S",""],["S",""],["S","Producer Perspective"]],[],false],["P",[["S","TimeMode"],["S","enum"],["S",""],["S",""],["I",11]],[],false],["P",[["S","TimeSpanStart"],["S","KTime"],["S","Time"],["S",""],["L",0]],[],false],["P",[["S","TimeSpanStop"],["S","KTime"],["S","Time"],["S",""],["L",46186158000]],[],false],["P",[["S","CustomFrameRate"],["S","double"],["S","Number"],["S",""],["D",24.0]],[],false]],true]],true],"Documents":["Documents",[],[["Count",[["I",1]],[],false],["Document",[["L",888934933],["S","Scene"],["S","Scene"]],[["Properties70",[],[["P",[["S","SourceObject"],["S","object"],["S",""],["S",""]],[],false],["P",[["S","ActiveAnimStackName"],["S","KString"],["S",""],["S",""],["S",""]],[],false]],true],["RootNode",[["L",0]],[],false]],true]],true],"References":["References",[],[],true],"Takes":["Takes",[],[["Current",[["S",""]],[],false]],true],"templates":{"Geometry":["PropertyTemplate",[["S","FbxMesh"]],[["Properties70",[],[["P",[["S","Color"],["S","ColorRGB"],["S","Color"],["S",""],["D",0.8],["D",0.8],["D",0.8]],[],false],["P",[["S","BBoxMin"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","BBoxMax"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","Primary Visibility"],["S","bool"],["S",""],["S",""],["I",1]],[],false],["P",[["S","Casts Shadows"],["S","bool"],["S",""],["S",""],["I",1]],[],false],["P",[["S","Receive Shadows"],["S","bool"],["S",""],["S",""],["I",1]],[],false]],true]],true],"Model":["PropertyTemplate",[["S","FbxNode"]],[["Properties70",[],[["P",[["S","QuaternionInterpolate"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationOffset"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","RotationPivot"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","ScalingOffset"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","ScalingPivot"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","TranslationActive"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","TranslationMin"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","TranslationMax"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","TranslationMinX"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","TranslationMinY"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","TranslationMinZ"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","TranslationMaxX"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","TranslationMaxY"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","TranslationMaxZ"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationOrder"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationSpaceForLimitOnly"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationStiffnessX"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","RotationStiffnessY"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","RotationStiffnessZ"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","AxisLen"],["S","double"],["S","Number"],["S",""],["D",10.0]],[],false],["P",[["S","PreRotation"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","PostRotation"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","RotationActive"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationMin"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","RotationMax"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","RotationMinX"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationMinY"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationMinZ"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationMaxX"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationMaxY"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","RotationMaxZ"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","InheritType"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ScalingActive"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ScalingMin"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","ScalingMax"],["S","Vector3D"],["S","Vector"],["S",""],["D",1.0],["D",1.0],["D",1.0]],[],false],["P",[["S","ScalingMinX"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ScalingMinY"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ScalingMinZ"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ScalingMaxX"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ScalingMaxY"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ScalingMaxZ"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","GeometricTranslation"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","GeometricRotation"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","GeometricScaling"],["S","Vector3D"],["S","Vector"],["S",""],["D",1.0],["D",1.0],["D",1.0]],[],false],["P",[["S","MinDampRangeX"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MinDampRangeY"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MinDampRangeZ"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MaxDampRangeX"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MaxDampRangeY"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MaxDampRangeZ"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MinDampStrengthX"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MinDampStrengthY"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MinDampStrengthZ"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MaxDampStrengthX"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MaxDampStrengthY"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","MaxDampStrengthZ"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","PreferedAngleX"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","PreferedAngleY"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","PreferedAngleZ"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","LookAtProperty"],["S","object"],["S",""],["S",""]],[],false],["P",[["S","UpVectorProperty"],["S","object"],["S",""],["S",""]],[],false],["P",[["S","Show"],["S","bool"],["S",""],["S",""],["I",1]],[],false],["P",[["S","NegativePercentShapeSupport"],["S","bool"],["S",""],["S",""],["I",1]],[],false],["P",[["S","DefaultAttributeIndex"],["S","int"],["S","Integer"],["S",""],["I",-1]],[],false],["P",[["S","Freeze"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","LODBox"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","Lcl Translation"],["S","Lcl Translation"],["S",""],["S","A"],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","Lcl Rotation"],["S","Lcl Rotation"],["S",""],["S","A"],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","Lcl Scaling"],["S","Lcl Scaling"],["S",""],["S","A"],["D",1.0],["D",1.0],["D",1.0]],[],false],["P",[["S","Visibility"],["S","Visibility"],["S",""],["S","A"],["D",1.0]],[],false],["P",[["S","Visibility Inheritance"],["S","Visibility Inheritance"],["S",""],["S",""],["I",1]],[],false]],true]],true],"Material":["PropertyTemplate",[["S","FbxSurfacePhong"]],[["Properties70",[],[["P",[["S","ShadingModel"],["S","KString"],["S",""],["S",""],["S","Phong"]],[],false],["P",[["S","MultiLayer"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","EmissiveColor"],["S","Color"],["S",""],["S","A"],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","EmissiveFactor"],["S","Number"],["S",""],["S","A"],["D",1.0]],[],false],["P",[["S","AmbientColor"],["S","Color"],["S",""],["S","A"],["D",0.2],["D",0.2],["D",0.2]],[],false],["P",[["S","AmbientFactor"],["S","Number"],["S",""],["S","A"],["D",1.0]],[],false],["P",[["S","DiffuseColor"],["S","Color"],["S",""],["S","A"],["D",0.8],["D",0.8],["D",0.8]],[],false],["P",[["S","DiffuseFactor"],["S","Number"],["S",""],["S","A"],["D",1.0]],[],false],["P",[["S","TransparentColor"],["S","Color"],["S",""],["S","A"],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","TransparencyFactor"],["S","Number"],["S",""],["S","A"],["D",0.0]],[],false],["P",[["S","Opacity"],["S","Number"],["S",""],["S","A"],["D",1.0]],[],false],["P",[["S","NormalMap"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","Bump"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","BumpFactor"],["S","double"],["S","Number"],["S",""],["D",1.0]],[],false],["P",[["S","DisplacementColor"],["S","ColorRGB"],["S","Color"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","DisplacementFactor"],["S","double"],["S","Number"],["S",""],["D",1.0]],[],false],["P",[["S","VectorDisplacementColor"],["S","ColorRGB"],["S","Color"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","VectorDisplacementFactor"],["S","double"],["S","Number"],["S",""],["D",1.0]],[],false],["P",[["S","SpecularColor"],["S","Color"],["S",""],["S","A"],["D",0.2],["D",0.2],["D",0.2]],[],false],["P",[["S","SpecularFactor"],["S","Number"],["S",""],["S","A"],["D",1.0]],[],false],["P",[["S","Shininess"],["S","Number"],["S",""],["S","A"],["D",20.0]],[],false],["P",[["S","ShininessExponent"],["S","Number"],["S",""],["S","A"],["D",20.0]],[],false],["P",[["S","ReflectionColor"],["S","Color"],["S",""],["S","A"],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","ReflectionFactor"],["S","Number"],["S",""],["S","A"],["D",1.0]],[],false]],true]],true],"Texture":["PropertyTemplate",[["S","FbxFileTexture"]],[["Properties70",[],[["P",[["S","TextureTypeUse"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","AlphaSource"],["S","enum"],["S",""],["S",""],["I",2]],[],false],["P",[["S","Texture alpha"],["S","double"],["S","Number"],["S",""],["D",1.0]],[],false],["P",[["S","PremultiplyAlpha"],["S","bool"],["S",""],["S",""],["I",1]],[],false],["P",[["S","CurrentTextureBlendMode"],["S","enum"],["S",""],["S",""],["I",1]],[],false],["P",[["S","CurrentMappingType"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","UVSet"],["S","KString"],["S",""],["S",""],["S","default"]],[],false],["P",[["S","WrapModeU"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","WrapModeV"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","UVSwap"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","Translation"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","Rotation"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","Scaling"],["S","Vector3D"],["S","Vector"],["S",""],["D",1.0],["D",1.0],["D",1.0]],[],false],["P",[["S","TextureRotationPivot"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","TextureScalingPivot"],["S","Vector3D"],["S","Vector"],["S",""],["D",0.0],["D",0.0],["D",0.0]],[],false],["P",[["S","UseMaterial"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","UseMipMap"],["S","bool"],["S",""],["S",""],["I",0]],[],false]],true]],true],"Video":["PropertyTemplate",[["S","FbxVideo"]],[["Properties70",[],[["P",[["S","Width"],["S","int"],["S","Integer"],["S",""],["I",0]],[],false],["P",[["S","Height"],["S","int"],["S","Integer"],["S",""],["I",0]],[],false],["P",[["S","Path"],["S","KString"],["S","Url"],["S",""],["S",""]],[],false],["P",[["S","AccessMode"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","StartFrame"],["S","int"],["S","Integer"],["S",""],["I",0]],[],false],["P",[["S","StopFrame"],["S","int"],["S","Integer"],["S",""],["I",0]],[],false],["P",[["S","Offset"],["S","KTime"],["S","Time"],["S",""],["L",0]],[],false],["P",[["S","PlaySpeed"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","FreeRunning"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","Loop"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","InterlaceMode"],["S","enum"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ImageSequence"],["S","bool"],["S",""],["S",""],["I",0]],[],false],["P",[["S","ImageSequenceOffset"],["S","int"],["S","Integer"],["S",""],["I",0]],[],false],["P",[["S","FrameRate"],["S","double"],["S","Number"],["S",""],["D",0.0]],[],false],["P",[["S","LastFrame"],["S","int"],["S","Integer"],["S",""],["I",0]],[],false]],true]],true]}};
 
 
@@ -20266,42 +20325,6 @@ async function materialInfos(stem) {
     out.push({ name, color: [rgb.r, rgb.g, rgb.b], texture, bytes, normal, extra, source: state.bakedMats && (baked || state.bake) ? state.bakedMats[i] : m });
   }
   return out;
-}
-
-async function glbBytes(objects, scale) {
-  const scene = new THREE.Scene();
-  for (const o of objects) {
-    const P = Float32Array.from(o.positions, v => v * scale);
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(P, 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(o.normals, 3));
-    if (o.uvs) g.setAttribute('uv', new THREE.BufferAttribute(o.uvs, 2));
-    if (o.colors) g.setAttribute('color', new THREE.BufferAttribute(o.colors, 3));
-    const T = o.index.length / 3, nm = Math.max(1, o.materials.length);
-    const order = [...Array(T).keys()].sort((a, b) => o.triMat[a] - o.triMat[b]);
-    const idx = new Uint32Array(o.index.length);
-    order.forEach((t, j) => idx.set(o.index.subarray(t * 3, t * 3 + 3), j * 3));
-    g.setIndex(new THREE.BufferAttribute(idx, 1));
-    let start = 0;
-    for (let m = 0; m < nm; m++) {
-      let c = 0;
-      while (start / 3 + c < T && o.triMat[order[start / 3 + c]] === m) c++;
-      if (c) g.addGroup(start, c * 3, m);
-      start += c * 3;
-    }
-    const mats = o.materials.map(mi => {
-      if (mi.source && mi.source.isMaterial) {
-        const mat = mi.source.clone();
-        mat.polygonOffset = false;
-        return mat;
-      }
-      return new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...mi.color, THREE.SRGBColorSpace) });
-    });
-    const mesh = new THREE.Mesh(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial());
-    mesh.name = o.name;
-    scene.add(mesh);
-  }
-  return new Uint8Array(await new GLTFExporter().parseAsync(scene, { binary: true }));
 }
 
 const downloadsReady = window.claude && typeof window.claude.use === 'function' ? window.claude.use('downloads').catch(() => null) : Promise.resolve(null);

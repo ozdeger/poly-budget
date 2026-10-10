@@ -8,12 +8,12 @@ import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { TGALoader } from 'three/addons/loaders/TGALoader.js';
-import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 import { MeshBVH, INTERSECTED, NOT_INTERSECTED, MeshBVHUniformStruct, FloatVertexAttributeTexture, BVHShaderGLSL } from 'three-mesh-bvh';
 import { LABEL, AUTO_UV_LIMIT, QUAD_SHARP, OCCLUSION, OCCLUSION_BAYER, hiddenLabels, cornerTangents, positionNormals, bakeReach, smartWeld, bounds, packAttributes, runReduction, mirrorOriginal, unwrapResult, uvEdges, quadCorners, exportObjects, writeFBX, writeOBJ, readFbxUnitScale } from './core.js';
 import { collectScene } from './collect.js';
+import { glbBytes } from './glb.js';
 import { computeVisibility } from './visibility.js';
 import { formDensity } from './quad.js';
 
@@ -3434,42 +3434,6 @@ async function materialInfos(stem) {
     out.push({ name, color: [rgb.r, rgb.g, rgb.b], texture, bytes, normal, extra, source: state.bakedMats && (baked || state.bake) ? state.bakedMats[i] : m });
   }
   return out;
-}
-
-async function glbBytes(objects, scale) {
-  const scene = new THREE.Scene();
-  for (const o of objects) {
-    const P = Float32Array.from(o.positions, v => v * scale);
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(P, 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(o.normals, 3));
-    if (o.uvs) g.setAttribute('uv', new THREE.BufferAttribute(o.uvs, 2));
-    if (o.colors) g.setAttribute('color', new THREE.BufferAttribute(o.colors, 3));
-    const T = o.index.length / 3, nm = Math.max(1, o.materials.length);
-    const order = [...Array(T).keys()].sort((a, b) => o.triMat[a] - o.triMat[b]);
-    const idx = new Uint32Array(o.index.length);
-    order.forEach((t, j) => idx.set(o.index.subarray(t * 3, t * 3 + 3), j * 3));
-    g.setIndex(new THREE.BufferAttribute(idx, 1));
-    let start = 0;
-    for (let m = 0; m < nm; m++) {
-      let c = 0;
-      while (start / 3 + c < T && o.triMat[order[start / 3 + c]] === m) c++;
-      if (c) g.addGroup(start, c * 3, m);
-      start += c * 3;
-    }
-    const mats = o.materials.map(mi => {
-      if (mi.source && mi.source.isMaterial) {
-        const mat = mi.source.clone();
-        mat.polygonOffset = false;
-        return mat;
-      }
-      return new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...mi.color, THREE.SRGBColorSpace) });
-    });
-    const mesh = new THREE.Mesh(g, mats.length > 1 ? mats : mats[0] || new THREE.MeshStandardMaterial());
-    mesh.name = o.name;
-    scene.add(mesh);
-  }
-  return new Uint8Array(await new GLTFExporter().parseAsync(scene, { binary: true }));
 }
 
 const downloadsReady = window.claude && typeof window.claude.use === 'function' ? window.claude.use('downloads').catch(() => null) : Promise.resolve(null);

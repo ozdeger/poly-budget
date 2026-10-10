@@ -288,7 +288,7 @@ function materialInfos(mats, names, res) {
   });
 }
 
-// GLB through the three.js exporter, as glbBytes in src/app.js; the materials go without their maps, which aren't
+// GLB through the three.js exporter, as glbBytes in src/glb.js; the materials go without their maps, which aren't
 // decoded here.
 async function glbBytes(objects, scale) {
   const scene = new THREE.Scene();
